@@ -212,6 +212,7 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("AppendTo", crate::expr::A_HOLDALL, "`Append[v, x]`", b_appendto),
     builtin!("FullForm", 0, "`FullForm[e]`", b_fullform),
     builtin!("InputForm", 0, "`InputForm[e]`", b_inputform),
+    builtin!("TeXForm", 0, "`TeXForm[e]`", b_texform),
     builtin!("ToString", 0, "`ToString[e]`", b_tostring),
     builtin!("ToExpression", 0, "`ToExpression[str]`", b_toexpression),
     builtin!("StringJoin", 0, "`a <> b`", b_stringjoin),

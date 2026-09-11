@@ -973,6 +973,10 @@ pub fn b_inputform(i: &mut Interp, args: &[Expr]) -> EvalRes {
     Ok(Expr::from_str(&crate::fmt::input_form(&i.t, &args[0])))
 }
 
+pub fn b_texform(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    Ok(Expr::from_str(&crate::tex::tex_form(&i.t, &args[0])))
+}
+
 pub fn b_attributes(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 1 {
         return Ok(unevaluated_call(i, "Attributes", args));

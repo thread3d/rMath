@@ -192,9 +192,11 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                     true
                 }
                 Ok(e) => {
+                    let tex_in = crate::tex::tex_form(&i.t, &e);
                     let mut msgs: Vec<crate::json::J> = Vec::new();
                     let mut status = "ok";
                     let mut out_n: Option<usize> = None;
+                    let mut tex_text: Option<String> = None;
                     let mut result_text = String::new();
                     let mut input_text = String::new();
                     let mut graphics = None;
@@ -211,6 +213,13 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                             let is_null = v.is_symbol(i.t.sys.null);
                             result_text = output_form(&i.t, &v);
                             input_text = input_form(&i.t, &v);
+                            tex_text = if crate::tex::is_graphic(&i.t, &v) {
+                                None
+                            } else if is_null {
+                                None
+                            } else {
+                                Some(crate::tex::tex_form(&i.t, &v))
+                            };
                             graphics = graphics_json(&mut i.t, &v);
                             if !is_null {
                                 i.out_history.push(v);
@@ -246,7 +255,11 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                         resp = resp
                             .set("status", crate::json::J::str_of("ok"))
                             .set("result", crate::json::J::str_of(&result_text))
-                            .set("input_form", crate::json::J::str_of(&input_text));
+                            .set("input_form", crate::json::J::str_of(&input_text))
+                            .set("tex_in", crate::json::J::str_of(&tex_in));
+                        if let Some(tx) = tex_text {
+                            resp = resp.set("tex", crate::json::J::str_of(&tx));
+                        }
                         if let Some(n) = out_n {
                             resp = resp.set("out", crate::json::J::Num(n as f64));
                         }
