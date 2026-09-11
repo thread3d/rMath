@@ -1,0 +1,23 @@
+[package]
+name = "rmath"
+version = "0.1.0"
+edition = "2021"
+description = "Stand-alone Mathematica-style kernel: expression engine, pattern matching, exact arithmetic, CAS builtins"
+license = "MIT"
+
+# Zero external dependencies by design (crates.io API is blocked in this env;
+# bigint/rational/json are implemented in-tree).
+[dependencies]
+
+[lib]
+name = "rmath"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rmath"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "unwind"

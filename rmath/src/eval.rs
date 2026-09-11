@@ -1,0 +1,628 @@
+//! The evaluator: standard evaluation loop, hold attributes, Sequence and
+//! Unevaluated splicing, rule application (down-values), built-in dispatch,
+//! function application with slots, and the MatchCtx bridge to the matcher.
+
+use crate::expr::{
+    canon_cmp, has, same_q, A_FLAT, A_HOLDALL, A_HOLDALLCOMPLETE, A_HOLDFIRST, A_HOLDREST,
+    A_LISTABLE, A_ORDERLESS, A_PROTECTED, A_SEQUENCEHOLD, Expr, OwnValue, SymbolTable,
+};
+use crate::pattern::{match_call_args, subst_bindings, Bindings, MatchCtx};
+use std::cmp::Ordering;
+
+#[derive(Debug)]
+pub enum Flow {
+    /// Throw[value, tag?] — caught by Catch only.
+    Throw(Expr, Option<Expr>),
+    /// Break[] — caught by loops.
+    Break,
+    /// Continue[] — caught by loops.
+    Continue,
+    /// Return[value?] — caught by function application and the top level.
+    Return(Option<Expr>),
+    /// Fatal abort (e.g. recursion limit).
+    Halt(String),
+}
+
+pub type EvalRes = Result<Expr, Flow>;
+
+pub struct Interp {
+    pub t: SymbolTable,
+    pub depth: usize,
+    pub out_history: Vec<Expr>,
+    pub prints: Vec<String>,
+    pub sowed: Vec<Expr>,
+    pub module_counter: u64,
+    pub unique_counter: u64,
+    pub rng: u64,
+    /// (tag, text) messages collected during the current input.
+    pub messages: Vec<(String, String)>,
+    pub rec_limit: usize,
+    pub iter_limit: usize,
+}
+
+impl Interp {
+    pub fn new() -> Interp {
+        let mut i = Interp {
+            t: SymbolTable::new(),
+            depth: 0,
+            out_history: Vec::new(),
+            prints: Vec::new(),
+            sowed: Vec::new(),
+            module_counter: 0,
+            unique_counter: 0,
+            rng: 0x2545_F491_4F6C_DD1D,
+            messages: Vec::new(),
+            rec_limit: 4096,
+            iter_limit: 200_000,
+        };
+        i.setup_system();
+        i
+    }
+
+    fn setup_system(&mut self) {
+        let sys = self.t.sys;
+        for id in [sys.r#true, sys.r#false] {
+            self.t.data[id].attrs |= A_PROTECTED | crate::expr::A_CONSTANT;
+        }
+        for id in [sys.null, sys.indeterminate, sys.infinity, sys.complexinfinity] {
+            self.t.data[id].attrs |= A_PROTECTED | crate::expr::A_CONSTANT;
+        }
+        for name in ["Pi", "E", "GoldenRatio", "EulerGamma", "Catalan"] {
+            let id = self.t.intern(name);
+            self.t.data[id].attrs |= A_PROTECTED | crate::expr::A_CONSTANT;
+        }
+        // Degree = Pi/180
+        let degree = self.t.intern("Degree");
+        self.t.data[degree].attrs |= A_PROTECTED | crate::expr::A_CONSTANT;
+        let pi_id = self.t.intern("Pi");
+        self.t.data[degree].own = Some(OwnValue::Set(Expr::node(
+            Expr::Sym(sys.times),
+            vec![
+                Expr::rat(crate::rational::Rat::new(
+                    crate::bigint::BigInt::from_i64(1),
+                    crate::bigint::BigInt::from_i64(180),
+                )),
+                Expr::Sym(pi_id),
+            ],
+        )));
+        // I = Complex[0, 1]
+        let iv = Expr::cnum(
+            crate::expr::NumVal::R(crate::rational::Rat::from_i64(0)),
+            crate::expr::NumVal::R(crate::rational::Rat::from_i64(1)),
+        );
+        let ii = self.t.intern("I");
+        self.t.data[ii].attrs |= A_PROTECTED | crate::expr::A_CONSTANT;
+        self.t.data[ii].own = Some(OwnValue::Set(iv));
+        // Register built-ins from the registry.
+        for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
+            let id = self.t.intern(def.name);
+            self.t.data[id].attrs |= A_PROTECTED | def.attrs;
+            self.t.data[id].builtin = Some(idx);
+            if !def.usage.is_empty() {
+                self.t.data[id].usage = Some(def.usage.to_string());
+            }
+        }
+    }
+
+    // ---------- messages ----------
+    pub fn message(&mut self, name: &str, tag: &str) {
+        let text = crate::builtins::message_text(tag, name);
+        self.messages.push((format!("{}::{}", name, tag), text));
+    }
+
+    // ---------- evaluation ----------
+    pub fn eval(&mut self, e0: &Expr) -> EvalRes {
+        let mut cur = e0.clone();
+        let mut count = 0usize;
+        loop {
+            count += 1;
+            if count > self.iter_limit {
+                self.message("$IterationLimit", "itlim");
+                return Ok(cur);
+            }
+            self.depth += 1;
+            if self.depth > self.rec_limit {
+                self.depth -= 1;
+                return Err(Flow::Halt(format!(
+                    "$RecursionLimit::reclim: Recursion depth of {} exceeded.",
+                    self.rec_limit
+                )));
+            }
+            let r = self.eval_once(&cur);
+            self.depth -= 1;
+            let (next, changed) = r?;
+            if !changed {
+                return Ok(next);
+            }
+            cur = next;
+        }
+    }
+
+    fn eval_once(&mut self, e: &Expr) -> Result<(Expr, bool), Flow> {
+        match e {
+            Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Str(_) | Expr::Cnum(_) => {
+                Ok((e.clone(), false))
+            }
+            Expr::Sym(id) => {
+                let has_delayed = matches!(&self.t.data[*id].own, Some(OwnValue::SetDelayed(_)));
+                if has_delayed {
+                    let body = match &self.t.data[*id].own {
+                        Some(OwnValue::SetDelayed(b)) => b.clone(),
+                        _ => unreachable!(),
+                    };
+                    let v = self.eval(&body)?;
+                    let ch = !same_q(&v, e);
+                    return Ok((v, ch));
+                }
+                if let Some(OwnValue::Set(v)) = &self.t.data[*id].own {
+                    let val = v.clone();
+                    let ch = !same_q(&val, e);
+                    return Ok((val, ch));
+                }
+                Ok((e.clone(), false))
+            }
+            Expr::Node(nd) => self.eval_node(&nd.head, &nd.args, e),
+        }
+    }
+
+    fn eval_node(&mut self, head: &Expr, args: &[Expr], orig: &Expr) -> Result<(Expr, bool), Flow> {
+        // 1. Evaluate the head; own values may rewrite it (f = g; f[1] -> g[1]).
+        let (head, hchanged) = self.eval_once(head)?;
+        if hchanged {
+            return Ok((Expr::node(head, args.to_vec()), true));
+        }
+        // 2. Pure function application.
+        if let Expr::Node(fh) = &head {
+            if fh.head.is_symbol(self.t.sys.function) {
+                let v = self.apply_function(&head, args)?;
+                let ch = !same_q(&v, orig);
+                    return Ok((v, ch));
+            }
+        }
+        // 3. Evaluate arguments according to hold attributes.
+        let (mut vargs, achanged) = self.eval_args(head.sym_id(), args)?;
+        // 4. Attribute normalization (Flat / Orderless).
+        let nchanged = self.normalize(head.sym_id(), &mut vargs);
+        let changed_pre = hchanged || achanged || nchanged;
+        // 5. Dispatch: down-values, then built-ins (plain symbol heads only).
+        if let Some(id) = head.sym_id() {
+            if let Some(v) = self.try_downvalues(id, &vargs)? {
+                let ch = !same_q(&v, orig);
+                return Ok((v, ch));
+            }
+            let attrs = self.t.attrs(id);
+            if let Some(bi) = self.t.data[id].builtin {
+                let attrs = self.t.data[id].attrs;
+                let res = self.call_builtin(id, bi, attrs, &vargs)?;
+                let ch = !same_q(&res, orig);
+                return Ok((res, ch));
+            }
+            // User symbols with Listable attribute thread over lists.
+            if has(attrs, A_LISTABLE)
+                && vargs.iter().any(|a| a.is_list(&self.t))
+                && !vargs.is_empty()
+            {
+                if let Some(res) = self.thread_listable(id, &vargs)? {
+                    let ch = !same_q(&res, orig);
+                    return Ok((res, ch));
+                }
+            }
+        }
+        Ok((Expr::node(head, vargs), changed_pre))
+    }
+
+    /// Evaluate arguments respecting Hold* attributes; splice Sequence and
+    /// strip Unevaluated; honor Evaluate inside held positions.
+    fn eval_args(
+        &mut self,
+        head_id: Option<usize>,
+        args: &[Expr],
+    ) -> Result<(Vec<Expr>, bool), Flow> {
+        let sys = self.t.sys;
+        let attrs = match head_id {
+            Some(id) => self.t.attrs(id),
+            None => 0,
+        };
+        let complete = has(attrs, A_HOLDALLCOMPLETE);
+        let holdall = has(attrs, A_HOLDALL);
+        let holdfirst = has(attrs, A_HOLDFIRST);
+        let holdrest = has(attrs, A_HOLDREST);
+        let seqhold = has(attrs, A_SEQUENCEHOLD);
+        let mut out: Vec<Expr> = Vec::with_capacity(args.len());
+        let mut changed = false;
+
+        let splice = |out: &mut Vec<Expr>, v: &Expr, changed: &mut bool| {
+            if !seqhold {
+                if let Some((h, hargs)) = v.parts() {
+                    if h.is_symbol(sys.sequence) {
+                        for x in hargs {
+                            out.push(x.clone());
+                        }
+                        *changed = true;
+                        return;
+                    }
+                }
+            }
+            out.push(v.clone());
+        };
+
+        for (pos, a) in args.iter().enumerate() {
+            let held = complete || holdall || (pos == 0 && holdfirst) || (pos > 0 && holdrest);
+            // Unevaluated[v] — strip and use raw (one layer).
+            if !complete {
+                if let Some((h, hargs)) = a.parts() {
+                    if h.is_symbol(sys.unevaluated) && hargs.len() == 1 {
+                        changed = true;
+                        if !seqhold {
+                            if let Some((h2, a2)) = hargs[0].parts() {
+                                if h2.is_symbol(sys.sequence) {
+                                    for x in a2 {
+                                        out.push(x.clone());
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        out.push(hargs[0].clone());
+                        continue;
+                    }
+                }
+            }
+            if held {
+                // Evaluate[...] inside held positions forces evaluation.
+                if !complete {
+                    if let Some((h, hargs)) = a.parts() {
+                        if h.is_symbol(sys.evaluate) && hargs.len() == 1 {
+                            let v = self.eval(&hargs[0])?;
+                            changed = true;
+                            splice(&mut out, &v, &mut changed);
+                            continue;
+                        }
+                    }
+                }
+                // Sequence splices even under Hold (unless SequenceHold).
+                if !seqhold {
+                    if let Some((h, _)) = a.parts() {
+                        if h.is_symbol(sys.sequence) {
+                            let (_, hargs) = a.parts().unwrap();
+                            for x in hargs {
+                                out.push(x.clone());
+                            }
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+                out.push(a.clone());
+                continue;
+            }
+            let v = self.eval(a)?;
+            splice(&mut out, &v, &mut changed);
+        }
+        Ok((out, changed))
+    }
+
+    /// Flatten Flat heads and sort Orderless heads.
+    fn normalize(&mut self, head_id: Option<usize>, args: &mut Vec<Expr>) -> bool {
+        let attrs = match head_id {
+            Some(id) => self.t.attrs(id),
+            None => 0,
+        };
+        let mut changed = false;
+        if has(attrs, A_FLAT) {
+            if let Some(hid) = head_id {
+                let mut out = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    if let Expr::Node(nd) = a {
+                        if nd.head.is_symbol(hid) {
+                            for x in &nd.args {
+                                out.push(x.clone());
+                            }
+                            changed = true;
+                            continue;
+                        }
+                    }
+                    out.push(a.clone());
+                }
+                *args = out;
+            }
+        }
+        if has(attrs, A_ORDERLESS) && args.len() > 1 {
+            let t = &self.t;
+            let mut s: Vec<Expr> = args.clone();
+            s.sort_by(|a, b| canon_cmp(t, a, b));
+            let same = args.len() == s.len()
+                && args.iter().zip(s.iter()).all(|(a, b)| same_q(a, b));
+            if !same {
+                changed = true;
+            }
+            *args = s;
+        }
+        changed
+    }
+
+    fn try_downvalues(&mut self, head_id: usize, args: &[Expr]) -> Result<Option<Expr>, Flow> {
+        let rules: Vec<crate::expr::DownRule> = self.t.data[head_id].down.clone();
+        for rule in rules {
+            let Some((pats, cond)) = split_down_pattern(&self.t, &rule.pat, head_id) else {
+                continue;
+            };
+            let Some(bind) = match_call_args(self, head_id, &pats, args) else {
+                continue;
+            };
+            if let Some(c) = &cond {
+                let cond_e = subst_bindings(&self.t.sys, c, &bind);
+                match self.eval(&cond_e) {
+                    Ok(v) if v.is_symbol(self.t.sys.r#true) => {}
+                    Ok(_) => continue,
+                    Err(Flow::Throw(v, tag)) => return Err(Flow::Throw(v, tag)),
+                    Err(_) => continue,
+                }
+            }
+            let body = subst_bindings(&self.t.sys, &rule.body, &bind);
+            // Top-level Condition in the body gates the rule.
+            let effective = if let Some((h, hargs)) = body.parts() {
+                if h.is_symbol(self.t.sys.condition) && hargs.len() == 2 {
+                    let c = self.eval(&hargs[1])?;
+                    if c.is_symbol(self.t.sys.r#true) {
+                        hargs[0].clone()
+                    } else if c.is_symbol(self.t.sys.r#false) {
+                        continue;
+                    } else {
+                        return Ok(Some(body));
+                    }
+                } else {
+                    body
+                }
+            } else {
+                body
+            };
+            let v = self.eval(&effective)?;
+            return Ok(Some(v));
+        }
+        Ok(None)
+    }
+
+    fn call_builtin(
+        &mut self,
+        sym_id: usize,
+        idx: usize,
+        attrs: u32,
+        args: &[Expr],
+    ) -> EvalRes {
+        let def = &crate::builtins::BUILTINS[idx];
+        // Listable threading for numeric/list functions.
+        if has(attrs, A_LISTABLE) && args.iter().any(|a| a.is_list(&self.t)) {
+            if let Some(res) = self.thread_listable(sym_id, args)? {
+                return Ok(res);
+            }
+        }
+        (def.f)(self, args)
+    }
+
+    /// Thread f over List arguments (Listable). None if threading impossible.
+    fn thread_listable(&mut self, sym_id: usize, args: &[Expr]) -> Result<Option<Expr>, Flow> {
+        let mut lists: Vec<usize> = Vec::new();
+        let mut len: Option<usize> = None;
+        for (i, a) in args.iter().enumerate() {
+            if a.is_list(&self.t) {
+                let l = a.list_len();
+                match len {
+                    None => len = Some(l),
+                    Some(p) if p == l => {}
+                    Some(_) => {
+                        self.message("General", "dims");
+                        return Ok(None);
+                    }
+                }
+                lists.push(i);
+            }
+        }
+        if lists.is_empty() {
+            return Ok(None);
+        }
+        let n = len.unwrap();
+        let mut rows = Vec::with_capacity(n);
+        for k in 0..n {
+            let mut one = Vec::with_capacity(args.len());
+            for (i, a) in args.iter().enumerate() {
+                if lists.contains(&i) {
+                    if let Expr::Node(nd) = a {
+                        one.push(nd.args[k].clone());
+                    }
+                } else {
+                    one.push(a.clone());
+                }
+            }
+            let call = Expr::node(Expr::Sym(sym_id), one);
+            rows.push(self.eval(&call)?);
+        }
+        Ok(Some(Expr::node(Expr::Sym(self.t.sys.list), rows)))
+    }
+
+    /// Apply a Function node to arguments.
+    pub fn apply_function(&mut self, f: &Expr, args: &[Expr]) -> EvalRes {
+        let Some((fh, fargs)) = f.parts() else {
+            return Ok(f.clone());
+        };
+        if !fh.is_symbol(self.t.sys.function) || fargs.is_empty() || fargs.len() > 3 {
+            return Ok(f.clone());
+        }
+        let sys = self.t.sys;
+        let body = match fargs.len() {
+            1 => subst_slots(&self.t, &fargs[0], args, f, true)?,
+            _ => {
+                // Function[vars, body] or Function[vars, body, attrs]
+                let vars = &fargs[0];
+                let names: Vec<usize> = if let Some((h, hargs)) = vars.parts() {
+                    if h.is_symbol(sys.list) {
+                        hargs
+                            .iter()
+                            .filter_map(|a| a.sym_id())
+                            .collect()
+                    } else {
+                        vars.sym_id().into_iter().collect()
+                    }
+                } else {
+                    vars.sym_id().into_iter().collect()
+                };
+                let body = subst_syms(&self.t, &fargs[1], &names, args);
+                body
+            }
+        };
+        match self.eval(&body) {
+            Ok(v) => Ok(v),
+            Err(Flow::Return(v)) => Ok(v.unwrap_or(Expr::Sym(sys.null))),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Strip HoldPattern / split top-level Condition from a stored rule lhs.
+pub fn split_down_pattern(
+    t: &SymbolTable,
+    pat: &Expr,
+    head_id: usize,
+) -> Option<(Vec<Expr>, Option<Expr>)> {
+    let mut p = pat;
+    if let Some((h, args)) = p.parts() {
+        if h.is_symbol(t.sys.holdpattern) && args.len() == 1 {
+            p = &args[0];
+        }
+    }
+    let mut cond = None;
+    if let Some((h, args)) = p.parts() {
+        if h.is_symbol(t.sys.condition) && args.len() == 2 {
+            cond = Some(args[1].clone());
+            let inner = &args[0];
+            let (h2, a2) = inner.parts()?;
+            if h.is_symbol(t.sys.condition) {
+                return None;
+            }
+            if h2.is_symbol(head_id) {
+                return Some((a2.to_vec(), cond));
+            }
+            return None;
+        }
+    }
+    let (h, a) = p.parts()?;
+    if h.is_symbol(head_id) {
+        Some((a.to_vec(), cond))
+    } else {
+        None
+    }
+}
+
+/// Replace Slot[n] / SlotSequence[n] / Slot[0] in a Function body.
+pub fn subst_slots(
+    t: &SymbolTable,
+    body: &Expr,
+    args: &[Expr],
+    fexpr: &Expr,
+    with_seq: bool,
+) -> Result<Expr, Flow> {
+    let sys = t.sys;
+    if let Some((h, hargs)) = body.parts() {
+        if h.is_symbol(sys.slot) && hargs.len() == 1 {
+            if let Expr::Int(n) = &hargs[0] {
+                let ni = n.to_i64().unwrap_or(0);
+                if ni == 0 {
+                    return Ok(fexpr.clone());
+                }
+                let idx = ni - 1;
+                if (idx as usize) < args.len() {
+                    return Ok(args[idx as usize].clone());
+                }
+                return Ok(body.clone());
+            }
+        }
+        if h.is_symbol(sys.slotsequence) && hargs.len() == 1 {
+            if let Expr::Int(n) = &hargs[0] {
+                let ni = n.to_i64().unwrap_or(1);
+                if ni >= 1 && (ni as usize) <= args.len() {
+                    let vs: Vec<Expr> = args[(ni as usize - 1)..].to_vec();
+                    return Ok(Expr::node(Expr::Sym(sys.sequence), vs));
+                }
+            }
+        }
+        let new_head = subst_slots(t, h, args, fexpr, with_seq)?;
+        let mut new_args = Vec::with_capacity(hargs.len());
+        for a in hargs {
+            let av = subst_slots(t, a, args, fexpr, with_seq)?;
+            new_args.push(av);
+        }
+        return Ok(Expr::node(new_head, new_args));
+    }
+    Ok(body.clone())
+}
+
+/// Replace listed symbols with expressions (Function[{x, y}, body] apply).
+pub fn subst_syms(t: &SymbolTable, body: &Expr, names: &[usize], vals: &[Expr]) -> Expr {
+    if names.is_empty() {
+        return body.clone();
+    }
+    if let Expr::Sym(id) = body {
+        for (k, n) in names.iter().enumerate() {
+            if *n == *id {
+                if let Some(v) = vals.get(k) {
+                    return v.clone();
+                }
+            }
+        }
+        return body.clone();
+    }
+    if let Some((h, hargs)) = body.parts() {
+        let new_head = subst_syms(t, h, names, vals);
+        let new_args: Vec<Expr> = hargs
+            .iter()
+            .map(|a| subst_syms(t, a, names, vals))
+            .collect();
+        return Expr::node(new_head, new_args);
+    }
+    body.clone()
+}
+
+impl MatchCtx for Interp {
+    fn eval_test(&mut self, test: &Expr, val: &Expr) -> Result<bool, ()> {
+        let call = Expr::node(test.clone(), vec![val.clone()]);
+        match self.eval(&call) {
+            Ok(v) => Ok(v.is_symbol(self.t.sys.r#true)),
+            Err(_) => Err(()),
+        }
+    }
+    fn eval_cond(&mut self, cond: &Expr, b: &Bindings) -> Result<bool, ()> {
+        let c = subst_bindings(&self.t.sys, cond, b);
+        match self.eval(&c) {
+            Ok(v) => Ok(v.is_symbol(self.t.sys.r#true)),
+            Err(_) => Err(()),
+        }
+    }
+    fn eval_plain(&mut self, e: &Expr) -> Result<Expr, ()> {
+        self.eval(e).map_err(|_| ())
+    }
+    fn head_sym(&mut self, e: &Expr) -> usize {
+        e.head_of(&self.t).sym_id().unwrap_or(usize::MAX)
+    }
+    fn attrs_of(&mut self, id: usize) -> u32 {
+        self.t.attrs(id)
+    }
+    fn canon(&mut self, a: &Expr, b: &Expr) -> Ordering {
+        canon_cmp(&self.t, a, b)
+    }
+    fn default_for(&mut self, head: Option<usize>, _pos: usize) -> Option<Expr> {
+        let sys = self.t.sys;
+        match head {
+            Some(id) if id == sys.plus => Some(Expr::int_i64(0)),
+            Some(id) if id == sys.times => Some(Expr::int_i64(1)),
+            Some(id) if id == sys.power => Some(Expr::int_i64(1)),
+            Some(id) => self.t.data[id].defaults[0].clone(),
+            None => None,
+        }
+    }
+    fn atom_as_node_parts(&mut self, e: &Expr) -> Option<(Expr, Vec<Expr>)> {
+        e.atom_as_node(&self.t)
+    }
+    fn sys_syms(&mut self) -> crate::expr::Sys {
+        self.t.sys
+    }
+}

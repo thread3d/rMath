@@ -1,0 +1,17 @@
+# Rust build artifacts
+rmath/target/
+
+# Python
+__pycache__/
+*.pyc
+
+# Bootstrap tooling (rustup installer downloaded during setup)
+tools/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
