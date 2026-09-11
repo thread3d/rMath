@@ -259,17 +259,17 @@ pub fn numeric_eval(i: &mut crate::eval::Interp, e: &Expr) -> Expr {
         Expr::Str(_) => e.clone(),
         Expr::Node(nd) => {
             if let Some(id) = nd.head.sym_id() {
-                let attrs = i.t.attrs(id);
-                let numeric_fn = crate::expr::has(attrs, A_NUMERICFUNCTION);
                 let args: Vec<Expr> = nd.args.iter().map(|a| numeric_eval(i, a)).collect();
-                if numeric_fn {
-                    if let Some(v) = apply_numeric_fn(i, id, &args) {
-                        return v;
-                    }
+                // Try the machine-evaluation table for any builtin; fall
+                // through to the rebuilt node when nothing applies.
+                if let Some(v) = apply_numeric_fn(i, id, &args) {
+                    return v;
+                }
+                if crate::expr::has(i.t.attrs(id), crate::expr::A_HOLDALL) {
+                    return Expr::node(nd.head.clone(), nd.args.clone());
                 }
                 return Expr::node(nd.head.clone(), args);
             }
-            let _ = 0;
             e.clone()
         }
     }

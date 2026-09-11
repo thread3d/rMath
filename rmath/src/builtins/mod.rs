@@ -2,6 +2,7 @@
 
 use crate::builtins::arith::*;
 use crate::builtins::core::*;
+use crate::builtins::file::*;
 use crate::builtins::lists::*;
 use crate::builtins::calculus::*;
 use crate::builtins::graphics::*;
@@ -28,6 +29,7 @@ macro_rules! builtin {
 pub mod arith;
 pub mod calculus;
 pub mod core;
+pub mod file;
 pub mod lists;
 pub mod graphics;
 pub mod linalg;
@@ -176,6 +178,14 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("ListPlot", 0, "`ListPlot[data]`", b_listplot),
     builtin!("ListLinePlot", 0, "`ListLinePlot[data]`", b_listlineplot),
     builtin!("ParametricPlot", A_HOLDALL, "`ParametricPlot[{fx, fy}, {t, a, b}]`", b_parametricplot),
+    builtin!("Get", A_HOLDALL, "`Get[\"file\"]`", b_get),
+    builtin!("Put", A_HOLDALL, "`Put[\"f\", e1, ...]`", b_put),
+    builtin!("PutAppend", A_HOLDALL, "`PutAppend[\"f\", e1, ...]`", b_putappend),
+    builtin!("Import", 0, "`Import[\"f\"]`", b_import),
+    builtin!("Export", 0, "`Export[\"f\", expr]`", b_export),
+    builtin!("FileExistsQ", 0, "`FileExistsQ[\"f\"]`", b_fileexistsq),
+    builtin!("DeleteFile", A_HOLDALL, "`DeleteFile[\"f\"]`", b_deletefile),
+    builtin!("Directory", 0, "`Directory[]`", b_directory),
     builtin!("PrimeQ", 0, "`PrimeQ[n]`", b_primeq),
     builtin!("Prime", 0, "`Prime[n]`", b_prime),
     builtin!("Total", 0, "`Total[list]`", b_total),

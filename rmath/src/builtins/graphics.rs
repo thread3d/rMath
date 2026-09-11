@@ -35,12 +35,22 @@ fn opt_value<'a>(opts: &'a [(String, Expr)], name: &str) -> Option<&'a Expr> {
 
 fn real_val(i: &mut Interp, e: &Expr) -> Result<Option<f64>, Flow> {
     let v = i.eval(e)?;
-    Ok(match &v {
+    let direct = match &v {
         Expr::Int(n) => Some(n.to_f64()),
         Expr::Rat(r) => Some(r.to_f64()),
         Expr::Real(x) => Some(*x),
         _ => None,
-    })
+    };
+    if direct.is_some() {
+        return Ok(direct);
+    }
+    // Symbolic numerics like 2 Pi: evaluate to machine precision.
+    let approx = crate::builtins::num::numeric_eval(i, &v);
+    match &approx {
+        Expr::Real(x) => Ok(Some(*x)),
+        Expr::Int(n) => Ok(Some(n.to_f64())),
+        _ => Ok(None),
+    }
 }
 
 /// Build a Graphics expression: Graphics[prims, {plotrange rules, ...}]

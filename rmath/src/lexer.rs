@@ -48,6 +48,8 @@ pub enum TokKind {
     ReplaceRepeated, // //.
     SlashSemi,    // /; (Condition)
     SlashSlash,   // // (Postfix)
+    Put,          // >> (write file)
+    PutAppend,    // >>> (AppendToFile)
     PlusPlus,     // ++ (parser: prefix or postfix)
     MinusMinus,   // -- (parser: prefix or postfix)
     Plus,
@@ -495,9 +497,19 @@ impl<'a> Lexer<'a> {
                         self.bump();
                         self.push(TokKind::GreaterEq, String::new());
                     }
-                    Some(b'>') => {
-                        return Err(self.err("file output (>>) not supported; use Export"));
-                    }
+                    Some(b'>') => match self.peek3() {
+                        Some(b'>') => {
+                            self.bump();
+                            self.bump();
+                            self.bump();
+                            self.push(TokKind::PutAppend, String::new());
+                        }
+                        _ => {
+                            self.bump();
+                            self.bump();
+                            self.push(TokKind::Put, String::new());
+                        }
+                    },
                     _ => {
                         self.bump();
                         self.push(TokKind::Greater, String::new());

@@ -109,7 +109,7 @@ impl<'t> Parser<'t> {
             return Ok(self.sym("Null"));
         }
         let sys = self.t.sys;
-        let mut args = vec![self.parse_l2()?];
+        let mut args = vec![self.parse_l1b()?];
         let mut trailing = false;
         while self.at(&TokKind::Semi) {
             self.advance();
@@ -128,6 +128,24 @@ impl<'t> Parser<'t> {
         } else {
             Ok(self.node(Expr::Sym(sys.compoundexpression), args))
         }
+    }
+
+    // ----- L1b: file output >> / >>> -----
+    fn parse_l1b(&mut self) -> Result<Expr, ParseError> {
+        let lhs = self.parse_l2()?;
+        if self.at(&TokKind::Put) {
+            self.advance();
+            let rhs = self.parse_l2()?;
+            let h = self.sym("Put");
+            return Ok(self.node(h, vec![lhs, rhs]));
+        }
+        if self.at(&TokKind::PutAppend) {
+            self.advance();
+            let rhs = self.parse_l2()?;
+            let h = self.sym("PutAppend");
+            return Ok(self.node(h, vec![lhs, rhs]));
+        }
+        Ok(lhs)
     }
 
     // ----- L2: postfix `//` -----
@@ -508,6 +526,12 @@ impl<'t> Parser<'t> {
                     let rhs = self.parse_l17()?;
                     let inv = self.node(Expr::Sym(sys.power), vec![rhs, Expr::int_i64(-1)]);
                     lhs = self.push_op(sys.times, lhs, inv);
+                }
+                TokKind::StrJoin => {
+                    self.advance();
+                    let rhs = self.parse_l17()?;
+                    let h = self.sym("StringJoin");
+                    lhs = self.node(h, vec![lhs, rhs]);
                 }
                 TokKind::Int
                 | TokKind::Real

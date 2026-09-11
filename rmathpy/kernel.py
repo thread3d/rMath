@@ -31,6 +31,8 @@ class Kernel:
         self._lock = threading.Lock()
 
     def _spawn(self):
+        # Run the kernel from the project root so relative demo paths work.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._proc = subprocess.Popen(
             [self.path, "--server"],
             stdin=subprocess.PIPE,
@@ -38,6 +40,7 @@ class Kernel:
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            cwd=root,
         )
 
     def _ensure(self):
