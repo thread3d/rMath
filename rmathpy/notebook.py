@@ -285,35 +285,35 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="ribbon">
-  <button class="tb" title="Evaluate Input (Shift+Enter)" onclick="evaluate()">
+  <button class="tb" data-action="evalInput" title="Evaluate Input (Shift+Enter)">
     <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5 13 8l-9 5.5z"/></svg></button>
-  <button class="tb" title="Evaluate All Cells" onclick="evaluateAll()">
+  <button class="tb" data-action="evalAll" title="Evaluate All Cells">
     <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3 8 6.5 2 10zM8 3l6 3.5L8 10z"/></svg></button>
-  <button class="tb" title="New Notebook (clear cells)" onclick="newNotebook()">
+  <button class="tb" data-action="newNotebook" title="New Notebook (clear cells)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
   <span class="sep"></span>
-  <button class="tb" title="Open a script (.mt) into the notebook" onclick="openNotebook()">
+  <button class="tb" data-action="openNotebook" title="Open a script (.mt) into the notebook">
     <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.5h4.2l1.4 1.6h7.4v7.4H1.5z"/></svg></button>
-  <button class="tb" title="Save notebook inputs as .mt" onclick="saveNotebook()">
+  <button class="tb" data-action="saveNotebook" title="Save notebook inputs as .mt">
     <svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2h8.2L13 3.8V14H3z"/><path d="M5.4 2h5.2v3.6H5.4z" fill="#fff"/></svg></button>
-  <button class="tb" title="Save last plot as SVG" onclick="saveLastPlotSvg()">
+  <button class="tb" data-action="saveLastPlotSvg" title="Save last plot as SVG">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 13.5h13M2.5 13V4M2.5 13l4-6 3 3 4-5"/></svg></button>
   <span class="sep"></span>
-  <button class="tb" title="Reset kernel" onclick="resetKernel()">
+  <button class="tb" data-action="resetKernel" title="Reset kernel">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13 8a5 5 0 1 1-1.7-3.8"/><path d="M13.4 2.2v3h-3"/></svg></button>
-  <button class="tb" title="Zoom out" onclick="zoomOut()">
+  <button class="tb" data-action="zoomOut" title="Zoom out">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14M5 7h4"/></svg></button>
-  <button class="tb" title="Zoom in" onclick="zoomIn()">
+  <button class="tb" data-action="zoomIn" title="Zoom in">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14M5 7h4M7 5v4"/></svg></button>
   <span class="sep"></span>
   <button class="tb wide" id="formbtn" title="Typesetting form (StandardForm / TraditionalForm)"
-          onclick="toggleForm()">Standard</button>
+          >Standard</button>
   <span class="spacer"></span>
   <span class="brand">rMath</span>
-  <button class="tb" title="Report a Bug (Shift+Cmd+B) — snapshot + diagnostics to the clipboard"
-          onclick="location.href='rmath://report'">
+  <button class="tb" id="reportbtn"
+          title="Report a Bug (Shift+Cmd+B) — snapshot + diagnostics to the clipboard">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 7.5a3.5 3.5 0 1 1 7 0v3.2H4.5z"/><path d="M4.5 9H2.6M13.4 9H11.5M4.5 11.6 2.8 12.8M13.2 12.8l-1.7-1.2M6.6 3.6 6 2M9.4 3.6 10 2"/></svg></button>
-  <button class="tb wide" title="Help (Cmd-?)" onclick="showHelp(true)">
+  <button class="tb wide" data-action="showHelp" title="Help (Cmd-?)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M6.2 6.3a1.9 1.9 0 0 1 3.7.6c0 1.2-1.9 1.4-1.9 2.5"/><circle cx="8" cy="11.7" r=".8" fill="currentColor"/></svg>
     Help</button>
 </div>
@@ -324,11 +324,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div id="inlabel">In[1]:=</div>
   <textarea id="inp" rows="1" spellcheck="false"
     placeholder="Enter an expression, then press Shift+Enter to evaluate (Ctrl+Space completes)"></textarea>
-  <button id="go" onclick="evaluate()">Evaluate</button>
+  <button id="go">Evaluate</button>
 </div></div>
 
 <div id="help">
-  <header>rMath Help<button onclick="showHelp(false)">Close</button></header>
+  <header>rMath Help<button id="helpclose">Close</button></header>
   <div class="body">
     <div class="tips">
       <b>Shift+Enter</b> evaluates (or the Evaluate button) &middot; <b>Enter</b> adds a line to the
@@ -337,7 +337,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       typeset from the kernel's TeX printer.<br>
       Click any name below to insert it at the cursor.
     </div>
-    <input id="fnfilter" placeholder="Filter functions…" oninput="filterFns()">
+    <input id="fnfilter" placeholder="Filter functions…">
     <div id="fns"></div>
   </div>
 </div>
@@ -482,7 +482,7 @@ async function evaluateLine(input, cell) {
 }
 
 let lastCell = null;
-async function evaluate() {
+async function evalInput() {
   const raw = inp.value;
   if (!raw.trim()) return;
   const lines = raw.split('\n').map(s => s.trim()).filter(s => s.length);
@@ -672,9 +672,46 @@ function renderFns(filter) {
   const f = (filter || '').toLowerCase();
   const list = NAMES.filter(n => !f || n.toLowerCase().includes(f)).slice(0, 400);
   box.innerHTML = list.map(n =>
-    '<span onclick="insertText(\'' + n + '[\')">' + n + '</span>').join('');
+    '<span data-insert="' + n + '[">' + n + '</span>').join('');
+  box.querySelectorAll('span[data-insert]').forEach(el => {
+    el.addEventListener('click', function () { insertText(el.dataset.insert); });
+  });
 }
 function filterFns() { renderFns(document.getElementById('fnfilter').value); }
+
+// Wire the ribbon/help buttons here: inline onclick handlers are resolved
+// through element -> form -> document -> window, so a global named like a DOM
+// member (e.g. evaluate, which collides with document.evaluate) would be
+// shadowed and silently do nothing.
+function wireControls() {
+  const actions = {
+    evalInput: evalInput,
+    evalAll: evaluateAll,
+    newNotebook: newNotebook,
+    openNotebook: function () { openNotebook(false); },
+    saveNotebook: saveNotebook,
+    saveLastPlotSvg: saveLastPlotSvg,
+    resetKernel: resetKernel,
+    zoomOut: zoomOut,
+    zoomIn: zoomIn,
+    showHelp: function () { showHelp(true); },
+  };
+  document.querySelectorAll('#ribbon .tb').forEach(b => {
+    const name = b.dataset.action;
+    if (name && actions[name]) b.addEventListener('click', actions[name]);
+  });
+  const form = document.getElementById('formbtn');
+  if (form) form.addEventListener('click', toggleForm);
+  const report = document.getElementById('reportbtn');
+  if (report) report.addEventListener('click', function () { window.location.href = 'rmath://report'; });
+  const go = document.getElementById('go');
+  if (go) go.addEventListener('click', evalInput);
+  const helpClose = document.getElementById('helpclose');
+  if (helpClose) helpClose.addEventListener('click', function () { showHelp(false); });
+  const filter = document.getElementById('fnfilter');
+  if (filter) filter.addEventListener('input', filterFns);
+}
+wireControls();
 
 function autoGrow() {
   inp.style.height = 'auto';
@@ -725,7 +762,7 @@ inp.addEventListener('keydown', e => {
     }
     if (e.key === 'Escape') { ac.style.display = 'none'; return; }
   }
-  if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); evaluate(); return; }
+  if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); evalInput(); return; }
   // plain Enter inserts a newline (multi-line cells), as in Mathematica
   else if (e.key === 'ArrowUp' && !inp.value && history.length) {
     histPos = Math.max(0, histPos - 1);

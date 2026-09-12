@@ -541,7 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         runJS("insertText('\(escaped)')")
     }
 
-    @objc func menuEvaluate() { runJS("evaluate()") }
+    @objc func menuEvaluate() { runJS("evalInput()") }
     @objc func menuEvaluateAll() { runJS("evaluateAll()") }
     @objc func menuNew() { runJS("newNotebook()") }
     @objc func menuOpen() { runJS("openNotebook(false)") }

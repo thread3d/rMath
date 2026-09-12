@@ -20,7 +20,7 @@ BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
 .PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
-        app app-run app-install app-stop app-uninstall shot svg2png report
+        app app-run app-install app-stop app-uninstall shot svg2png report uitest
 
 help:
 	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -88,6 +88,11 @@ scripts/dev/screenshot: scripts/dev/screenshot.swift
 # print the path; the same text is placed on the clipboard.
 report:
 	@$(HOME)/Applications/rMath.app/Contents/MacOS/rMath --report
+
+# Click every notebook control in a real WebKit page (fails on JS errors).
+#   make uitest          # against http://127.0.0.1:8787
+uitest:
+	@bash $(ROOT)/scripts/dev/uitest.sh "$(URL)"
 
 # Convert an SVG (e.g. an exported plot) to PNG with an independent renderer.
 #   make svg2png IN=plot.svg OUT=plot.png
