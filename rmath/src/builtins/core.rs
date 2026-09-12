@@ -851,7 +851,11 @@ pub fn b_print(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let mut parts = Vec::new();
     for a in args {
         let v = i.eval(a)?;
-        parts.push(crate::fmt::output_form(&i.t, &v));
+        // Print writes a bare string without the quotes that OutputForm adds.
+        match &v {
+            Expr::Str(msg) => parts.push(msg.to_string()),
+            _ => parts.push(crate::fmt::output_form(&i.t, &v)),
+        }
     }
     i.prints.push(parts.join(""));
     Ok(Expr::Sym(i.t.sys.null))

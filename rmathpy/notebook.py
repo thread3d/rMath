@@ -305,7 +305,6 @@ async function evaluate() {
   }
   localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
   histPos = history.length;
-  cells.appendChild(inp);  // keep the input last
   inp.focus();
   autoGrow();
 }

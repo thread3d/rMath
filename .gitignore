@@ -24,3 +24,7 @@ dist/
 
 # Swift build cache
 apps/native/.build/
+
+# dev helper build artifacts
+scripts/dev/.build/
+scripts/dev/screenshot
