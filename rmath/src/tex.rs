@@ -185,16 +185,26 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
         }
         Expr::Real(x) => out.push_str(&crate::fmt::format_real_out(*x)),
         Expr::Str(s) => {
-            out.push_str("\\text{");
-            out.push('"');
+            // Text mode: only LaTeX specials need escaping. A double quote is
+            // literal (escaping it as \" would be an accent command, which
+            // KaTeX rejects and renders in red).
+            out.push_str("\\text{\u{201C}");
             for ch in s.chars() {
                 match ch {
-                    '"' => out.push_str("\\\""),
-                    '\\' => out.push_str("\\\\"),
+                    '\\' => out.push_str("\\textbackslash{}"),
+                    '{' => out.push_str("\\{"),
+                    '}' => out.push_str("\\}"),
+                    '&' => out.push_str("\\&"),
+                    '%' => out.push_str("\\%"),
+                    '#' => out.push_str("\\#"),
+                    '$' => out.push_str("\\$"),
+                    '_' => out.push_str("\\_"),
+                    '^' => out.push_str("\\textasciicircum{}"),
+                    '~' => out.push_str("\\textasciitilde{}"),
                     c => out.push(c),
                 }
             }
-            out.push_str("\"}");
+            out.push_str("\u{201D}}");
         }
         Expr::Sym(id) => out.push_str(&tex_symbol_as(t.name_of(*id), form)),
         Expr::Cnum(c) => {
@@ -641,6 +651,19 @@ mod tests {
         assert_eq!(tex("1/x"), "\\frac{1}{x}");
         assert_eq!(tex("Pi"), "\\pi");
         assert_eq!(tex("Sin[x]"), "\\sin\\!\\left[x\\right]");
+    }
+
+    #[test]
+    fn tex_strings_escape_specials() {
+        let mut i = crate::eval::Interp::new();
+        let e = crate::parser::parse_input(&mut i.t, "\"a_b^c 100% {x} \\\" \"").unwrap();
+        let tex = tex_form(&i.t, &e);
+        assert!(tex.contains("\\_"), "underscore escaped: {}", tex);
+        assert!(tex.contains("\\%"), "percent escaped: {}", tex);
+        assert!(tex.contains("\\textasciicircum"), "caret escaped: {}", tex);
+        assert!(!tex.contains("\\\""), "quotes must not be accent-escaped: {}", tex);
+        assert!(tex.contains('"'), "inner quotes kept: {}", tex);
+        assert!(tex.contains("\\u{201C}") || tex.contains("“"), "opens with a curly quote: {}", tex);
     }
 
     #[test]

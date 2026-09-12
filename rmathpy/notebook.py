@@ -640,6 +640,9 @@ function reportContext() {
   return JSON.stringify({
     title: document.title, form: currentForm, cells: cells, lastError: lastError,
     evaluated: evaluated.slice(-12),
+    // the input box often explains a "nothing happened" report
+    inputBox: (inp.value || '').slice(0, 2000),
+    inputBoxLines: (inp.value || '').split('\n').length,
   });
 }
 
