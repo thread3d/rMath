@@ -150,7 +150,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with open(path) as f:
                 text = f.read()
-            self._json({"status": "ok", "path": path, "text": text})
+            with _KERNEL_LOCK:
+                statements = get_kernel().split(text)
+            self._json({"status": "ok", "path": path, "text": text,
+                        "statements": statements})
         except Exception as e:
             self._json({"status": "error", "error": str(e)})
 
@@ -241,7 +244,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
              color: var(--inlabel); padding-top: 8px; min-width: 58px; }
   #inp { flex: 1; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
          padding: 7px 9px; border: 1px solid #b9b9b9; border-radius: 3px; outline: 0;
-         resize: none; overflow: hidden; max-height: 180px; line-height: 1.4; background: #fff; }
+         resize: none; overflow-y: auto; max-height: 110px; line-height: 1.4; background: #fff; }
   #inp:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(44,90,143,.12); }
   #go { background: linear-gradient(#4a7fb5, #2c5a8f); border: 1px solid #24486f; color: #fff;
         padding: 7px 16px; border-radius: 4px; cursor: pointer; font-size: 12.5px;
@@ -470,8 +473,10 @@ async function evaluateLine(input, cell) {
   cell.dataset.result = (resp.result || '').slice(0, 400);
   cell.dataset.status = resp.status || '';
   outRow.classList.remove('pending');
-  const shown = (resp.status === 'error') ? '' : 'Out[' + ((typeof resp.out === 'number') ? resp.out : inN) + ']=';
-  outLbl.textContent = shown;
+  // Mathematica semantics: Out[n] carries the *input* number and is shown only
+  // when the evaluation produced a value (Null results get no Out label).
+  const hasValue = (typeof resp.out === 'number');
+  outLbl.textContent = (resp.status === 'error' || !hasValue) ? '' : 'Out[' + inN + ']=';
   typesetAll(cell);
   evaluated.push(input);
 }
@@ -533,19 +538,37 @@ async function resetKernel() {
       '<div class="prints">Kernel reset — In/Out numbering restarted.</div>';
 }
 
-async function openNotebook() {
-  const path = window.prompt('Open script (relative to the working directory):',
-                             'demo/demo.mt');
+async function openNotebook(intoInput, givenPath) {
+  const path = givenPath || window.prompt(
+      'Open script (relative to the working directory):', 'demo/demo.mt');
   if (!path) return;
   const r = await fetch('/api/open', {method: 'POST',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})});
   const resp = await r.json();
   if (resp.status !== 'ok') { toast('Open failed: ' + (resp.error || '')); return; }
   document.title = resp.path.split('/').pop() + ' — rMath';
-  inp.value = resp.text;
-  autoGrow();
-  toast('Loaded ' + resp.path + ' — press Enter to evaluate');
-  inp.focus();
+  const statements = (resp.statements && resp.statements.length)
+      ? resp.statements : resp.text.split('\n').filter(s => s.trim());
+  if (intoInput) {
+    // Editing mode: put the raw text in the input box.
+    inp.value = resp.text;
+    autoGrow();
+    toast('Loaded ' + resp.path + ' into the input — Shift+Enter evaluates');
+    inp.focus();
+    return;
+  }
+  // Notebook mode: one cell per statement, evaluated in order.
+  newNotebook();
+  toast('Opened ' + resp.path + ' — ' + statements.length + ' cells');
+  for (const stmt of statements) {
+    history.push(stmt);
+    const cell = addCell();
+    lastCell = cell;
+    await evaluateLine(stmt, cell);
+  }
+  localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
+  histPos = history.length;
+  if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
 }
 
 async function saveNotebook() {
@@ -652,7 +675,7 @@ function filterFns() { renderFns(document.getElementById('fnfilter').value); }
 
 function autoGrow() {
   inp.style.height = 'auto';
-  inp.style.height = Math.min(inp.scrollHeight, 180) + 'px';
+  inp.style.height = Math.min(inp.scrollHeight, 110) + 'px';
 }
 inp.addEventListener('input', autoGrow);
 

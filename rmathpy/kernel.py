@@ -76,6 +76,14 @@ class Kernel:
     def eval(self, text: str) -> dict:
         return self._request({"op": "eval", "input": text})
 
+    def split(self, text: str):
+        """Split a script into statements using the kernel's own splitter."""
+        try:
+            r = self._request({"op": "split", "input": text})
+            return r.get("statements", [])
+        except Exception:
+            return []
+
     def names(self):
         try:
             r = self._request({"op": "names"})

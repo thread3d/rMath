@@ -80,7 +80,7 @@ pub fn b_get(i: &mut Interp, args: &[Expr]) -> EvalRes {
 }
 
 /// Remove nested `(* ... *)` comments, preserving strings and newlines.
-fn strip_comments(src: &str) -> String {
+pub fn strip_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut depth = 0usize;
     let mut in_str = false;
@@ -130,7 +130,7 @@ fn strip_comments(src: &str) -> String {
 }
 
 /// Split a script into statements at newlines outside brackets/strings.
-fn split_statements(src: &str) -> Vec<String> {
+pub fn split_statements(src: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();
     let mut depth: i32 = 0;

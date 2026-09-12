@@ -293,7 +293,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             view.displayIfNeeded()
             view.wantsLayer = true
             guard let layer = view.layer else { exit(1) }
-            let scale: CGFloat = 1
             let w = Int(view.bounds.width), h = Int(view.bounds.height)
             guard let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
@@ -305,7 +304,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             NSGraphicsContext.saveGraphicsState()
             if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
                 NSGraphicsContext.current = ctx
-                if scale != 1 { ctx.cgContext.scaleBy(x: scale, y: scale) }
                 layer.render(in: ctx.cgContext)
             }
             NSGraphicsContext.restoreGraphicsState()
@@ -546,7 +544,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc func menuEvaluate() { runJS("evaluate()") }
     @objc func menuEvaluateAll() { runJS("evaluateAll()") }
     @objc func menuNew() { runJS("newNotebook()") }
-    @objc func menuOpen() { runJS("openNotebook()") }
+    @objc func menuOpen() { runJS("openNotebook(false)") }
+    @objc func menuOpenIntoInput() { runJS("openNotebook(true)") }
     @objc func menuSave() { runJS("saveNotebook()") }
     @objc func menuSavePlot() { runJS("saveLastPlotSvg()") }
     @objc func menuResetKernel() { runJS("resetKernel()") }
@@ -699,6 +698,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let file = NSMenu(title: "File")
         addItem(file, "New Notebook", #selector(menuNew), "n", target: self)
         addItem(file, "Open…", #selector(menuOpen), "o", target: self)
+        addItem(file, "Open into Input…", #selector(menuOpenIntoInput), "o",
+                [.command, .shift], target: self)
         addItem(file, "Save Notebook", #selector(menuSave), "s", target: self)
         addItem(file, "Save Last Plot as SVG", #selector(menuSavePlot), "", target: self)
         file.addItem(.separator())

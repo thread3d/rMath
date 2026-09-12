@@ -152,6 +152,22 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
             resp.write(out);
             true
         }
+        // Split a script into statements (used by the notebook's Open).
+        "split" => {
+            let script = crate::builtins::file::strip_comments(&input);
+            let statements = crate::builtins::file::split_statements(&script);
+            let items: Vec<crate::json::J> = statements
+                .into_iter()
+                .map(|s| crate::json::J::str_of(&s))
+                .collect();
+            let resp = obj(vec![
+                ("id", id.clone()),
+                ("status", crate::json::J::str_of("ok")),
+                ("statements", crate::json::J::Arr(items)),
+            ]);
+            resp.write(out);
+            true
+        }
         "names" => {
             let mut names: Vec<String> = i
                 .t
