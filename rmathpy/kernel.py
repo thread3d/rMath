@@ -31,8 +31,11 @@ class Kernel:
         self._lock = threading.Lock()
 
     def _spawn(self):
-        # Run the kernel from the project root so relative demo paths work.
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Run the kernel from a writable working directory so relative paths
+        # (e.g. Get["demo/demo.mt"]) work; RMATH_WORKDIR overrides it.
+        root = os.environ.get("RMATH_WORKDIR") or os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))
+        )
         self._proc = subprocess.Popen(
             [self.path, "--server"],
             stdin=subprocess.PIPE,

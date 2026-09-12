@@ -18,3 +18,6 @@ tools/
 # demo-generated outputs
 demo/data_doubled.csv
 demo/saved.txt
+
+# macOS app bundle build output
+dist/

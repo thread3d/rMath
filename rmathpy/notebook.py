@@ -4,6 +4,8 @@ Usage: python3 -m rmathpy.notebook [--port 8787]
 """
 
 import json
+import signal
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -366,6 +368,19 @@ def main():
     parser = argparse.ArgumentParser(description="rMath web notebook")
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
+
+    def _shutdown(*_):
+        with _KERNEL_LOCK:
+            if _KERNEL is not None:
+                try:
+                    _KERNEL.close()
+                except Exception:
+                    pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
     # Warm the kernel so the first cell evaluates quickly.
     get_kernel()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

@@ -19,7 +19,8 @@ PORT   ?= 8787
 BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
-.PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean
+.PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
+        app app-run app-install app-stop app-uninstall
 
 help:
 	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -62,3 +63,30 @@ restart: stop notebook-bg
 
 clean:
 	cd $(ROOT)/rmath && $(CARGO) clean
+
+# ---------------- macOS application bundle ----------------
+APPDIR   ?= $(HOME)/Applications
+APP      := $(ROOT)/dist/rMath.app
+
+app: release
+	bash $(ROOT)/scripts/build_app.sh
+
+app-run: app
+	open $(APP)
+
+# Kill any running instance before replacing/installing the bundle.
+app-stop:
+	@$(APP)/Contents/MacOS/rMath --stop 2>/dev/null || true
+	@echo "rMath app stopped"
+
+app-install: app-stop app
+	mkdir -p $(APPDIR)
+	rm -rf $(APPDIR)/rMath.app
+	cp -R $(APP) $(APPDIR)/rMath.app
+	@/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+	  -f $(APPDIR)/rMath.app >/dev/null 2>&1 || true
+	@echo "installed: $(APPDIR)/rMath.app  (open it from Finder or Spotlight)"
+
+app-uninstall: app-stop
+	rm -rf $(APPDIR)/rMath.app
+	@echo "removed $(APPDIR)/rMath.app"

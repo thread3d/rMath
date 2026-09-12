@@ -43,6 +43,36 @@ cd rmath && ~/.cargo/bin/cargo build --release     # build the kernel
 cd .. && python3 -m rmathpy.notebook --port 8787   # foreground server
 ```
 
+### macOS app (double-clickable)
+
+```bash
+make app            # build dist/rMath.app
+make app-install    # install into ~/Applications + register with Spotlight
+open ~/Applications/rMath.app        # or double-click it in Finder
+```
+
+The bundle is self-contained (~3 MB: kernel binary, notebook server, KaTeX
+fonts/CSS/JS, and the demo files) and needs nothing from this source tree at
+run time — only a `python3` for the notebook server. Double-clicking it:
+
+- starts the kernel + notebook server (port 8787, or a free port if busy),
+- opens `http://127.0.0.1:8787` in your default browser,
+- shows an **rMath** icon in the Dock while it runs; quitting the app stops the
+  server and its kernel.
+
+Extra launcher flags (usable from a terminal):
+
+```bash
+~/Applications/rMath.app/Contents/MacOS/rMath --stop        # stop a running instance
+~/Applications/rMath.app/Contents/MacOS/rMath --no-open     # start without a browser
+~/Applications/rMath.app/Contents/MacOS/rMath --port=9000   # different port
+```
+
+State lives in `~/Library/Application Support/rMath` (kernel working directory
+with a copy of `demo/`), and the server logs to `~/Library/Logs/rMath.log`.
+`make app-stop` stops it; `make app-uninstall` removes it. If `python3` is not
+in a standard location, set `RMATH_PYTHON=/path/to/python3` before launching.
+
 ### Command-line reference
 
 | Command | What it does |
@@ -55,6 +85,9 @@ cd .. && python3 -m rmathpy.notebook --port 8787   # foreground server
 | `make notebook` | notebook server in the foreground (Ctrl-C stops) |
 | `make notebook-bg` | notebook server detached (log: `/tmp/rmath-notebook.log`) |
 | `make stop` / `make restart` | stop / restart the server |
+| `make app` / `make app-run` | build / build + launch the macOS app bundle |
+| `make app-install` / `make app-uninstall` | install into `~/Applications` / remove |
+| `make app-stop` | stop the app's server |
 | `make clean` | remove Rust build artifacts |
 
 Port can be changed with `make notebook-bg PORT=9000`. Note that this Rust
