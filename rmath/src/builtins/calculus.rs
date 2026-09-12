@@ -230,13 +230,31 @@ fn one_minus_y2(i: &mut Interp, y: &Expr) -> Expr {
 
 /// Integrate[expr, x] core (expr already evaluated).
 pub fn integrate_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
+    integrate_rec(i, e, var, 0)
+}
+
+/// Depth-limited worker: no integrand rule here is recursive enough to need
+/// more than a few levels, so anything deeper is left unevaluated rather than
+/// risking a stack overflow.
+fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
+    if depth > 32 {
+        return Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]));
+    }
     let sys = i.t.sys;
+    // ∫ x dx  (a bare symbol is x^1).
+    if same_q(e, var) {
+        return power_rule(i, var, 1);
+    }
+    // ∫ c dx = c x for anything free of the variable.
+    if is_free_of(i, e, var)? {
+        return eval_call(i, Expr::Sym(sys.times), vec![e.clone(), var.clone()]);
+    }
     // Linearity over Plus.
     if let Some((h, args)) = e.parts() {
         if h.is_symbol(sys.plus) {
             let mut parts = Vec::new();
             for a in args {
-                parts.push(integrate_expr(i, a, var)?);
+                parts.push(integrate_rec(i, a, var, depth + 1)?);
             }
             return eval_call(i, Expr::Sym(sys.plus), parts);
         }
@@ -257,8 +275,14 @@ pub fn integrate_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
             let Some(rest) = rest else {
                 return Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]));
             };
+            // Without a factor free of the variable there is nothing to pull
+            // out: recursing here would loop on the same product forever
+            // (e.g. Integrate[Sin[x]/x, x]).
+            if consts.is_empty() || same_q(&rest, e) {
+                return Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]));
+            }
             let c = eval_call(i, Expr::Sym(sys.times), consts)?;
-            let inner = integrate_expr(i, &rest, var)?;
+            let inner = integrate_rec(i, &rest, var, depth + 1)?;
             return eval_call(i, Expr::Sym(sys.times), vec![c, inner]);
         }
         // x^n

@@ -307,6 +307,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
           onclick="toggleForm()">Standard</button>
   <span class="spacer"></span>
   <span class="brand">rMath</span>
+  <button class="tb" title="Report a Bug (Shift+Cmd+B) — snapshot + diagnostics to the clipboard"
+          onclick="location.href='rmath://report'">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 7.5a3.5 3.5 0 1 1 7 0v3.2H4.5z"/><path d="M4.5 9H2.6M13.4 9H11.5M4.5 11.6 2.8 12.8M13.2 12.8l-1.7-1.2M6.6 3.6 6 2M9.4 3.6 10 2"/></svg></button>
   <button class="tb wide" title="Help (Cmd-?)" onclick="showHelp(true)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M6.2 6.3a1.9 1.9 0 0 1 3.7.6c0 1.2-1.9 1.4-1.9 2.5"/><circle cx="8" cy="11.7" r=".8" fill="currentColor"/></svg>
     Help</button>
@@ -464,6 +467,8 @@ async function evaluateLine(input, cell) {
     }
   }
   outContent.innerHTML = html;
+  cell.dataset.result = (resp.result || '').slice(0, 400);
+  cell.dataset.status = resp.status || '';
   outRow.classList.remove('pending');
   const shown = (resp.status === 'error') ? '' : 'Out[' + ((typeof resp.out === 'number') ? resp.out : inN) + ']=';
   outLbl.textContent = shown;
@@ -574,6 +579,60 @@ function zoomOut() { zoom = Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10); a
 function zoomReset() { zoom = 1; applyZoom(); }
 function toggleBrackets() { notebook.classList.toggle('nobrackets'); }
 function focusInput() { inp.focus(); }
+
+/// Everything the native side needs for a bug report: the recent transcript,
+/// the last error, and the current UI state.
+function reportContext() {
+  const cells = [];
+  const nodes = notebook.querySelectorAll('.cell');
+  const start = Math.max(0, nodes.length - 12);
+  for (let i = start; i < nodes.length; i++) {
+    const cell = nodes[i];
+    const inLbl = cell.querySelector('.inlbl');
+    const outLbl = cell.querySelector('.outlbl');
+    const inC = cell.querySelector('.inrow .content');
+    const outC = cell.querySelector('.outrow .content');
+    const err = cell.querySelector('.err');
+    const msgs = cell.querySelector('.msgs');
+    const prints = cell.querySelector('.prints');
+    const hasSvg = !!cell.querySelector('.svgbox');
+    cells.push({
+      in: inLbl ? inLbl.textContent : '',
+      input: inC ? (inC.title || inC.textContent) : '',
+      out: outLbl ? outLbl.textContent : '',
+      result: cell.dataset.result || '',
+      error: err ? err.textContent : '',
+      messages: msgs ? msgs.textContent : '',
+      prints: prints ? prints.textContent.slice(0, 400) : '',
+      plot: hasSvg,
+    });
+  }
+  const bad = [...nodes].reverse().find(c => c.querySelector('.err') || c.querySelector('.msgs'));
+  const lastError = bad ? {
+    input: (bad.querySelector('.inrow .content') || {}).title ||
+           (bad.querySelector('.inrow .content') || {}).textContent || '',
+    error: (bad.querySelector('.err') || {}).textContent || '',
+    messages: (bad.querySelector('.msgs') || {}).textContent || '',
+  } : null;
+  return JSON.stringify({
+    title: document.title, form: currentForm, cells: cells, lastError: lastError,
+    evaluated: evaluated.slice(-12),
+  });
+}
+
+/// Show where the report went, and keep the path selectable in the notebook.
+function showReport(path, summary) {
+  const cell = addCell();
+  cell.querySelector('.inrow').querySelector('.lbl').textContent = 'Report';
+  const outRow = cell.querySelector('.outrow');
+  outRow.classList.remove('pending');
+  outRow.querySelector('.lbl').textContent = '';
+  outRow.querySelector('.content').innerHTML =
+      '<div class="prints">Bug report written to ' + esc(path) +
+      '\n(path and summary are on the clipboard — paste them into the chat)' +
+      (summary ? '\n' + esc(summary) : '') + '</div>';
+  toast('Bug report saved — path copied to clipboard');
+}
 
 function showHelp(open) {
   const panel = document.getElementById('help');

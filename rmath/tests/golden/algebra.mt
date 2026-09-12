@@ -59,3 +59,14 @@ D[Log[x], x]
 => x^-1
 Series[Cos[x], {x, 0, 4}]
 => SeriesData[x, 0, {1, 0, -1/2, 0, 1/24}, 0, 4, 1]
+
+# Integrate: unevaluable integrands stay unevaluated instead of overflowing the
+# stack (found via the app's bug-report button), and bare symbols are covered
+Integrate[Sin[x]/x, x]
+=> Integrate[Sin[x]/x, x]
+Integrate[x, x]
+=> 1/2 x^2
+Integrate[2 x, x]
+=> x^2
+Integrate[3 x^2 + 2 x + 1, x]
+=> x + x^2 + x^3

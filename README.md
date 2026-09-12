@@ -115,6 +115,31 @@ The window is a Mathematica-style notebook:
 - **Help** (⌘? or the Help button) opens a searchable list of every kernel
   function; click a name to insert it.
 
+### Reporting a bug
+
+One action captures everything needed to diagnose a problem:
+
+- **In the app**: the bug button in the ribbon, or **Help ▸ Report a Bug…**
+  (⇧⌘B).
+- **From a terminal**: `make report` (or `rMath --report`).
+
+It writes `bug-<timestamp>.md` + `bug-<timestamp>.png` into
+`<workspace>/.shots/reports/` (the workspace path is recorded by
+`make app-install`; otherwise `~/Desktop/rMath-reports`), and puts a
+paste-ready line on the **clipboard**:
+
+```
+rMath bug report: /Users/threaded/projects/rMath/.shots/reports/bug-20260912-080147.md
+screenshot: /Users/threaded/projects/rMath/.shots/reports/bug-20260912-080147.png
+last error: 1/0 — Infinite expression encountered.
+```
+
+Paste that into the chat. The report contains the app/kernel/Python versions,
+the port and log path, a JSON transcript of the last 12 cells (inputs, results,
+messages, whether a plot was involved), the last error, the page's current
+typesetting form, and the tail of the server log. The screenshot shows the
+window as it was.
+
 ### Screenshots from the app
 
 The app snapshots its own window — no Screen Recording permission is required,
@@ -178,6 +203,7 @@ restart that app. Note that restarting Terminal ends the current agent session.
 | `make app` / `make app-run` | build / build + launch the macOS app (native window) |
 | `make app-install` / `make app-uninstall` | install into `~/Applications` / remove |
 | `make app-stop` | stop the app's server |
+| `make report` | bug report (screenshot + transcript + log) from the running app |
 | `make shot` | render the notebook/app page to PNG via WebKit (no permissions needed) |
 | `make svg2png IN=… OUT=…` | convert an SVG plot to PNG with `rsvg-convert` |
 | `make clean` | remove Rust build artifacts |

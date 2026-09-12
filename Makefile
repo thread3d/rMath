@@ -20,7 +20,7 @@ BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
 .PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
-        app app-run app-install app-stop app-uninstall shot svg2png
+        app app-run app-install app-stop app-uninstall shot svg2png report
 
 help:
 	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -84,6 +84,11 @@ scripts/dev/screenshot: scripts/dev/screenshot.swift
 	  -module-cache-path "$(ROOT)/scripts/dev/.build/modulecache"
 	@echo "built $@"
 
+# Ask the running app for a bug report (screenshot + transcript + log) and
+# print the path; the same text is placed on the clipboard.
+report:
+	@$(HOME)/Applications/rMath.app/Contents/MacOS/rMath --report
+
 # Convert an SVG (e.g. an exported plot) to PNG with an independent renderer.
 #   make svg2png IN=plot.svg OUT=plot.png
 RSVG ?= $(shell command -v rsvg-convert 2>/dev/null || echo $(HOME)/miniconda3/bin/rsvg-convert)
@@ -109,6 +114,9 @@ app-install: app-stop app
 	mkdir -p $(APPDIR)
 	rm -rf $(APPDIR)/rMath.app
 	cp -R $(APP) $(APPDIR)/rMath.app
+	@mkdir -p "$(HOME)/Library/Application Support/rMath"
+	@printf '%s\n' "$(ROOT)" > "$(HOME)/Library/Application Support/rMath/workspace"
+	@echo "    reports will be written to $(ROOT)/.shots/reports"
 	@/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
 	  -f $(APPDIR)/rMath.app >/dev/null 2>&1 || true
 	@echo "installed: $(APPDIR)/rMath.app  (open it from Finder or Spotlight)"

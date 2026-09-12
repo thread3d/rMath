@@ -51,6 +51,27 @@ func logURL() -> URL {
     return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rMath.log")
 }
 
+/// Where bug reports go: the project's .shots/reports when the install recorded
+/// a workspace path (so the agent can read them), else ~/Desktop/rMath-reports.
+func reportDir() -> URL {
+    let cfg = appSupportDir().appendingPathComponent("workspace")
+    if let ws = try? String(contentsOf: cfg, encoding: .utf8) {
+        let trimmed = ws.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, FileManager.default.fileExists(atPath: trimmed) {
+            let dir = URL(fileURLWithPath: trimmed).appendingPathComponent(".shots/reports")
+            if (try? FileManager.default.createDirectory(at: dir,
+                                                         withIntermediateDirectories: true)) != nil {
+                return dir
+            }
+        }
+    }
+    let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+        ?? URL(fileURLWithPath: NSTemporaryDirectory())
+    let dir = desktop.appendingPathComponent("rMath-reports")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}
+
 func pidFileURL() -> URL {
     return appSupportDir().appendingPathComponent("server.pid")
 }
@@ -247,6 +268,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             exit(0)
         }
 
+        if args.contains("--report") {
+            exit(requestReport() ? 0 : 1)
+        }
+
         if let idx = args.firstIndex(of: "--screenshot-palette") {
             let name = idx + 1 < args.count ? args[idx + 1] : "Basic Math"
             let out = idx + 2 < args.count ? args[idx + 2] : "/tmp/palette.png"
@@ -436,6 +461,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         </body></html>
         """
         webView.loadHTMLString(html, baseURL: nil)
+    }
+
+    // ---- web view navigation: intercept the rmath:// bridge
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url, url.scheme == "rmath" {
+            switch url.host {
+            case "report":
+                generateBugReport()
+            case "palette":
+                let name = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                showPalette(named: name.replacingOccurrences(of: "%20", with: " "))
+            default:
+                break
+            }
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
     }
 
     // ---- web view UI delegate: alert / confirm / prompt panels
@@ -781,6 +826,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         main.addItem(helpItem)
         let help = NSMenu(title: "Help")
         addItem(help, "rMath Help", #selector(menuHelp), "?", target: self)
+        addItem(help, "Report a Bug…", #selector(menuReportBug), "B",
+                [.command, .shift], target: self)
         addItem(help, "Function List", #selector(menuFunctionList), "", target: self)
         helpItem.submenu = help
         NSApp.helpMenu = help
@@ -845,6 +892,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             : (Double(lines.removeFirst().trimmingCharacters(in: .whitespaces)) ?? 2.5)
         let what = lines.isEmpty ? "page" : lines.removeFirst().trimmingCharacters(in: .whitespaces)
         let target = dest.isEmpty ? defaultShotPath() : dest
+
+        if what == "report" {
+            generateBugReport(note: "triggered from the command line") { path in
+                self.finishShot(path.map { "ok \($0)" } ?? "err report failed")
+            }
+            return
+        }
 
         if what.hasPrefix("palette:") {
             let name = String(what.dropFirst("palette:".count))
@@ -913,6 +967,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(name).path
     }
 
+    /// Snapshot the page to PNG data (no side effects).
+    func snapshotPNG(completion: @escaping (Data?) -> Void) {
+        guard let web = webView else { completion(nil); return }
+        let cfg = WKSnapshotConfiguration()
+        cfg.rect = web.bounds
+        web.takeSnapshot(with: cfg) { image, _ in
+            guard let image = image,
+                  let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff) else { completion(nil); return }
+            completion(rep.representation(using: .png, properties: [:]))
+        }
+    }
+
     /// Snapshot the web view. `.pdf` destinations produce a full page PDF
     /// instead of a viewport PNG. Needs no screen-recording permission: the
     /// app renders its own view.
@@ -978,8 +1045,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
 
+    /// Build a self-contained bug report: screenshot, page transcript, the
+    /// last error, versions, and the tail of the log. The path and a one-line
+    /// summary go on the clipboard, ready to paste into a chat.
+    func generateBugReport(note: String = "", completion: ((String?) -> Void)? = nil) {
+        let stamp = timestamp()
+        let dir = reportDir()
+        let png = dir.appendingPathComponent("bug-\(stamp).png")
+        let md = dir.appendingPathComponent("bug-\(stamp).md")
+
+        runJSCollect("reportContext()") { ctx in
+            self.snapshotPNG { pngData in
+                if let pngData = pngData {
+                    try? pngData.write(to: png)
+                }
+                let body = self.buildReportBody(stamp: stamp, png: png.path,
+                                                context: ctx, note: note)
+                try? body.write(to: md, atomically: true, encoding: .utf8)
+
+                // Paste-ready text on the clipboard.
+                var paste = "rMath bug report: \(md.path)"
+                if pngData != nil { paste += "\nscreenshot: \(png.path)" }
+                if let summary = self.reportSummary(ctx) { paste += "\n" + summary }
+                if !note.isEmpty { paste += "\nnote: " + note }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(paste, forType: .string)
+
+                self.runJS("showReport('\(md.path.replacingOccurrences(of: "'", with: "\\'"))', '\(self.reportSummary(ctx)?.replacingOccurrences(of: "'", with: "\\'") ?? "")')")
+                completion?(md.path)
+            }
+        }
+    }
+
+    func reportSummary(_ ctx: String?) -> String? {
+        guard let ctx = ctx, let data = ctx.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        guard let last = obj["lastError"] as? [String: Any] else { return "no errors in this session" }
+        let input = (last["input"] as? String ?? "").prefix(120)
+        let msg = ((last["error"] as? String ?? "") + " " + (last["messages"] as? String ?? ""))
+            .trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)
+        return "last error: \(input)\(msg.isEmpty ? "" : " — " + msg)"
+    }
+
+    func buildReportBody(stamp: String, png: String, context: String?, note: String) -> String {
+        var out = "# rMath bug report — \(stamp)\n\n"
+        out += "- app: rMath \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")\n"
+        out += "- bundle: \(Bundle.main.bundlePath)\n"
+        out += "- kernel: \(kernelVersion())\n"
+        out += "- python: \(pythonVersion())\n"
+        out += "- port: \(port)\n"
+        out += "- log: \(logURL().path)\n"
+        out += "- screenshot: \(png)\n"
+        if !note.isEmpty { out += "- note: \(note)\n" }
+        out += "\n## Page context\n\n```json\n\(context ?? "(unavailable)")\n```\n"
+        out += "\n## Log tail\n\n```\n\(logTail(40))\n```\n"
+        return out
+    }
+
+    /// Run JS and pass its string result back on the main thread.
+    func runJSCollect(_ js: String, completion: @escaping (String?) -> Void) {
+        webView?.evaluateJavaScript(js) { value, err in
+            if let err = err { print("js collect error: \(err.localizedDescription)") }
+            completion(value as? String)
+        }
+    }
+
+    func kernelVersion() -> String {
+        let bin = resourcesDir().appendingPathComponent("rmath")
+        let p = Process()
+        p.executableURL = bin
+        p.arguments = ["--version"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        try? p.run()
+        p.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? "unknown"
+    }
+
+    func pythonVersion() -> String {
+        guard let py = pythonCandidates().first(where: usablePython) else { return "not found" }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: py)
+        p.arguments = ["-c", "import sys; print(sys.executable, sys.version.split()[0])"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        try? p.run()
+        p.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+        return "\(text)  [\(py)]"
+    }
+
+    func logTail(_ n: Int) -> String {
+        guard let text = try? String(contentsOf: logURL(), encoding: .utf8) else {
+            return "(no log)"
+        }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.suffix(n).joined(separator: "\n")
+    }
+
+    @objc func menuReportBug() {
+        generateBugReport { path in
+            if let path = path { print("report: \(path)") }
+        }
+    }
+
     @objc func shootToDesktop() {
         saveScreenshot(to: defaultShotPath())
+    }
+
+    /// Ask the running instance to generate a bug report.
+    func requestReport() -> Bool {
+        if !healthOK(port) {
+            FileHandle.standardError.write(Data(
+                "rMath: no running instance on port \(port)\n".utf8))
+            return false
+        }
+        try? FileManager.default.removeItem(at: shotDoneURL())
+        let request = "\n\n0.5\nreport\n"
+        do {
+            try request.write(to: shotRequestURL(), atomically: true, encoding: .utf8)
+        } catch { return false }
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if let done = try? String(contentsOf: shotDoneURL(), encoding: .utf8) {
+                try? FileManager.default.removeItem(at: shotDoneURL())
+                print(done)
+                return done.hasPrefix("ok ")
+            }
+            usleep(150_000)
+        }
+        return false
     }
 
     /// Ask the running instance for a screenshot; returns true on success.
