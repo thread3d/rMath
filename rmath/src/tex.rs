@@ -120,7 +120,7 @@ fn fn_tex_name(t: &SymbolTable, head_id: usize) -> Option<&'static str> {
         "Plot" => "\\text{Plot}",
         "ListPlot" => "\\text{ListPlot}",
         "Integrate" => "\\int",
-        "D" => "\\frac{d}{dx}",
+        "D" => "\\dfrac{d}{dx}",
         _ => return None,
     })
 }
@@ -180,7 +180,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
             if r.is_int() {
                 out.push_str(&r.num.to_string());
             } else {
-                out.push_str(&format!("\\frac{{{}}}{{{}}}", r.num, r.den));
+                out.push_str(&format!("\\dfrac{{{}}}{{{}}}", r.num, r.den));
             }
         }
         Expr::Real(x) => out.push_str(&crate::fmt::format_real_out(*x)),
@@ -326,7 +326,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
                     if denom.is_empty() {
                         emit(&numer, form, out);
                     } else {
-                        out.push_str("\\frac{");
+                        out.push_str("\\dfrac{");
                         emit(&numer, form, out);
                         out.push_str("}{");
                         if denom.len() == 1 {
@@ -354,17 +354,31 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
                         out.push('}');
                         return;
                     }
-                    if let Some(n) = nd.args[1].to_i64_pub() {
-                        if n < 0 {
-                            let inv = Expr::node(
-                                Expr::Sym(sys.power),
-                                vec![nd.args[0].clone(), Expr::int_i64(-n)],
-                            );
-                            out.push_str("\\frac{1}{");
-                            tex_atom(t, &inv, 40, form, out);
+                    // Reciprocals print as fractions (1/x, 1/x^2, 1/(2 x),
+                    // 1/Sqrt[x]) rather than as negative powers, as in
+                    // Mathematica's typeset output.
+                    match &nd.args[1] {
+                        Expr::Int(n) if n.to_i64().map_or(false, |v| v < 0) => {
+                            let e = -n.to_i64().unwrap();
+                            out.push_str("\\dfrac{1}{");
+                            if e == 1 {
+                                tex_into(t, &nd.args[0], form, out);
+                            } else {
+                                tex_atom(t, &nd.args[0], 50, form, out);
+                                out.push_str("^{");
+                                out.push_str(&e.to_string());
+                                out.push('}');
+                            }
                             out.push('}');
                             return;
                         }
+                        Expr::Rat(r) if r.num.to_i64() == Some(-1) && r.den.to_i64() == Some(2) => {
+                            out.push_str("\\dfrac{1}{\\sqrt{");
+                            tex_into(t, &nd.args[0], form, out);
+                            out.push_str("}}");
+                            return;
+                        }
+                        _ => {}
                     }
                     tex_atom(t, &nd.args[0], 50, form, out);
                     out.push('^');
@@ -560,7 +574,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
                     return;
                 }
                 if name == "Rational" && nd.args.len() == 2 {
-                    out.push_str("\\frac{");
+                    out.push_str("\\dfrac{");
                     tex_into(t, &nd.args[0], form, out);
                     out.push_str("}{");
                     tex_into(t, &nd.args[1], form, out);
@@ -651,10 +665,10 @@ mod tests {
 
     #[test]
     fn tex_basics() {
-        assert_eq!(tex("1/2 + 1/3"), "\\frac{1}{2} + \\frac{1}{3}");
+        assert_eq!(tex("1/2 + 1/3"), "\\dfrac{1}{2} + \\dfrac{1}{3}");
         assert_eq!(tex("x^2"), "x^{2}");
         assert_eq!(tex("Sqrt[x]"), "\\sqrt{x}");
-        assert_eq!(tex("1/x"), "\\frac{1}{x}");
+        assert_eq!(tex("1/x"), "\\dfrac{1}{x}");
         assert_eq!(tex("Pi"), "\\pi");
         assert_eq!(tex("Sin[x]"), "\\text{Sin}\\!\\left[x\\right]");
     }
@@ -691,7 +705,7 @@ mod tests {
         let mut i = crate::eval::Interp::new();
         let e = crate::parser::parse_input(&mut i.t, "1/2 + 1/3").unwrap();
         let v = i.eval(&e).unwrap();
-        assert_eq!(tex_form(&i.t, &v), "\\frac{5}{6}");
+        assert_eq!(tex_form(&i.t, &v), "\\dfrac{5}{6}");
         let e = crate::parser::parse_input(&mut i.t, "D[Sin[x]^2, x]").unwrap();
         let v = i.eval(&e).unwrap();
         assert_eq!(tex_form(&i.t, &v), "2 \\, \\text{Cos}\\!\\left[x\\right] \\, \\text{Sin}\\!\\left[x\\right]");
