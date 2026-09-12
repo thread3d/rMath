@@ -137,7 +137,7 @@ func timestamp() -> String {
 // ---------------------------------------------------------------- app
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-                        WKNavigationDelegate {
+                        WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var server: Process?
@@ -155,6 +155,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         buildMenu()
 
         let args = CommandLine.arguments
+
+        // --dump-menus: print the menu tree (verifiable without UI scripting).
+        if args.contains("--dump-menus") {
+            func mods(_ item: NSMenuItem) -> String {
+                let m = item.keyEquivalentModifierMask
+                var out = ""
+                if m.contains(.control) { out += "^" }
+                if m.contains(.option) { out += "\u{2325}" }
+                if m.contains(.shift) { out += "\u{21e7}" }
+                if m.contains(.command) { out += "\u{2318}" }
+                return out
+            }
+            func dump(_ menu: NSMenu?, _ depth: Int) {
+                guard let menu = menu else { return }
+                for item in menu.items {
+                    if item.isSeparatorItem {
+                        print(String(repeating: "  ", count: depth) + "---")
+                        continue
+                    }
+                    let key = item.keyEquivalent.isEmpty
+                        ? "" : "   [\(mods(item))\(item.keyEquivalent)]"
+                    print(String(repeating: "  ", count: depth) + item.title + key)
+                    if item.submenu != nil { dump(item.submenu, depth + 1) }
+                }
+            }
+            dump(NSApp.mainMenu, 0)
+            exit(0)
+        }
+
         if args.contains("--stop") {
             // Stop whatever instance is running: pidfile first, then any
             // leftover notebook/kernel processes.
@@ -241,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window = NSWindow(contentRect: frame,
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "rMath"
+        window.title = "Untitled-1 — rMath"
         window.center()
         window.delegate = self
         window.minSize = NSSize(width: 520, height: 400)
@@ -250,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         config.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: frame, configuration: config)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.autoresizingMask = [.width, .height]
         window.contentView = webView
         window.makeKeyAndOrderFront(nil)
@@ -295,66 +325,258 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         webView.loadHTMLString(html, baseURL: nil)
     }
 
+    // ---- web view UI delegate: alert / confirm / prompt panels
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "rMath"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window) { _ in completionHandler() }
+    }
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "rMath"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { resp in
+            completionHandler(resp == .alertFirstButtonReturn)
+        }
+    }
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "rMath"
+        alert.informativeText = prompt
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        field.stringValue = defaultText ?? ""
+        alert.accessoryView = field
+        alert.beginSheetModal(for: window) { resp in
+            completionHandler(resp == .alertFirstButtonReturn ? field.stringValue : nil)
+        }
+    }
+
+    /// Run JavaScript in the notebook page (menu actions route through here).
+    func runJS(_ js: String) {
+        webView?.evaluateJavaScript(js) { _, err in
+            if let err = err { print("menu js error: \(err.localizedDescription)") }
+        }
+    }
+
+    /// Insert text at the cursor in the notebook input.
+    func insert(_ text: String) {
+        let escaped = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        runJS("insertText('\(escaped)')")
+    }
+
+    @objc func menuEvaluate() { runJS("evaluate()") }
+    @objc func menuEvaluateAll() { runJS("evaluateAll()") }
+    @objc func menuNew() { runJS("newNotebook()") }
+    @objc func menuOpen() { runJS("openNotebook()") }
+    @objc func menuSave() { runJS("saveNotebook()") }
+    @objc func menuSavePlot() { runJS("saveLastPlotSvg()") }
+    @objc func menuResetKernel() { runJS("resetKernel()") }
+    @objc func menuHelp() { runJS("showHelp(true)") }
+    @objc func menuFunctionList() { runJS("showHelp(true)") }
+    @objc func menuToggleBrackets() { runJS("toggleBrackets()") }
+    @objc func menuFocusInput() { runJS("focusInput()") }
+    @objc func menuDeleteAll() { runJS("newNotebook()") }
+
     // ---- menus
 
     func buildMenu() {
         let main = NSMenu()
 
-        let appItem = NSMenuItem()
+        // --- rMath (application) menu
+        let appItem = NSMenuItem(title: "rMath", action: nil, keyEquivalent: "")
         main.addItem(appItem)
-        let appMenu = NSMenu()
+        let appMenu = NSMenu(title: "rMath")
         appMenu.addItem(withTitle: "About rMath",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide rMath",
                         action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others",
+                                         action: #selector(NSApplication.hideOtherApplications(_:)),
+                                         keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All",
+                        action: #selector(NSApplication.unhideAllApplications(_:)),
+                        keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit rMath",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
 
-        let fileItem = NSMenuItem()
+        // --- File
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         main.addItem(fileItem)
         let file = NSMenu(title: "File")
-        file.addItem(withTitle: "Save Screenshot",
-                     action: #selector(shootToDesktop), keyEquivalent: "s")
+        addItem(file, "New Notebook", #selector(menuNew), "n", target: self)
+        addItem(file, "Open…", #selector(menuOpen), "o", target: self)
+        addItem(file, "Save Notebook", #selector(menuSave), "s", target: self)
+        addItem(file, "Save Last Plot as SVG", #selector(menuSavePlot), "", target: self)
+        file.addItem(.separator())
+        addItem(file, "Save Screenshot as PNG…", #selector(shootToDesktop), "S",
+                [.command, .shift], target: self)
+        file.addItem(.separator())
+        addItem(file, "Close Window", #selector(NSWindow.performClose(_:)), "w")
         fileItem.submenu = file
 
-        let editItem = NSMenuItem()
+        // --- Edit  (standard items use the responder chain: target nil)
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         main.addItem(editItem)
         let edit = NSMenu(title: "Edit")
-        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        addItem(edit, "Undo", Selector(("undo:")), "z")
+        addItem(edit, "Redo", Selector(("redo:")), "Z", [.command, .shift])
         edit.addItem(.separator())
-        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        edit.addItem(withTitle: "Select All",
-                     action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        addItem(edit, "Cut", #selector(NSText.cut(_:)), "x")
+        addItem(edit, "Copy", #selector(NSText.copy(_:)), "c")
+        addItem(edit, "Paste", #selector(NSText.paste(_:)), "v")
+        addItem(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+        edit.addItem(.separator())
+        addItem(edit, "Delete All Cells", #selector(menuDeleteAll), "k",
+                [.command, .shift], target: self)
         editItem.submenu = edit
 
-        let viewItem = NSMenuItem()
-        main.addItem(viewItem)
-        let view = NSMenu(title: "View")
-        view.addItem(withTitle: "Reload", action: #selector(reloadPage), keyEquivalent: "r")
-        view.addItem(withTitle: "Actual Size", action: #selector(zoomReset), keyEquivalent: "0")
-        view.addItem(withTitle: "Zoom In", action: #selector(zoomIn), keyEquivalent: "+")
-        view.addItem(withTitle: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "-")
-        viewItem.submenu = view
+        // --- Insert
+        let insertItem = NSMenuItem(title: "Insert", action: nil, keyEquivalent: "")
+        main.addItem(insertItem)
+        let insert = NSMenu(title: "Insert")
+        let specialItem = addItem(insert, "Special Character", nil, "")
+        let specials = NSMenu(title: "Special Character")
+        for (label, text) in [("π   Pi", "Pi"), ("∞   Infinity", "Infinity"),
+                              ("√   Sqrt", "Sqrt["), ("∫   Integrate", "Integrate["),
+                              ("∑   Sum", "Sum["), ("θ   Theta", "Theta"),
+                              ("≤   LessEqual", "<= "), ("≥   GreaterEqual", ">= "),
+                              ("→   Rule", " -> "), ("≠   Unequal", " != ")] {
+            let it = NSMenuItem(title: label,
+                                action: #selector(menuInsertSpecial(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = text
+            specials.addItem(it)
+        }
+        specialItem.submenu = specials
+        insert.addItem(.separator())
+        addItem(insert, "Plot of Sin[x]", #selector(menuInsertPlot), "", target: self)
+        addItem(insert, "Table Example", #selector(menuInsertTable), "", target: self)
+        insertItem.submenu = insert
 
-        let winItem = NSMenuItem()
+        // --- Evaluation
+        let evalItem = NSMenuItem(title: "Evaluation", action: nil, keyEquivalent: "")
+        main.addItem(evalItem)
+        let evalMenu = NSMenu(title: "Evaluation")
+        addItem(evalMenu, "Evaluate Input", #selector(menuEvaluate), "\r", [.shift], target: self)
+        addItem(evalMenu, "Evaluate All Cells", #selector(menuEvaluateAll), "\r",
+                [.command, .shift], target: self)
+        evalMenu.addItem(.separator())
+        addItem(evalMenu, "Reset Kernel", #selector(menuResetKernel), "r",
+                [.command, .option], target: self)
+        evalItem.submenu = evalMenu
+
+        // --- Format
+        let formatItem = NSMenuItem(title: "Format", action: nil, keyEquivalent: "")
+        main.addItem(formatItem)
+        let format = NSMenu(title: "Format")
+        addItem(format, "Zoom In", #selector(zoomIn), "+", target: self)
+        addItem(format, "Zoom Out", #selector(zoomOut), "-", target: self)
+        addItem(format, "Actual Size", #selector(zoomReset), "0", target: self)
+        formatItem.submenu = format
+
+        // --- Cell
+        let cellItem = NSMenuItem(title: "Cell", action: nil, keyEquivalent: "")
+        main.addItem(cellItem)
+        let cell = NSMenu(title: "Cell")
+        addItem(cell, "New Cell (focus input)", #selector(menuFocusInput), "j", target: self)
+        addItem(cell, "Show/Hide Cell Brackets", #selector(menuToggleBrackets), "b",
+                [.command, .shift], target: self)
+        addItem(cell, "Delete All Cells", #selector(menuDeleteAll), "", target: self)
+        cellItem.submenu = cell
+
+        // --- Graphics
+        let gfxItem = NSMenuItem(title: "Graphics", action: nil, keyEquivalent: "")
+        main.addItem(gfxItem)
+        let gfx = NSMenu(title: "Graphics")
+        addItem(gfx, "Save Last Plot as SVG", #selector(menuSavePlot), "", target: self)
+        addItem(gfx, "Plot Sin[x]", #selector(menuInsertPlot), "", target: self)
+        gfxItem.submenu = gfx
+
+        // --- Palettes
+        let palItem = NSMenuItem(title: "Palettes", action: nil, keyEquivalent: "")
+        main.addItem(palItem)
+        let pal = NSMenu(title: "Palettes")
+        for (label, text) in [("Basic Math (π, ∞, √, ∫)", "Pi"),
+                              ("Algebra (Expand, Factor)", "Expand["),
+                              ("Calculus (D, Integrate)", "D["),
+                              ("Linear Algebra (Det, Inverse)", "Det[")] {
+            let it = NSMenuItem(title: label, action: #selector(menuInsertSpecial(_:)),
+                                keyEquivalent: "")
+            it.target = self
+            it.representedObject = text
+            pal.addItem(it)
+        }
+        palItem.submenu = pal
+
+        // --- Window
+        let winItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         main.addItem(winItem)
         let win = NSMenu(title: "Window")
-        win.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)),
-                    keyEquivalent: "m")
-        win.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)),
-                    keyEquivalent: "")
+        addItem(win, "Minimize", #selector(NSWindow.performMiniaturize(_:)), "m")
+        addItem(win, "Zoom", #selector(NSWindow.performZoom(_:)), "")
+        win.addItem(.separator())
+        addItem(win, "Bring All to Front", #selector(NSApplication.arrangeInFront(_:)), "")
         winItem.submenu = win
         NSApp.windowsMenu = win
 
+        // --- Help  (macOS routes the last menu to the Help menu automatically)
+        let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        main.addItem(helpItem)
+        let help = NSMenu(title: "Help")
+        addItem(help, "rMath Help", #selector(menuHelp), "?", target: self)
+        addItem(help, "Function List", #selector(menuFunctionList), "", target: self)
+        helpItem.submenu = help
+        NSApp.helpMenu = help
+
         NSApp.mainMenu = main
     }
+
+    /// Helper: append a menu item. Standard selectors (cut:, copy:, …) must
+    /// keep a nil target so the responder chain handles them; our own actions
+    /// pass target: self.
+    @discardableResult
+    func addItem(_ menu: NSMenu, _ title: String, _ action: Selector?,
+                 _ key: String, _ mods: NSEvent.ModifierFlags = [.command],
+                 target: AnyObject? = nil) -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        it.target = target
+        if !key.isEmpty { it.keyEquivalentModifierMask = mods }
+        if action == nil { it.isEnabled = false }
+        menu.addItem(it)
+        return it
+    }
+
+    @objc func menuInsertSpecial(_ sender: NSMenuItem) {
+        if let text = sender.representedObject as? String { insert(text) }
+    }
+    @objc func menuInsertPlot() { insert("Plot[Sin[x], {x, 0, 2 Pi}]") }
+    @objc func menuInsertTable() { insert("Table[i^2, {i, 1, 10}]") }
 
     @objc func reloadPage() { webView.reload() }
     @objc func zoomReset() { setZoom(1.0) }

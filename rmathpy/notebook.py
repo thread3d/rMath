@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -23,6 +24,10 @@ def get_kernel() -> Kernel:
         if _KERNEL is None:
             _KERNEL = Kernel()
         return _KERNEL
+
+
+def work_dir() -> str:
+    return os.environ.get("RMATH_WORKDIR") or os.getcwd()
 
 
 def handle_eval(body: dict) -> dict:
@@ -56,6 +61,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _json(self, obj):
+        self._send(200, "application/json", json.dumps(obj).encode("utf-8"))
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/" or path == "/index.html":
@@ -63,17 +71,17 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/names":
             with _KERNEL_LOCK:
                 names = get_kernel().names()
-            self._send(200, "application/json", json.dumps({"names": names}).encode())
+            self._json({"names": names})
         elif path == "/api/health":
-            self._send(200, "application/json", b'{"ok": true}')
+            self._json({"ok": True})
         elif path.startswith("/katex/"):
             self.serve_katex(path[len("/katex/"):])
         else:
             self._send(404, "text/plain", b"not found")
 
     def serve_katex(self, rel: str):
-        import os
-        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "katex", "dist", "katex")
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "katex", "dist", "katex")
         target = os.path.normpath(os.path.join(base, rel))
         if not target.startswith(base) or not os.path.isfile(target):
             self._send(404, "text/plain", b"not found")
@@ -100,187 +108,466 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw) if raw else {}
         except Exception:
             body = {}
+
         if path == "/api/eval":
             try:
-                self._send(200, "application/json", json.dumps(handle_eval(body)).encode())
+                self._json(handle_eval(body))
             except Exception as e:
-                self._send(
-                    200,
-                    "application/json",
-                    json.dumps({"status": "error", "error": str(e)}).encode(),
-                )
+                self._json({"status": "error", "error": str(e)})
         elif path == "/api/reset":
             with _KERNEL_LOCK:
                 get_kernel().reset()
-            self._send(200, "application/json", b'{"status": "ok"}')
+            self._json({"status": "ok"})
+        elif path == "/api/save":
+            self.api_save(body)
+        elif path == "/api/open":
+            self.api_open(body)
+        elif path == "/api/save-svg":
+            self.api_save_svg(body)
         else:
             self._send(404, "text/plain", b"not found")
+
+    # ---- notebook file operations (relative paths use the kernel work dir) ----
+
+    def api_save(self, body: dict):
+        inputs = body.get("inputs") or []
+        name = body.get("name") or "notebook-%s.mt" % time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(work_dir(), name)
+        try:
+            with open(path, "w") as f:
+                f.write("(* rMath notebook, saved %s *)\n\n"
+                        % time.strftime("%Y-%m-%d %H:%M:%S"))
+                for line in inputs:
+                    f.write("%s\n" % line)
+            self._json({"status": "ok", "path": path})
+        except Exception as e:
+            self._json({"status": "error", "error": str(e)})
+
+    def api_open(self, body: dict):
+        path = body.get("path", "")
+        if not os.path.isabs(path):
+            path = os.path.join(work_dir(), path)
+        try:
+            with open(path) as f:
+                text = f.read()
+            self._json({"status": "ok", "path": path, "text": text})
+        except Exception as e:
+            self._json({"status": "error", "error": str(e)})
+
+    def api_save_svg(self, body: dict):
+        svg = body.get("svg") or ""
+        name = body.get("name") or "plot-%s.svg" % time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(work_dir(), name)
+        try:
+            with open(path, "w") as f:
+                f.write(svg)
+            self._json({"status": "ok", "path": path})
+        except Exception as e:
+            self._json({"status": "error", "error": str(e)})
 
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>rMath</title>
+<title>Untitled-1 — rMath</title>
 <link rel="stylesheet" href="/katex/katex.min.css">
 <script src="/katex/katex.min.js"></script>
 <style>
-  :root { --accent: #2a58b2; --accent2: #b43c3c; }
+  :root {
+    --ink: #1a1a1a;
+    --inlabel: #333333;
+    --outlabel: #8a6d1f;
+    --bracket: #c9c9c9;
+    --accent: #2c5a8f;
+  }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; background: #fafafa;
-         margin: 0; color: #222; }
-  #bar { background: #2c3e50; color: #fff; padding: 8px 16px; display: flex;
-         align-items: center; gap: 12px; }
-  #bar h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .5px; }
-  #bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #777; }
-  #bar .dot.on { background: #4caf50; }
-  #bar button { margin-left: auto; background: #3a5570; color: #fff; border: 0;
-                padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  #bar button:hover { background: #3d5a77; }
-  #cells { max-width: 860px; margin: 18px auto; padding: 0 12px 90px; }
-  .cell { margin-bottom: 10px; }
-  .in-label { font-size: 11px; color: #2a58b2; font-weight: 600; margin-bottom: 2px; }
-  .in-text { background: #fff; border: 1px solid #e2e2e2; padding: 7px 10px;
-             font-family: ui-monospace, Menlo, monospace; font-size: 13px;
-             white-space: pre-wrap; border-radius: 3px; }
-  .out-label { font-size: 11px; color: #a4762a; font-weight: 600; margin: 2px 0; }
-  .out-text { font-family: ui-monospace, Menlo, monospace; font-size: 13px;
-              white-space: pre-wrap; padding: 2px 0; }
-  .prints { color: #666; font-family: ui-monospace, Menlo, monospace; font-size: 12px;
-            white-space: pre-wrap; margin-top: 2px; }
-  .msgs { color: var(--accent2); font-size: 12px; font-family: ui-monospace, Menlo,
-          monospace; margin-top: 2px; }
-  .err { color: var(--accent2); font-family: ui-monospace, Menlo, monospace;
-         font-size: 12px; white-space: pre-wrap; }
-  .tex { font-size: 15px; }
-  .texrow { margin: 3px 0; }
-  .svgbox { margin: 6px 0 2px; }
-  .svgbox svg { background: #fff; border: 1px solid #e0e0e0; }
-  #inputbar { position: fixed; bottom: 0; left: 0; right: 0; background: #eee;
-              border-top: 1px solid #ddd; padding: 10px 0; }
-  #inputbar .inner { max-width: 860px; margin: 0 auto; padding: 0 12px;
-                     display: flex; gap: 8px; align-items: flex-end; }
-  #inp { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 13px;
-         padding: 9px 10px; border: 1px solid #c9c9c9; border-radius: 4px; outline: 0;
-         resize: none; overflow: hidden; max-height: 180px; line-height: 1.35; }
-  #inp:focus { border-color: #2a58b2; }
-  #go { background: #2a58b2; border: 0; color: #fff; padding: 9px 18px;
-        border-radius: 4px; cursor: pointer; font-size: 13px; }
-  #go:hover { background: #1d469b; }
-  .hint { color: #999; font-size: 11px; margin: 4px 2px; }
-  #ac { position: absolute; background: #fff; border: 1px solid #bbb; max-height: 180px;
-        overflow: auto; z-index: 10; display: none; font-size: 12px;
-        font-family: ui-monospace, Menlo, monospace; }
+  html, body { height: 100%; }
+  body { margin: 0; background: #ffffff; color: var(--ink);
+         font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 13px; }
+
+  /* ---------------- ribbon / toolbar ---------------- */
+  #ribbon { position: fixed; top: 0; left: 0; right: 0; height: 40px; z-index: 20;
+            background: linear-gradient(#fbfbfb, #ececec); border-bottom: 1px solid #c4c4c4;
+            display: flex; align-items: center; gap: 2px; padding: 0 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  .tb { width: 30px; height: 28px; border: 1px solid transparent; border-radius: 4px;
+        background: transparent; cursor: pointer; display: flex; align-items: center;
+        justify-content: center; padding: 0; color: #3d3d3d; }
+  .tb:hover { background: #e2e8f0; border-color: #c3ced9; }
+  .tb:active { background: #d2dbe6; }
+  .tb svg { width: 17px; height: 17px; }
+  .tb.wide { width: auto; padding: 0 9px; font-size: 12px; gap: 5px; }
+  .sep { width: 1px; height: 22px; background: #cfcfcf; margin: 0 6px; }
+  #ribbon .spacer { flex: 1; }
+  #ribbon .brand { font-size: 12px; color: #5b6b7c; margin-left: 4px;
+                   font-weight: 600; letter-spacing: .3px; }
+
+  /* ---------------- notebook ---------------- */
+  #notebook { max-width: 940px; margin: 0 auto; padding: 56px 16px 130px; }
+  .cell { position: relative; margin: 16px 0 18px; }
+  .cellinner { margin-right: 26px; }
+  .bracket { position: absolute; right: 4px; top: 1px; bottom: 1px; width: 7px;
+             border: 1px solid var(--bracket); border-left: none;
+             border-radius: 0 2px 2px 0; pointer-events: none; }
+  .nobrackets .bracket { display: none; }
+  .row { display: flex; align-items: flex-start; min-height: 20px; }
+  .lbl { flex: 0 0 auto; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+         font-weight: 700; padding-top: 3px; }
+  .inlbl { color: var(--inlabel); margin-right: 10px; }
+  .outlbl { color: var(--outlabel); margin-right: 10px; }
+  .content { flex: 1 1 auto; min-width: 0; font-family: "SF Mono", Menlo, Consolas, monospace;
+             font-size: 13px; white-space: pre-wrap; word-break: break-word; line-height: 1.42; }
+  .prints { color: #55606b; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+            white-space: pre-wrap; padding: 1px 0 1px 2px; }
+  .msgs { color: #a3221f; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+          white-space: pre-wrap; padding: 1px 0 1px 2px; }
+  .err { color: #a3221f; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+         white-space: pre-wrap; }
+  .tex { font-size: 14.5px; }
+  .texrow { padding: 2px 0; }
+  .svgbox { margin: 4px 0 2px; }
+  .svgbox svg { background: #fff; border: 1px solid #e2e2e2; }
+  .outrow { margin-top: 3px; }
+  .outrow.pending .lbl { color: #b0b0b0; }
+  .pendingtext { color: #9a9a9a; font-style: italic; }
+
+  /* ---------------- bottom input ---------------- */
+  #inputbar { position: fixed; bottom: 0; left: 0; right: 0; background: #f4f4f4;
+              border-top: 1px solid #c4c4c4; padding: 8px 0; z-index: 20; }
+  #inputbar .inner { max-width: 940px; margin: 0 auto; padding: 0 16px;
+                     display: flex; align-items: flex-start; gap: 8px; }
+  #inlabel { font-family: "SF Mono", Menlo, monospace; font-weight: 700; font-size: 12.5px;
+             color: var(--inlabel); padding-top: 8px; min-width: 58px; }
+  #inp { flex: 1; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
+         padding: 7px 9px; border: 1px solid #b9b9b9; border-radius: 3px; outline: 0;
+         resize: none; overflow: hidden; max-height: 180px; line-height: 1.4; background: #fff; }
+  #inp:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(44,90,143,.12); }
+  #go { background: linear-gradient(#4a7fb5, #2c5a8f); border: 1px solid #24486f; color: #fff;
+        padding: 7px 16px; border-radius: 4px; cursor: pointer; font-size: 12.5px;
+        font-weight: 600; }
+  #go:hover { background: linear-gradient(#5489bf, #326099); }
+
+  /* ---------------- help panel ---------------- */
+  #help { position: fixed; top: 60px; bottom: 90px; left: 0; right: 0; margin: 0 auto;
+          width: min(720px, 92vw); background: #fff; border: 1px solid #b9b9b9;
+          border-radius: 6px; z-index: 40; box-shadow: 0 12px 40px rgba(0,0,0,.28);
+          display: none; flex-direction: column; }
+  #help.open { display: flex; }
+  #help header { padding: 10px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
+                 font-size: 14px; display: flex; align-items: center; gap: 10px; }
+  #help header button { margin-left: auto; background: #eee; border: 1px solid #ccc;
+                        border-radius: 4px; cursor: pointer; padding: 3px 9px; font-size: 12px; }
+  #help .body { overflow: auto; padding: 12px 14px; }
+  #help input { width: 100%; padding: 7px 9px; border: 1px solid #c5c5c5; border-radius: 4px;
+                font-size: 13px; margin-bottom: 10px; outline: 0; }
+  #fns { display: flex; flex-wrap: wrap; gap: 5px; }
+  #fns span { font-family: "SF Mono", Menlo, monospace; font-size: 12px; padding: 2px 6px;
+              border: 1px solid #dcdcdc; border-radius: 3px; cursor: pointer; background: #fafafa; }
+  #fns span:hover { background: #eaf1f9; border-color: #9db8d4; }
+  #help .tips { color: #4a5560; font-size: 12.5px; line-height: 1.7; margin-bottom: 12px; }
+  #help .tips code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
+
+  /* ---------------- toast / autocomplete ---------------- */
+  #toast { position: fixed; bottom: 78px; left: 0; right: 0; text-align: center; z-index: 60;
+           pointer-events: none; }
+  #toast div { display: inline-block; background: rgba(35,45,55,.93); color: #fff;
+               padding: 7px 14px; border-radius: 16px; font-size: 12.5px; }
+  #ac { position: absolute; background: #fff; border: 1px solid #aaa; max-height: 190px;
+        overflow: auto; z-index: 50; display: none; font-size: 12.5px;
+        font-family: "SF Mono", Menlo, monospace; box-shadow: 0 6px 18px rgba(0,0,0,.16); }
   #ac div { padding: 3px 10px; cursor: pointer; }
-  #ac div:hover { background: #e8f0fe; }
+  #ac div.sel, #ac div:hover { background: #e8f0fe; }
 </style>
 </head>
 <body>
-  <div id="bar">
-    <span class="dot" id="status"></span>
-    <h1>rMath</h1>
-    <button id="reset">Reset kernel</button>
+<div id="ribbon">
+  <button class="tb" title="Evaluate Input (Shift+Enter)" onclick="evaluate()">
+    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5 13 8l-9 5.5z"/></svg></button>
+  <button class="tb" title="Evaluate All Cells" onclick="evaluateAll()">
+    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3 8 6.5 2 10zM8 3l6 3.5L8 10z"/></svg></button>
+  <button class="tb" title="New Notebook (clear cells)" onclick="newNotebook()">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+  <span class="sep"></span>
+  <button class="tb" title="Open a script (.mt) into the notebook" onclick="openNotebook()">
+    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.5h4.2l1.4 1.6h7.4v7.4H1.5z"/></svg></button>
+  <button class="tb" title="Save notebook inputs as .mt" onclick="saveNotebook()">
+    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2h8.2L13 3.8V14H3z"/><path d="M5.4 2h5.2v3.6H5.4z" fill="#fff"/></svg></button>
+  <button class="tb" title="Save last plot as SVG" onclick="saveLastPlotSvg()">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 13.5h13M2.5 13V4M2.5 13l4-6 3 3 4-5"/></svg></button>
+  <span class="sep"></span>
+  <button class="tb" title="Reset kernel" onclick="resetKernel()">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13 8a5 5 0 1 1-1.7-3.8"/><path d="M13.4 2.2v3h-3"/></svg></button>
+  <button class="tb" title="Zoom out" onclick="zoomOut()">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14M5 7h4"/></svg></button>
+  <button class="tb" title="Zoom in" onclick="zoomIn()">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14M5 7h4M7 5v4"/></svg></button>
+  <span class="spacer"></span>
+  <span class="brand">rMath</span>
+  <button class="tb wide" title="Help (Cmd-?)" onclick="showHelp(true)">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M6.2 6.3a1.9 1.9 0 0 1 3.7.6c0 1.2-1.9 1.4-1.9 2.5"/><circle cx="8" cy="11.7" r=".8" fill="currentColor"/></svg>
+    Help</button>
+</div>
+
+<div id="notebook"></div>
+
+<div id="inputbar"><div class="inner">
+  <div id="inlabel">In[1]:=</div>
+  <textarea id="inp" rows="1" spellcheck="false"
+    placeholder="Enter an expression, then press Shift+Enter to evaluate (Ctrl+Space completes)"></textarea>
+  <button id="go" onclick="evaluate()">Evaluate</button>
+</div></div>
+
+<div id="help">
+  <header>rMath Help<button onclick="showHelp(false)">Close</button></header>
+  <div class="body">
+    <div class="tips">
+      <b>Shift+Enter</b> evaluates (or the Evaluate button) &middot; <b>Enter</b> adds a line to the
+      cell &middot; <b>Ctrl+Space</b> completes &middot; pasting several lines makes several cells.<br>
+      Load the demonstration: <code>Get["demo/demo.mt"]</code> &middot; inputs and outputs are
+      typeset from the kernel's TeX printer.<br>
+      Click any name below to insert it at the cursor.
+    </div>
+    <input id="fnfilter" placeholder="Filter functions…" oninput="filterFns()">
+    <div id="fns"></div>
   </div>
-  <div id="cells"></div>
-  <div id="inputbar"><div class="inner">
-    <textarea id="inp" rows="1" placeholder="Enter an expression; press Enter to evaluate (Shift+Enter = new line; Ctrl+Space completes)" spellcheck="false"></textarea>
-    <button id="go">Evaluate</button>
-  </div></div>
-  <div id="ac"></div>
+</div>
+<div id="ac"></div>
+<div id="toast"></div>
+
 <script>
-const cells = document.getElementById('cells');
+const notebook = document.getElementById('notebook');
 const inp = document.getElementById('inp');
 const ac = document.getElementById('ac');
-const status = document.getElementById('status');
+const inlabel = document.getElementById('inlabel');
 let history = JSON.parse(localStorage.getItem('rmath-history') || '[]');
 let histPos = history.length;
 let NAMES = [];
+let inCounter = 0;
+let evaluated = [];
+let lastPlotSvg = null;
 
 fetch('/api/names').then(r => r.json()).then(d => { NAMES = d.names || []; });
-fetch('/api/health').then(() => status.classList.add('on')).catch(() => {});
 
 function esc(s) {
   return (s + '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-
 function escAttr(s) {
   return (s + '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
-
 function mathSpan(tex) {
-  const safe = (tex + '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-                         .replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return '<span class="tex" data-tex="' + safe + '"></span>';
+  return '<span class="tex" data-tex="' + escAttr(tex) + '"></span>';
 }
-
 function typesetAll(root) {
   if (!root || !root.querySelectorAll) return;
   root.querySelectorAll('span.tex[data-tex]').forEach(el => {
+    if (el.dataset.done === '1') return;
     const src = el.dataset.tex;
-    if (!src || el.dataset.done === '1') return;
+    if (!src) return;
     if (window.katex) {
-      try {
-        katex.render(src, el, {throwOnError: false});
-      } catch (e) {
-        el.textContent = src;
-      }
+      try { katex.render(src, el, {throwOnError: false}); } catch (e) { el.textContent = src; }
       el.dataset.done = '1';
-    } else {
-      el.textContent = src;  // fallback until katex loads
-    }
+    } else { el.textContent = src; }
   });
 }
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.innerHTML = '<div>' + esc(msg) + '</div>';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.innerHTML = ''; }, 4000);
+}
+function setInLabel() { inlabel.textContent = 'In[' + (inCounter + 1) + ']:='; }
 
-function addCellHTML(html) {
-  const d = document.createElement('div');
-  d.className = 'cell';
-  d.innerHTML = html;
-  cells.appendChild(d);
-  return d;
+function addCell() {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  cell.innerHTML = '<div class="cellinner">' +
+      '<div class="row inrow"><div class="lbl inlbl"></div>' +
+      '<div class="content in-text"></div></div>' +
+      '<div class="row outrow pending"><div class="lbl outlbl"></div>' +
+      '<div class="content out-text"><span class="pendingtext">Evaluating…</span></div></div>' +
+      '</div><div class="bracket"></div>';
+  notebook.appendChild(cell);
+  return cell;
 }
 
-async function evaluateLine(input, outEl, inEl) {
+async function evaluateLine(input, cell) {
+  const inRow = cell.querySelector('.inrow');
+  const outRow = cell.querySelector('.outrow');
+  const inContent = inRow.querySelector('.content');
+  const outContent = outRow.querySelector('.content');
+  const inLbl = inRow.querySelector('.lbl');
+  const outLbl = outRow.querySelector('.lbl');
+  inCounter += 1;
+  inLbl.textContent = 'In[' + inCounter + ']:=';
+  outLbl.textContent = 'Out[' + inCounter + ']=';
+  inContent.textContent = input;
+
+  let resp;
   try {
     const r = await fetch('/api/eval', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({input})});
-    const resp = await r.json();
-    let html = '';
-    if (resp.status === 'error') {
-      html = '<div class="err">' + esc(resp.error || 'error') + '</div>';
-      if (resp.tex_in) html += mathSpan(resp.tex_in);
-    } else {
-      if (resp.prints && resp.prints.length)
-        html += '<div class="prints">' + resp.prints.map(esc).join('\n') + '</div>';
-      if (resp.messages && resp.messages.length)
-        html += '<div class="msgs">' + resp.messages.map(m => esc(m.text)).join('\n') + '</div>';
-      if (resp.svg) {
-        html += '<div class="out-label">Out[' + (resp.out ?? '') + ']=</div>' +
-                '<div class="svgbox">' + resp.svg + '</div>';
-      } else if (resp.tex) {
-        html += '<div class="out-label">Out[' + (resp.out ?? '') + ']=</div>' +
-                mathSpan(resp.tex);
-      } else if (resp.result && resp.result.trim()) {
-        html += '<div class="out-label">Out[' + (resp.out ?? '') + ']=</div>' +
-                '<div class="out-text" title="' + escAttr(resp.result) + '">' +
-                esc(resp.result) + '</div>';
-      }
-    }
-    outEl.innerHTML = html;
-    typesetAll(outEl);
-    if (inEl) {
-      if (resp.tex_in) {
-        inEl.innerHTML = '<div class="texrow">' + mathSpan(resp.tex_in) + '</div>';
-        inEl.title = input;
-        typesetAll(inEl);
-      } else {
-        inEl.innerHTML = '<div class="out-text">' + esc(input) + '</div>';
-      }
-    }
+    resp = await r.json();
   } catch (e) {
-    outEl.innerHTML = '<div class="err">' + esc(String(e)) + '</div>';
+    outContent.innerHTML = '<div class="err">' + esc(String(e)) + '</div>';
+    outLbl.textContent = '';
+    outRow.classList.remove('pending');
+    return;
   }
+  const inN = (typeof resp.in === 'number') ? resp.in : inCounter;
+  inCounter = inN;
+  inLbl.textContent = 'In[' + inN + ']:=';
+  setInLabel();
+  if (resp.tex_in) {
+    inContent.innerHTML = '<div class="texrow">' + mathSpan(resp.tex_in) + '</div>';
+    inContent.title = input;
+  }
+
+  let html = '';
+  if (resp.status === 'error') {
+    html = '<div class="err">' + esc(resp.error || 'error') + '</div>';
+  } else {
+    if (resp.prints && resp.prints.length)
+      html += '<div class="prints">' + resp.prints.map(esc).join('\n') + '</div>';
+    if (resp.messages && resp.messages.length)
+      html += '<div class="msgs">' + resp.messages.map(m => esc(m.text)).join('\n') + '</div>';
+    if (resp.svg) {
+      html += '<div class="svgbox">' + resp.svg + '</div>';
+      lastPlotSvg = resp.svg;
+    } else if (resp.tex) {
+      html += mathSpan(resp.tex);
+    } else if (resp.result && resp.result.trim()) {
+      html += esc(resp.result);
+    }
+  }
+  outContent.innerHTML = html;
+  outRow.classList.remove('pending');
+  const shown = (resp.status === 'error') ? '' : 'Out[' + ((typeof resp.out === 'number') ? resp.out : inN) + ']=';
+  outLbl.textContent = shown;
+  typesetAll(cell);
+  evaluated.push(input);
 }
+
+let lastCell = null;
+async function evaluate() {
+  const raw = inp.value;
+  if (!raw.trim()) return;
+  const lines = raw.split('\n').map(s => s.trim()).filter(s => s.length);
+  inp.value = '';
+  autoGrow();
+  ac.style.display = 'none';
+  for (const line of lines) {
+    history.push(line);
+    const cell = addCell();
+    lastCell = cell;
+    await evaluateLine(line, cell);
+  }
+  localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
+  histPos = history.length;
+  if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
+  inp.focus();
+  autoGrow();
+}
+
+async function evaluateAll() {
+  const inputs = evaluated.slice();
+  if (!inputs.length) return;
+  for (const line of inputs) {
+    const cell = addCell();
+    lastCell = cell;
+    await evaluateLine(line, cell);
+  }
+  if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
+}
+
+function newNotebook() {
+  notebook.innerHTML = '';
+  evaluated = [];
+  lastPlotSvg = null;
+  inCounter = 0;
+  setInLabel();
+  resetKernelQuiet();
+  toast('New notebook');
+}
+async function resetKernelQuiet() {
+  try { await fetch('/api/reset', {method: 'POST'}); } catch (e) {}
+}
+async function resetKernel() {
+  await resetKernelQuiet();
+  inCounter = 0;
+  setInLabel();
+  const cell = addCell();
+  cell.querySelector('.inrow').querySelector('.lbl').textContent = '';
+  const outRow = cell.querySelector('.outrow');
+  outRow.classList.remove('pending');
+  outRow.querySelector('.lbl').textContent = '';
+  outRow.querySelector('.content').innerHTML =
+      '<div class="prints">Kernel reset — In/Out numbering restarted.</div>';
+}
+
+async function openNotebook() {
+  const path = window.prompt('Open script (relative to the working directory):',
+                             'demo/demo.mt');
+  if (!path) return;
+  const r = await fetch('/api/open', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})});
+  const resp = await r.json();
+  if (resp.status !== 'ok') { toast('Open failed: ' + (resp.error || '')); return; }
+  document.title = resp.path.split('/').pop() + ' — rMath';
+  inp.value = resp.text;
+  autoGrow();
+  toast('Loaded ' + resp.path + ' — press Enter to evaluate');
+  inp.focus();
+}
+
+async function saveNotebook() {
+  const r = await fetch('/api/save', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({inputs: evaluated})});
+  const resp = await r.json();
+  toast(resp.status === 'ok' ? 'Saved to ' + resp.path : 'Save failed: ' + (resp.error || ''));
+}
+
+async function saveLastPlotSvg() {
+  if (!lastPlotSvg) { toast('No plot in this session yet'); return; }
+  const r = await fetch('/api/save-svg', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({svg: lastPlotSvg})});
+  const resp = await r.json();
+  toast(resp.status === 'ok' ? 'Plot saved to ' + resp.path : 'Save failed: ' + (resp.error || ''));
+}
+
+function insertText(t) {
+  const start = inp.selectionStart, end = inp.selectionEnd;
+  inp.value = inp.value.slice(0, start) + t + inp.value.slice(end);
+  inp.selectionStart = inp.selectionEnd = start + t.length;
+  inp.focus();
+  autoGrow();
+}
+
+let zoom = 1;
+function applyZoom() { document.documentElement.style.zoom = zoom; }
+function zoomIn() { zoom = Math.min(2, Math.round((zoom + 0.1) * 10) / 10); applyZoom(); }
+function zoomOut() { zoom = Math.max(0.5, Math.round((zoom - 0.1) * 10) / 10); applyZoom(); }
+function zoomReset() { zoom = 1; applyZoom(); }
+function toggleBrackets() { notebook.classList.toggle('nobrackets'); }
+function focusInput() { inp.focus(); }
+
+function showHelp(open) {
+  const panel = document.getElementById('help');
+  const want = (open === undefined) ? true : !!open;
+  panel.classList.toggle('open', want);
+  if (want) { renderFns(''); document.getElementById('fnfilter').focus(); }
+  else { inp.focus(); }
+}
+function renderFns(filter) {
+  const box = document.getElementById('fns');
+  const f = (filter || '').toLowerCase();
+  const list = NAMES.filter(n => !f || n.toLowerCase().includes(f)).slice(0, 400);
+  box.innerHTML = list.map(n =>
+    '<span onclick="insertText(\'' + n + '[\')">' + n + '</span>').join('');
+}
+function filterFns() { renderFns(document.getElementById('fnfilter').value); }
 
 function autoGrow() {
   inp.style.height = 'auto';
@@ -288,67 +575,31 @@ function autoGrow() {
 }
 inp.addEventListener('input', autoGrow);
 
-async function evaluate() {
-  const raw = inp.value;
-  if (!raw.trim()) return;
-  // Multiple pasted lines become multiple notebook cells.
-  const lines = raw.split('\n').map(s => s.trim()).filter(s => s.length);
-  inp.value = '';
-  autoGrow();
-  ac.style.display = 'none';
-  let lastOut = null;
-  for (const line of lines) {
-    history.push(line);
-    const inCell = addCellHTML('<div class="in-label">In</div>' +
-                               '<div class="out-label">Evaluating...</div>');
-    const out = addCellHTML('');
-    lastOut = out;
-    await evaluateLine(line, out, inCell);
-  }
-  localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
-  histPos = history.length;
-  // Bring the new output into view (a long cell otherwise leaves its result,
-  // e.g. a plot, below the fold).
-  if (lastOut) lastOut.scrollIntoView({block: 'end', behavior: 'smooth'});
-  inp.focus();
-  autoGrow();
-}
-
-function acOpen() { return ac.style.display === 'block'; }
-inp.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); evaluate(); }
-  else if (e.key === 'ArrowUp' && !inp.value && history.length) {
-    histPos = Math.max(0, histPos - 1); inp.value = history[histPos] || '';
-    autoGrow(); e.preventDefault();
-  } else if (e.key === 'ArrowDown' && !inp.value && history.length) {
-    histPos = Math.min(history.length, histPos + 1);
-    inp.value = history[histPos] || ''; autoGrow(); e.preventDefault();
-  } else if (e.key === ' ' && e.ctrlKey) {
-    e.preventDefault(); showComplete();
-  } else if (e.key === 'Escape') {
-    ac.style.display = 'none';
-  }
-});
-
 function currentWord() {
-  const pos = inp.selectionStart;
-  const before = inp.value.slice(0, pos);
+  const before = inp.value.slice(0, inp.selectionStart);
   const m = before.match(/[A-Za-z$]+$/);
   return m ? m[0] : '';
 }
+function acOpen() { return ac.style.display === 'block'; }
+let acIndex = 0, acItems = [];
 function showComplete() {
   const word = currentWord();
   if (!word || !NAMES.length) return;
-  const matches = NAMES.filter(n => n.startsWith(word)).slice(0, 40);
-  if (!matches.length) return;
+  acItems = NAMES.filter(n => n.startsWith(word)).slice(0, 30);
+  if (!acItems.length) return;
+  acIndex = 0;
   const rect = inp.getBoundingClientRect();
-  ac.innerHTML = matches.map(n => '<div data-n="' + n + '">' + n + '</div>').join('');
+  ac.innerHTML = acItems.map((n, i) =>
+    '<div class="' + (i === 0 ? 'sel' : '') + '" data-n="' + n + '">' + n + '</div>').join('');
   ac.style.left = rect.left + 'px';
-  ac.style.top = (rect.bottom + 2) + 'px';
+  ac.style.top = Math.max(46, rect.top - Math.min(acItems.length * 21 + 4, 190)) + 'px';
   ac.style.display = 'block';
-  ac.querySelectorAll('div').forEach(d => {
-    d.onclick = () => insertComplete(d.dataset.n);
-  });
+  ac.querySelectorAll('div').forEach(d => { d.onclick = () => insertComplete(d.dataset.n); });
+}
+function acMove(delta) {
+  if (!acOpen()) return;
+  acIndex = (acIndex + delta + acItems.length) % acItems.length;
+  ac.querySelectorAll('div').forEach((d, i) => d.classList.toggle('sel', i === acIndex));
 }
 function insertComplete(name) {
   const pos = inp.selectionStart;
@@ -357,14 +608,35 @@ function insertComplete(name) {
   ac.style.display = 'none';
   inp.focus();
 }
+
+inp.addEventListener('keydown', e => {
+  if (acOpen()) {
+    if (e.key === 'ArrowDown') { acMove(1); e.preventDefault(); return; }
+    if (e.key === 'ArrowUp') { acMove(-1); e.preventDefault(); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      insertComplete(acItems[acIndex]); e.preventDefault(); return;
+    }
+    if (e.key === 'Escape') { ac.style.display = 'none'; return; }
+  }
+  if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); evaluate(); return; }
+  // plain Enter inserts a newline (multi-line cells), as in Mathematica
+  else if (e.key === 'ArrowUp' && !inp.value && history.length) {
+    histPos = Math.max(0, histPos - 1);
+    inp.value = history[histPos] || ''; autoGrow(); e.preventDefault();
+  } else if (e.key === 'ArrowDown' && !inp.value && history.length) {
+    histPos = Math.min(history.length, histPos + 1);
+    inp.value = history[histPos] || ''; autoGrow(); e.preventDefault();
+  } else if (e.key === ' ' && e.ctrlKey) { e.preventDefault(); showComplete(); }
+});
 document.addEventListener('click', e => {
   if (!ac.contains(e.target)) ac.style.display = 'none';
 });
-document.getElementById('go').onclick = evaluate;
-document.getElementById('reset').onclick = async () => {
-  await fetch('/api/reset', {method: 'POST'});
-  addCellHTML('<div class="msgs">kernel reset</div>');
-};
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { ac.style.display = 'none'; showHelp(false); }
+  if (e.key === '?' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); showHelp(true); }
+});
+
+setInLabel();
 inp.focus();
 autoGrow();
 </script>

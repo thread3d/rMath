@@ -29,6 +29,8 @@ pub struct Interp {
     pub t: SymbolTable,
     pub depth: usize,
     pub out_history: Vec<Expr>,
+    /// Number of evaluations submitted (drives the In[n]:= labels).
+    pub in_count: usize,
     pub prints: Vec<String>,
     pub sowed: Vec<Expr>,
     pub module_counter: u64,
@@ -46,6 +48,7 @@ impl Interp {
             t: SymbolTable::new(),
             depth: 0,
             out_history: Vec::new(),
+            in_count: 0,
             prints: Vec::new(),
             sowed: Vec::new(),
             module_counter: 0,

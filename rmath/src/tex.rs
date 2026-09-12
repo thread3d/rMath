@@ -492,17 +492,17 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                 if name == "Log" && nd.args.len() == 2 {
                     out.push_str("\\log_{");
                     tex_into(t, &nd.args[0], out);
-                    out.push_str("}\\left(");
+                    out.push_str("}\\!\\left[");
                     tex_into(t, &nd.args[1], out);
-                    out.push_str("\\right)");
+                    out.push_str("\\right]");
                     return;
                 }
                 if nd.args.len() == 1 {
                     if let Some(op) = fn_tex_name(t, hid) {
                         out.push_str(op);
-                        out.push_str("\\!\\left(");
+                        out.push_str("\\!\\left[");
                         tex_into(t, &nd.args[0], out);
-                        out.push_str("\\right)");
+                        out.push_str("\\right]");
                         return;
                     }
                 }
@@ -519,16 +519,17 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                     return;
                 }
             }
-            // Generic f[a, b, ...]
+            // Generic f[a, b, ...] — square brackets, as in Mathematica's
+            // StandardForm.
             tex_into(t, &nd.head, out);
-            out.push_str("\\!\\left(");
+            out.push_str("\\!\\left[");
             for (k, a) in nd.args.iter().enumerate() {
                 if k > 0 {
                     out.push_str(", ");
                 }
                 tex_into(t, a, out);
             }
-            out.push_str("\\right)");
+            out.push_str("\\right]");
         }
     }
 }
@@ -606,7 +607,7 @@ mod tests {
         assert_eq!(tex("Sqrt[x]"), "\\sqrt{x}");
         assert_eq!(tex("1/x"), "\\frac{1}{x}");
         assert_eq!(tex("Pi"), "\\pi");
-        assert_eq!(tex("Sin[x]"), "\\sin\\!\\left(x\\right)");
+        assert_eq!(tex("Sin[x]"), "\\sin\\!\\left[x\\right]");
     }
 
     #[test]
@@ -617,8 +618,8 @@ mod tests {
         assert_eq!(tex_form(&i.t, &v), "\\frac{5}{6}");
         let e = crate::parser::parse_input(&mut i.t, "D[Sin[x]^2, x]").unwrap();
         let v = i.eval(&e).unwrap();
-        assert_eq!(tex_form(&i.t, &v), "2 \\, \\cos\\!\\left(x\\right) \\, \\sin\\!\\left(x\\right)");
+        assert_eq!(tex_form(&i.t, &v), "2 \\, \\cos\\!\\left[x\\right] \\, \\sin\\!\\left[x\\right]");
         let e = crate::parser::parse_input(&mut i.t, "f[x_] := x^2").unwrap();
-        assert_eq!(tex_form(&i.t, &e), "f\\!\\left(x\\_\\right) := x^{2}");
+        assert_eq!(tex_form(&i.t, &e), "f\\!\\left[x\\_\\right] := x^{2}");
     }
 }

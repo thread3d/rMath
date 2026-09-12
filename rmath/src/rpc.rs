@@ -175,6 +175,8 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
         "eval" => {
             i.messages.clear();
             i.prints.clear();
+            i.in_count += 1;
+            let in_n = i.in_count;
             match parse_input(&mut i.t, &input) {
                 Err(pe) => {
                     let resp = obj(vec![
@@ -187,6 +189,7 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                                 pe.line, pe.msg
                             )),
                         ),
+                        ("in", crate::json::J::Num(in_n as f64)),
                     ]);
                     resp.write(out);
                     true
@@ -256,7 +259,8 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                             .set("status", crate::json::J::str_of("ok"))
                             .set("result", crate::json::J::str_of(&result_text))
                             .set("input_form", crate::json::J::str_of(&input_text))
-                            .set("tex_in", crate::json::J::str_of(&tex_in));
+                            .set("tex_in", crate::json::J::str_of(&tex_in))
+                            .set("in", crate::json::J::Num(in_n as f64));
                         if let Some(tx) = tex_text {
                             resp = resp.set("tex", crate::json::J::str_of(&tx));
                         }

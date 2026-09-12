@@ -81,6 +81,29 @@ interpreter), `RMATH_LOG_REQUESTS=1` (log every HTTP request to the app log),
 and `RMATH_NO_NATIVE=1 make app` (build the older browser-launcher bundle
 instead of the native app).
 
+### Notebook interface
+
+The window is a Mathematica-style notebook:
+
+- **Ribbon/toolbar**: Evaluate, Evaluate All, New, Open, Save, Save Last Plot as
+  SVG, Reset Kernel, zoom out/in, Help (all functional).
+- **Menus** (native): rMath, File, Edit, Insert, Evaluation, Format, Cell,
+  Graphics, Palettes, Window, Help — with the usual shortcuts, e.g. ⌘N new,
+  ⌘O open, ⌘S save, ⇧⌘S screenshot, ⇧⏎ evaluate, ⇧⌘⏎ evaluate all,
+  ⌥⌘R reset kernel, ⌘+ / ⌘- / ⌘0 zoom, ⌘? help. `rMath --dump-menus` prints
+  the whole tree.
+- **Cells**: every evaluation shows `In[n]:=` and `Out[n]=` labels with a cell
+  bracket, inputs and outputs typeset through the kernel's TeX printer
+  (StandardForm: square brackets for functions, `\frac` for rationals,
+  `\sqrt`, Greek letters, rules as `→`). Plots render inline as SVG.
+- **Keyboard**: **Shift+Enter** evaluates (Mathematica convention), **Enter**
+  adds a new line to the cell, **Ctrl+Space** completes a function name,
+  ↑/↓ walk history.
+- **Insert/Palettes menus** insert `Pi`, `Infinity`, `Sqrt[`, `Integrate[`,
+  `Sum[`, comparison and rule operators, plus ready-made Plot/Table examples.
+- **Help** (⌘? or the Help button) opens a searchable list of every kernel
+  function; click a name to insert it.
+
 ### Screenshots from the app
 
 The app snapshots its own window — no Screen Recording permission is required,
