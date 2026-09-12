@@ -15,3 +15,6 @@ tools/
 .idea/
 .vscode/
 *.swp
+# demo-generated outputs
+demo/data_doubled.csv
+demo/saved.txt

@@ -1,1 +1,0 @@
-Plus[1, Power[x, 2], Times[2, x]]
