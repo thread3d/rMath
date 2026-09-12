@@ -73,6 +73,11 @@ fn special_value(i: &Interp, name: &str, arg: &Expr) -> Option<Expr> {
                 return Some(Expr::int_i64(2));
             }
         }
+        "SinhIntegral" => {
+            if zero {
+                return Some(Expr::int_i64(0));
+            }
+        }
         "SinIntegral" | "ExpIntegralEi" => {
             if zero {
                 return Some(Expr::int_i64(0));
@@ -140,6 +145,63 @@ pub fn b_erf(i: &mut Interp, args: &[Expr]) -> EvalRes {
 
 pub fn b_erfc(i: &mut Interp, args: &[Expr]) -> EvalRes {
     num1(i, "Erfc", args, |x| 1.0 - erf_f64(x))
+}
+
+/// Hyperbolic sine integral Shi(x) = ∫₀ˣ sinh(t)/t dt = (Ei(x) - Ei(-x))/2.
+pub fn shi_f64(x: f64) -> f64 {
+    if x == 0.0 {
+        return 0.0;
+    }
+    let a = x.abs();
+    let v = (ei_f64(a) - ei_f64(-a)) / 2.0;
+    if x < 0.0 {
+        -v
+    } else {
+        v
+    }
+}
+
+/// Hyperbolic cosine integral Chi(x) = γ + ln|x| + ∫₀ˣ (cosh t - 1)/t dt
+/// = (Ei(x) + Ei(-x))/2 (even).
+pub fn chi_f64(x: f64) -> f64 {
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let a = x.abs();
+    (ei_f64(a) + ei_f64(-a)) / 2.0
+}
+
+pub fn b_sinhintegral(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    num1(i, "SinhIntegral", args, shi_f64)
+}
+
+pub fn b_coshintegral(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    num1(i, "CoshIntegral", args, chi_f64)
+}
+
+/// Sinc[x] = Sin[x]/x, with Sinc[0] = 1 (Mathematica's normalisation).
+pub fn b_sinc(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() != 1 {
+        i.message("Sinc", "argr");
+        return Ok(unevaluated_call(i, "Sinc", args));
+    }
+    let x = i.eval(&args[0])?;
+    if matches!(&x, Expr::Int(n) if n.to_i64() == Some(0)) {
+        return Ok(Expr::int_i64(1));
+    }
+    if let Expr::Real(v) = &x {
+        return Ok(Expr::real(if *v == 0.0 { 1.0 } else { v.sin() / v }));
+    }
+    Ok(unevaluated_call(i, "Sinc", &[x]))
+}
+
+/// Numeric value used by N[] (Sin[x]/x with the removable singularity at 0).
+pub fn sinc_f64(x: f64) -> f64 {
+    if x == 0.0 {
+        1.0
+    } else {
+        x.sin() / x
+    }
 }
 
 // ---------------------------------------------------------------- numerics
@@ -495,6 +557,19 @@ mod tests {
         assert!(close(si_f64(10.0), 1.658_347_594_218_874_0, 1e-9));
         assert!(close(ci_f64(1.0), 0.337_403_922_900_968_1, 1e-12));
         assert!(close(ci_f64(5.0), -0.190_029_749_656_643_9, 1e-9));
+    }
+
+    #[test]
+    fn hyperbolic_integrals() {
+        // references from mpmath (mp.shi / mp.chi)
+        check(shi_f64(1.0), "1.0572508753757285");
+        check(chi_f64(1.0), "0.83786694098020824");
+        check(shi_f64(2.0), "2.5015674333549756");
+        check(chi_f64(2.0), "2.4526669226469145");
+        check(chi_f64(-2.0), "2.4526669226469145");
+        check(shi_f64(-1.0), "-1.0572508753757285");
+        check(shi_f64(10.0), "1246.1144901994233");
+        check(chi_f64(10.0), "1246.1144860424544");
     }
 
     #[test]

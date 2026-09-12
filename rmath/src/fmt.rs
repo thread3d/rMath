@@ -286,6 +286,18 @@ fn output_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                             out.push(']');
                             return;
                         }
+                        // Negative integer powers print as reciprocals
+                        // (1/x, 1/x^2, 1/(2 x)), as in Mathematica.
+                        Expr::Int(n) if n.to_i64().map_or(false, |v| v < 0) => {
+                            let e = -n.to_i64().unwrap();
+                            out.push_str("1/");
+                            parenthesize(t, &nd.args[0], 21, out);
+                            if e != 1 {
+                                out.push('^');
+                                out.push_str(&e.to_string());
+                            }
+                            return;
+                        }
                         Expr::Rat(_) | Expr::Real(_) => {
                             parenthesize(t, &nd.args[0], 31, out);
                             out.push('^');

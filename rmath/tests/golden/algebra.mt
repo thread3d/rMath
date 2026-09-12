@@ -56,7 +56,7 @@ MatrixPower[{{1, 1}, {0, 1}}, 3]
 MatrixRank[{{1, 2}, {2, 4}}]
 => 1
 D[Log[x], x]
-=> x^-1
+=> 1/x
 Series[Cos[x], {x, 0, 4}]
 => SeriesData[x, 0, {1, 0, -1/2, 0, 1/24}, 0, 4, 1]
 

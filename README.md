@@ -318,8 +318,11 @@ k.eval("x = 5; x^2")["result"]       # "25"
   (integration by parts, partial fractions and trigonometric substitution are
   not implemented, so e.g. `Integrate[x Sin[x], x]` stays unevaluated).
 - Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
-  `ExpIntegralEi`, `LogIntegral` (machine-precision numeric evaluation, exact
-  values at 0/±Infinity, and derivatives).
+  `SinhIntegral`, `CoshIntegral`, `ExpIntegralEi`, `LogIntegral`, `Sinc`
+  (machine-precision numeric evaluation, exact values at 0/±Infinity, and
+  derivatives). Common abbreviations from other systems are accepted as
+  aliases: `Si`, `Ci`, `Shi`, `Chi`, `Ei`, `li`, `erf`, `erfc` — note that
+  Mathematica itself has no `Si`; it is an extension here.
 
 ## Architecture
 

@@ -36,3 +36,36 @@ Sqrt[2]
 => Sqrt[2]
 x^(1/3)
 => x^(1/3)
+
+# Abbreviations accepted for the special functions (Si, Ci, Ei, li, erf) —
+# these names come from other CAS/scientific libraries, not from Mathematica
+Si[x]
+=> SinIntegral[x]
+N[Si[1]]
+=> 0.946083
+N[Si[1] - SinIntegral[1]]
+=> 0.
+Ci[1.0]
+=> 0.337404
+Ei[1.0]
+=> 1.89512
+li[2.0]
+=> 1.04516
+erf[1.0]
+=> 0.842701
+D[Si[x], x]
+=> Sin[x]/x
+Integrate[Si[x], x]
+=> Integrate[SinIntegral[x], x]
+# Sinc[x] = Sin[x]/x with Sinc[0] = 1
+Sinc[0]
+=> 1
+Sinc[1.0]
+=> 0.841471
+D[Sinc[x], x]
+=> Cos[x]/x - 1/x^2 Sin[x]
+# negative powers print as reciprocals
+1/x^2
+=> 1/x^2
+1/(2 x)
+=> 1/(2 x)

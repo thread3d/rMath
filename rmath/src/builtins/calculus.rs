@@ -173,26 +173,48 @@ fn derivative_table(i: &mut Interp, head: usize, y: &Expr) -> Option<Expr> {
         "Exp" => Some(app(i, "Exp", y)),
         "Log" => Some(pw(i, y, Expr::int_i64(-1))),
         // special functions
-        "SinIntegral" => {
+        "SinIntegral" | "Si" => {
             let s = app(i, "Sin", y);
             let inv = pw(i, y, Expr::int_i64(-1));
             Some(mul2(i, s, inv))
         }
-        "CosIntegral" => {
+        "CosIntegral" | "Ci" => {
             let c = app(i, "Cos", y);
             let inv = pw(i, y, Expr::int_i64(-1));
             Some(mul2(i, c, inv))
         }
-        "ExpIntegralEi" => {
+        "ExpIntegralEi" | "Ei" => {
             let e1 = app(i, "Exp", y);
             let inv = pw(i, y, Expr::int_i64(-1));
             Some(mul2(i, e1, inv))
         }
-        "LogIntegral" => {
+        "LogIntegral" | "li" => {
             let l = app(i, "Log", y);
             Some(pw(i, &l, Expr::int_i64(-1)))
         }
-        "Erf" | "Erfc" => {
+        "SinhIntegral" | "Shi" => {
+            let s = app(i, "Sinh", y);
+            let inv = pw(i, y, Expr::int_i64(-1));
+            Some(mul2(i, s, inv))
+        }
+        "CoshIntegral" | "Chi" => {
+            let c = app(i, "Cosh", y);
+            let inv = pw(i, y, Expr::int_i64(-1));
+            Some(mul2(i, c, inv))
+        }
+        "Sinc" => {
+            // d/dx (Sin[x]/x) = Cos[x]/x - Sin[x]/x^2
+            let c = app(i, "Cos", y);
+            let inv = pw(i, y, Expr::int_i64(-1));
+            let term1 = mul2(i, c, inv);
+            let s = app(i, "Sin", y);
+            let inv2 = pw(i, y, Expr::int_i64(-2));
+            let prod = mul2(i, s, inv2);
+            let term2 = neg1(i, prod);
+            let plus = i.t.sys.plus;
+            Some(Expr::node(Expr::Sym(plus), vec![term1, term2]))
+        }
+        "Erf" | "Erfc" | "erf" | "erfc" => {
             let sq = pw(i, y, Expr::int_i64(2));
             let neg_sq = neg1(i, sq);
             let e = app(i, "Exp", &neg_sq);
@@ -201,7 +223,7 @@ fn derivative_table(i: &mut Interp, head: usize, y: &Expr) -> Option<Expr> {
             let inv = pw(i, &root_pi, Expr::int_i64(-1));
             let prod = mul2(i, e, inv);
             let v = mul2(i, Expr::int_i64(2), prod);
-            Some(if name == "Erfc" { neg1(i, v) } else { v })
+            Some(if name == "Erfc" || name == "erfc" { neg1(i, v) } else { v })
         }
         "ArcSin" => {
             let d = one_minus_y2(i, y);

@@ -25,6 +25,23 @@ pub enum Flow {
 
 pub type EvalRes = Result<Expr, Flow>;
 
+/// Alternative names accepted for special functions. Mathematica itself is
+/// case- and name-strict here (it has no `Si`), but these abbreviations are
+/// standard elsewhere, so they are accepted as aliases.
+pub fn alias_target(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Si" => "SinIntegral",
+        "Ci" => "CosIntegral",
+        "Ei" => "ExpIntegralEi",
+        "li" => "LogIntegral",
+        "erf" => "Erf",
+        "erfc" => "Erfc",
+        "Shi" => "SinhIntegral",
+        "Chi" => "CoshIntegral",
+        _ => return None,
+    })
+}
+
 pub struct Interp {
     pub t: SymbolTable,
     pub depth: usize,
@@ -208,6 +225,17 @@ impl Interp {
                 if let Some(res) = self.thread_listable(id, &vargs)? {
                     let ch = !same_q(&res, orig);
                     return Ok((res, ch));
+                }
+            }
+            // Abbreviations used by other computer-algebra systems (SymPy,
+            // Maxima, scipy, mpmath) and by hand-written mathematics resolve to
+            // the canonical Wolfram names: Si -> SinIntegral, Ei ->
+            // ExpIntegralEi, li -> LogIntegral, erf -> Erf, ...
+            if self.t.data[id].builtin.is_none() && self.t.data[id].down.is_empty() {
+                let name = self.t.name_of(id).to_string();
+                if let Some(target) = alias_target(&name) {
+                    let tid = self.t.intern(target);
+                    return self.eval_node(&Expr::Sym(tid), args, orig);
                 }
             }
             // Nothing matched: if the name differs from a real function only by
@@ -679,6 +707,20 @@ mod tests {
         // Unknown names without a case-mate stay quiet.
         let (_, msgs) = eval_str("zzz[1]");
         assert!(msgs.is_empty(), "unexpected messages: {:?}", msgs);
+    }
+
+    #[test]
+    fn special_function_aliases() {
+        // Names used by other systems resolve to the Wolfram spellings.
+        let (text, _) = eval_str("Si[x]");
+        assert_eq!(text, "SinIntegral[x]");
+        let (text, _) = eval_str("ei[x]");
+        assert_eq!(text, "ei[x]", "unknown names stay unevaluated");
+        let (text, msgs) = eval_str("Si[1.0]");
+        assert!(text.starts_with("0.946083"), "Si[1.] is numeric: {}", text);
+        assert!(msgs.is_empty(), "aliases are silent: {:?}", msgs);
+        let (text, _) = eval_str("Sinc[0]");
+        assert_eq!(text, "1");
     }
 
     #[test]
