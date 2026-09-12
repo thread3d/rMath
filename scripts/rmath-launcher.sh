@@ -104,8 +104,9 @@ PY="$(find_python)" || {
 # Kernel working directory: writable, holds a copy of the demo files.
 WORKDIR="$APP_SUPPORT/work"
 mkdir -p "$WORKDIR"
-if [ -d "$RES/demo" ] && [ ! -d "$WORKDIR/demo" ]; then
-  cp -R "$RES/demo" "$WORKDIR/demo" 2>/dev/null || true
+if [ -d "$RES/demo" ]; then
+  mkdir -p "$WORKDIR/demo"
+  cp -R "$RES/demo/." "$WORKDIR/demo/" 2>/dev/null || true
 fi
 
 export RMATH_BIN="$RES/rmath"

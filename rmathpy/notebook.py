@@ -296,15 +296,20 @@ async function evaluate() {
   inp.value = '';
   autoGrow();
   ac.style.display = 'none';
+  let lastOut = null;
   for (const line of lines) {
     history.push(line);
     const inCell = addCellHTML('<div class="in-label">In</div>' +
                                '<div class="out-label">Evaluating...</div>');
     const out = addCellHTML('');
+    lastOut = out;
     await evaluateLine(line, out, inCell);
   }
   localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
   histPos = history.length;
+  // Bring the new output into view (a long cell otherwise leaves its result,
+  // e.g. a plot, below the fold).
+  if (lastOut) lastOut.scrollIntoView({block: 'end', behavior: 'smooth'});
   inp.focus();
   autoGrow();
 }

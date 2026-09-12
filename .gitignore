@@ -28,3 +28,6 @@ apps/native/.build/
 # dev helper build artifacts
 scripts/dev/.build/
 scripts/dev/screenshot
+
+# verification screenshots
+.shots/

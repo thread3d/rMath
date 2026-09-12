@@ -36,45 +36,45 @@ pub fn b_get(i: &mut Interp, args: &[Expr]) -> EvalRes {
             return Ok(unevaluated_call(i, "Get", args));
         }
     };
-    // Strip (* ... *) comments (multi-line safe, string-aware) first, so
-    // per-line parsing works.
+    // Strip (* ... *) comments (multi-line safe, string-aware) first.
     let content = strip_comments(&content);
-    // One statement per line; a line that ends inside an unclosed bracket
-    // continues on the next line.
+    // Split into statements at newlines that are outside any brackets or
+    // string, then evaluate them in order. A statement that fails to parse is
+    // joined with the next one and retried, so trailing-operator continuation
+    // (e.g. "x = 1 +\n  2") also works.
+    let statements = split_statements(&content);
     let mut last = Expr::Sym(i.t.sys.null);
     let mut produced = false;
-    let mut buffer = String::new();
-    for line in content.lines() {
-        if buffer.is_empty() && (line.trim().is_empty() || line.trim().starts_with('#')) {
-            continue;
-        }
-        buffer.push_str(line);
-        buffer.push('\n');
-        match crate::parser::parse_input(&mut i.t, buffer.trim()) {
-            Ok(e) => {
-                let v = i.eval(&e)?;
-                if !v.is_symbol(i.t.sys.null) {
-                    last = v;
-                    produced = true;
+    let mut idx = 0usize;
+    while idx < statements.len() {
+        let mut chunk = statements[idx].clone();
+        idx += 1;
+        let parsed = loop {
+            match crate::parser::parse_input(&mut i.t, chunk.trim()) {
+                Ok(e) => break Some(e),
+                Err(pe) => {
+                    if idx < statements.len() {
+                        chunk.push('\n');
+                        chunk.push_str(&statements[idx]);
+                        idx += 1;
+                        continue;
+                    }
+                    i.messages.push((
+                        format!("Get::syntax ({})", path),
+                        format!("statement {}: {}", idx, pe.msg),
+                    ));
+                    break None;
                 }
-                buffer.clear();
             }
-            Err(pe) => {
-                if is_continuation_error(&pe.msg) {
-                    continue; // keep accumulating lines
-                }
-                i.messages.push((
-                    format!("Get::syntax ({}): {}", path, pe.line),
-                    pe.msg.clone(),
-                ));
-                return Ok(unevaluated_call(i, "Get", args));
-            }
+        };
+        let Some(e) = parsed else {
+            return Ok(unevaluated_call(i, "Get", args));
+        };
+        let v = i.eval(&e)?;
+        if !v.is_symbol(i.t.sys.null) {
+            last = v;
+            produced = true;
         }
-    }
-    if !buffer.trim().is_empty() {
-        i.messages
-            .push(("Get::incomplete".to_string(), "unclosed expression".to_string()));
-        return Ok(unevaluated_call(i, "Get", args));
     }
     Ok(if produced { last } else { Expr::Sym(i.t.sys.null) })
 }
@@ -129,6 +129,58 @@ fn strip_comments(src: &str) -> String {
     out
 }
 
+/// Split a script into statements at newlines outside brackets/strings.
+fn split_statements(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_str {
+            cur.push(c);
+            if c == '\\' {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                cur.push(c);
+            }
+            '[' | '(' | '{' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ']' | ')' | '}' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            '\n' => {
+                if depth <= 0 {
+                    if !cur.trim().is_empty() {
+                        out.push(cur.clone());
+                    }
+                    cur.clear();
+                } else {
+                    cur.push('\n');
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+#[allow(dead_code)]
 fn is_continuation_error(msg: &str) -> bool {
     msg.contains("expected ]")
         || msg.contains("expected )")

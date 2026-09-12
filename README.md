@@ -81,6 +81,28 @@ interpreter), `RMATH_LOG_REQUESTS=1` (log every HTTP request to the app log),
 and `RMATH_NO_NATIVE=1 make app` (build the older browser-launcher bundle
 instead of the native app).
 
+### Screenshots from the app
+
+The app snapshots its own window — no Screen Recording permission is required,
+because it renders its own view rather than capturing the display.
+
+- **In the app**: **File ▸ Save Screenshot** (⌘S) writes
+  `~/Desktop/rMath-<timestamp>.png` and reveals it in Finder.
+- **From a terminal**, against a running instance:
+
+  ```bash
+  APP=~/Applications/rMath.app/Contents/MacOS/rMath
+  "$APP" --screenshot /tmp/shot.png                      # viewport PNG
+  "$APP" --screenshot /tmp/page.pdf                      # full page as PDF
+  "$APP" --screenshot /tmp/shot.png \
+         --js 'document.getElementById("inp").value="Plot[Sin[x],{x,0,6}]"; evaluate();' \
+         --delay 6                                        # drive the page, then shoot
+  ```
+
+  The running app polls `<tmpdir>/rMath-shot.request` (line 1: destination,
+  line 2: optional JavaScript, line 3: optional delay) and answers through
+  `rMath-shot.done`.
+
 ### Verifying output without screen-capture permissions
 
 macOS gates real screen capture (`screencapture`, AppleScript UI scripting)

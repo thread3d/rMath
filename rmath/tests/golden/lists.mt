@@ -31,3 +31,20 @@ Which[1 > 2, a, 3 > 2, b]
 => b
 Do[i, {i, 3}]
 => 
+
+# list builtins must evaluate their list argument (regression: Range[10] was
+# treated as its own argument list by Select/Cases/Count/SortBy)
+Select[Range[10], EvenQ]
+=> {2, 4, 6, 8, 10}
+Select[Range[10], # > 5 &]
+=> {6, 7, 8, 9, 10}
+Select[Range[10], OddQ]
+=> {1, 3, 5, 7, 9}
+Cases[Range[10], _?EvenQ]
+=> {2, 4, 6, 8, 10}
+Count[Range[10], _?EvenQ]
+=> 5
+SortBy[Range[5], Identity]
+=> {1, 2, 3, 4, 5}
+Position[Range[5], 5]
+=> {{5}}

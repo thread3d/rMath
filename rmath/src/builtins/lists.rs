@@ -567,8 +567,9 @@ pub fn b_cases(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         return Ok(unevaluated_call(i, "Cases", args));
     }
+    let list = i.eval(&args[0])?;
     let mut out = Vec::new();
-    for x in args[0].node_args() {
+    for x in list.node_args() {
         if crate::pattern::match_top(i, &args[1], &x) {
             out.push(x);
         }
@@ -580,8 +581,9 @@ pub fn b_select(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         return Ok(unevaluated_call(i, "Select", args));
     }
+    let list = i.eval(&args[0])?;
     let mut out = Vec::new();
-    for x in args[0].node_args() {
+    for x in list.node_args() {
         let call = Expr::node(args[1].clone(), vec![x.clone()]);
         let v = i.eval(&call)?;
         if v.is_symbol(i.t.sys.r#true) {
@@ -595,8 +597,9 @@ pub fn b_count(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         return Ok(unevaluated_call(i, "Count", args));
     }
+    let list = i.eval(&args[0])?;
     let mut n = 0i64;
-    for x in args[0].node_args() {
+    for x in list.node_args() {
         if crate::pattern::match_top(i, &args[1], &x) {
             n += 1;
         }
@@ -633,7 +636,8 @@ pub fn b_sort(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 1 {
         return Ok(unevaluated_call(i, "Sort", args));
     }
-    let mut v: Vec<Expr> = args[0].node_args();
+    let list = i.eval(&args[0])?;
+    let mut v: Vec<Expr> = list.node_args();
     let t = &i.t;
     v.sort_by(|a, b| canon_cmp(t, a, b));
     Ok(Expr::node(Expr::Sym(i.t.sys.list), v))

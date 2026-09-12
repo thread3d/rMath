@@ -118,6 +118,22 @@ func healthOK(_ port: Int) -> Bool {
     return ok
 }
 
+// ---------------------------------------------------------------- screenshots
+
+func shotRequestURL() -> URL {
+    URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rMath-shot.request")
+}
+
+func shotDoneURL() -> URL {
+    URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rMath-shot.done")
+}
+
+func timestamp() -> String {
+    let f = DateFormatter()
+    f.dateFormat = "yyyyMMdd-HHmmss"
+    return f.string(from: Date())
+}
+
 // ---------------------------------------------------------------- app
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
@@ -130,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     var pollTimer: Timer?
     var pollStart = Date()
     var serverLog: FileHandle?
+    var shotTimer: Timer?
 
     // ---- lifecycle
 
@@ -161,8 +178,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             if let p = Int(a.dropFirst("--port=".count)) { port = p }
         }
 
+        // --screenshot <path>: ask an already-running instance to snapshot
+        // itself, then exit. The running app polls the request file and
+        // answers through the done file.
+        if let idx = args.firstIndex(of: "--screenshot") {
+            let dest = idx + 1 < args.count ? args[idx + 1] : ""
+            var js = ""
+            var delay = 2.5
+            if let j = args.firstIndex(of: "--js"), j + 1 < args.count { js = args[j + 1] }
+            if let d = args.firstIndex(of: "--delay"), d + 1 < args.count {
+                delay = Double(args[d + 1]) ?? 2.5
+            }
+            exit(requestScreenshot(dest: dest, js: js, delay: delay) ? 0 : 1)
+        }
+
         let headless = args.contains("--no-window")
         if !headless { buildWindow() }
+        if !headless {
+            startShotWatcher()
+            if let p = ProcessInfo.processInfo.environment["RMATH_SHOT_ON_LAUNCH"], !p.isEmpty {
+                // handy for scripted verification: shoot once the page settles
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self.saveScreenshot(to: p) }
+            }
+        }
 
         startServer { [weak self] ok in
             guard let self = self else { return }
@@ -276,6 +314,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
 
+        let fileItem = NSMenuItem()
+        main.addItem(fileItem)
+        let file = NSMenu(title: "File")
+        file.addItem(withTitle: "Save Screenshot",
+                     action: #selector(shootToDesktop), keyEquivalent: "s")
+        fileItem.submenu = file
+
         let editItem = NSMenuItem()
         main.addItem(editItem)
         let edit = NSMenu(title: "Edit")
@@ -320,6 +365,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         webView.pageZoom = z
     }
 
+    // ---- screenshots
+
+    func startShotWatcher() {
+        try? FileManager.default.removeItem(at: shotRequestURL())
+        try? FileManager.default.removeItem(at: shotDoneURL())
+        shotTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            self?.pollShotRequest()
+        }
+    }
+
+    /// Request format (a text file the running app polls):
+    ///   line 1: destination path ("" = default Desktop path)
+    ///   line 2: optional JavaScript to run first (e.g. evaluate an expression)
+    ///   line 3: optional delay in seconds before the snapshot (default 2.5)
+    func pollShotRequest() {
+        let req = shotRequestURL()
+        guard let raw = try? String(contentsOf: req, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: req)
+        var lines = raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let dest = lines.isEmpty ? "" : lines.removeFirst().trimmingCharacters(in: .whitespaces)
+        let js = lines.isEmpty ? "" : lines.removeFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+        let delay = lines.isEmpty
+            ? 2.5
+            : (Double(lines.removeFirst().trimmingCharacters(in: .whitespaces)) ?? 2.5)
+        let target = dest.isEmpty ? defaultShotPath() : dest
+        guard !js.isEmpty, let web = webView else {
+            saveScreenshot(to: target)
+            return
+        }
+        web.evaluateJavaScript(js) { _, err in
+            if let err = err { print("js error: \(err.localizedDescription)") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                self.saveScreenshot(to: target)
+            }
+        }
+    }
+
+    func defaultShotPath() -> String {
+        let name = "rMath-\(timestamp()).png"
+        if let desktop = FileManager.default.urls(for: .desktopDirectory,
+                                                  in: .userDomainMask).first {
+            return desktop.appendingPathComponent(name).path
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(name).path
+    }
+
+    /// Snapshot the web view. `.pdf` destinations produce a full page PDF
+    /// instead of a viewport PNG. Needs no screen-recording permission: the
+    /// app renders its own view.
+    func saveScreenshot(to path: String) {
+        // Create the destination directory if needed.
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard let web = webView else {
+            finishShot("err no window")
+            return
+        }
+        if path.lowercased().hasSuffix(".pdf") {
+            let cfg = WKPDFConfiguration()
+            cfg.rect = web.bounds
+            web.createPDF(configuration: cfg) { result in
+                switch result {
+                case .success(let data):
+                    do {
+                        try data.write(to: URL(fileURLWithPath: path))
+                        self.finishShot("ok \(path)")
+                    } catch { self.finishShot("err \(error.localizedDescription)") }
+                case .failure(let err):
+                    self.finishShot("err \(err.localizedDescription)")
+                }
+            }
+            return
+        }
+        let cfg = WKSnapshotConfiguration()
+        cfg.rect = web.bounds
+        web.takeSnapshot(with: cfg) { image, err in
+            guard let image = image,
+                  let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) else {
+                self.finishShot("err \(err?.localizedDescription ?? "snapshot failed")")
+                return
+            }
+            do {
+                try png.write(to: URL(fileURLWithPath: path))
+                self.finishShot("ok \(path)")
+            } catch {
+                self.finishShot("err \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func finishShot(_ message: String) {
+        try? message.write(to: shotDoneURL(), atomically: true, encoding: .utf8)
+        print("screenshot: \(message)")
+        if message.hasPrefix("ok ") {
+            let path = String(message.dropFirst(3))
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+    }
+
+    @objc func shootToDesktop() {
+        saveScreenshot(to: defaultShotPath())
+    }
+
+    /// Ask the running instance for a screenshot; returns true on success.
+    func requestScreenshot(dest: String, js: String = "", delay: Double = 2.5) -> Bool {
+        if !healthOK(port) {
+            FileHandle.standardError.write(Data(
+                "rMath: no running instance on port \(port) to screenshot\n".utf8))
+            return false
+        }
+        try? FileManager.default.removeItem(at: shotDoneURL())
+        let target = dest.isEmpty ? URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("rMath-\(timestamp()).png").path : dest
+        let request = "\(target)\n\(js.replacingOccurrences(of: "\n", with: " "))\n\(delay)\n"
+        do {
+            try request.write(to: shotRequestURL(), atomically: true, encoding: .utf8)
+        } catch {
+            FileHandle.standardError.write(Data("rMath: cannot write request: \(error)\n".utf8))
+            return false
+        }
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if let done = try? String(contentsOf: shotDoneURL(), encoding: .utf8) {
+                try? FileManager.default.removeItem(at: shotDoneURL())
+                print(done)
+                return done.hasPrefix("ok ")
+            }
+            usleep(150_000)
+        }
+        FileHandle.standardError.write(Data("rMath: screenshot timed out\n".utf8))
+        return false
+    }
+
     // ---- server management
 
     func startServer(done: @escaping (Bool) -> Void) {
@@ -342,9 +522,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         // Seed the writable work dir with the bundled demo files.
         let demoIn = res.appendingPathComponent("demo")
         let demoOut = work.appendingPathComponent("demo")
-        if FileManager.default.fileExists(atPath: demoIn.path),
-           !FileManager.default.fileExists(atPath: demoOut.path) {
-            try? FileManager.default.copyItem(at: demoIn, to: demoOut)
+        try? FileManager.default.createDirectory(at: demoOut, withIntermediateDirectories: true)
+        // Always refresh the bundled demo sources (demo.mt, data.csv) so app
+        // updates take effect; generated outputs are left in place.
+        if let sources = try? FileManager.default.contentsOfDirectory(
+            at: demoIn, includingPropertiesForKeys: nil) {
+            for src in sources {
+                let dst = demoOut.appendingPathComponent(src.lastPathComponent)
+                try? FileManager.default.removeItem(at: dst)
+                try? FileManager.default.copyItem(at: src, to: dst)
+            }
         }
 
         // Find a free port: try the preferred one, then a few neighbours.
@@ -426,6 +613,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     func stopServer() {
         pollTimer?.invalidate()
         pollTimer = nil
+        shotTimer?.invalidate()
+        shotTimer = nil
         guard ownsServer, let task = server else { return }
         if task.isRunning {
             task.terminate()                     // SIGTERM -> server closes kernel
