@@ -218,7 +218,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
              border: 1px solid var(--bracket); border-left: none;
              border-radius: 0 2px 2px 0; pointer-events: none; }
   .nobrackets .bracket { display: none; }
-  .row { display: flex; align-items: flex-start; min-height: 20px; }
+  /* Labels align on the first line's baseline. For a typeset fraction the
+     baseline is the vinculum, so Out[n]= lines up with the fraction bar, as in
+     Mathematica. Rows whose content is a plot have no text baseline and are
+     aligned to the top instead (see .outrow.plot). */
+  .row { display: flex; align-items: baseline; min-height: 20px; }
+  .outrow.plot { align-items: flex-start; }
+  .outrow.plot .lbl { margin-top: 3px; }
   /* In/Out labels: same font, size, weight and box; the colours differ (cool
      grey for In, warm gold for Out). The gold is deliberately dark — a lighter
      gold at this size reads as thinner, and therefore smaller. */
@@ -470,6 +476,7 @@ async function evaluateLine(input, cell) {
       html += '<div class="msgs">' + resp.messages.map(m => esc(m.text)).join('\n') + '</div>';
     if (resp.svg) {
       html += '<div class="svgbox">' + resp.svg + '</div>';
+      outRow.classList.add('plot');
       lastPlotSvg = resp.svg;
     } else if (resp.tex) {
       html += mathSpan(resp.tex, resp.tex_trad);
