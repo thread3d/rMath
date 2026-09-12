@@ -144,66 +144,133 @@ pub fn b_erfc(i: &mut Interp, args: &[Expr]) -> EvalRes {
 
 // ---------------------------------------------------------------- numerics
 
-/// Sine integral Si(x) = ∫₀ˣ sin t / t dt.
+/// 16-point Gauss–Legendre on [a, b].
+fn gauss16(f: &dyn Fn(f64) -> f64, a: f64, b: f64) -> f64 {
+    const X: [f64; 8] = [
+        0.095_012_509_837_637_4,
+        0.281_603_550_779_258_9,
+        0.458_016_777_657_227_4,
+        0.617_876_244_402_643_8,
+        0.755_404_408_355_003_0,
+        0.865_631_202_387_831_8,
+        0.944_575_023_073_232_6,
+        0.989_400_934_991_649_9,
+    ];
+    const W: [f64; 8] = [
+        0.189_450_610_455_068_5,
+        0.182_603_415_044_923_6,
+        0.169_156_519_395_002_5,
+        0.149_595_988_816_576_7,
+        0.124_628_971_255_533_9,
+        0.095_158_511_682_492_8,
+        0.062_253_523_938_647_9,
+        0.027_152_459_411_754_1,
+    ];
+    let c = 0.5 * (a + b);
+    let h = 0.5 * (b - a);
+    let mut sum = 0.0;
+    for i in 0..8 {
+        sum += W[i] * (f(c + h * X[i]) + f(c - h * X[i]));
+    }
+    sum * h
+}
+
+/// ∫₀ˣ f(t) dt by composite Gauss–Legendre (half-period subintervals, so
+/// oscillatory integrands stay accurate). The Taylor series for Si/Ci loses
+/// precision to cancellation well before x = 30, and the asymptotic series is
+/// only good for large x, so this covers the middle.
+fn integrate_0_to(x: f64, f: &dyn Fn(f64) -> f64) -> f64 {
+    let step = std::f64::consts::FRAC_PI_2;
+    let mut a = 0.0;
+    let mut total = 0.0;
+    while a < x {
+        let b = (a + step).min(x);
+        total += gauss16(f, a, b);
+        a = b;
+    }
+    total
+}
+
+/// Sine integral Si(x) = ∫₀ˣ sin t / t dt (odd: Si(-x) = -Si(x)).
 pub fn si_f64(x: f64) -> f64 {
     if x == 0.0 {
         return 0.0;
     }
-    if x.abs() < 1e-8 {
-        return x;
+    let a = x.abs();
+    let v = si_positive(a);
+    if x < 0.0 {
+        -v
+    } else {
+        v
     }
-    if x.abs() > 30.0 {
-        // Asymptotic: Si(x) ~ π/2 - cos(x)/x (1 - 2!/x² + ...) - sin(x)/x²(1 - 3!/x² + ...)
-        let (s, c) = x.sin_cos();
-        let x2 = x * x;
-        let f = 1.0 - 2.0 / x2 + 24.0 / (x2 * x2);
-        let g = 1.0 / x - 6.0 / (x2 * x);
-        let sign = if x < 0.0 { -1.0 } else { 1.0 };
-        return sign * (std::f64::consts::FRAC_PI_2 - c * f / x - s * g / x2 * x2 / x);
-    }
-    // Taylor series: Σ (-1)^n x^(2n+1) / ((2n+1)(2n+1)!)
-    let mut term = x; // x^(2n+1)/(2n+1)!
-    let mut sum = x;
-    let mut n = 1.0;
-    loop {
-        term *= -x * x / ((2.0 * n) * (2.0 * n + 1.0));
-        let add = term / (2.0 * n + 1.0);
-        sum += add;
-        if add.abs() < 1e-18 * sum.abs().max(1e-300) || n > 200.0 {
-            break;
-        }
-        n += 1.0;
-    }
-    sum
 }
 
-/// Cosine integral Ci(x) = γ + ln|x| + ∫₀ˣ (cos t - 1)/t dt.
+fn si_positive(a: f64) -> f64 {
+    if a < 1e-8 {
+        return a;
+    }
+    if a <= 4.0 {
+        // Taylor series: Σ (-1)^n a^(2n+1) / ((2n+1)(2n+1)!)
+        let mut term = a;
+        let mut sum = a;
+        let mut n = 1.0;
+        loop {
+            term *= -a * a / ((2.0 * n) * (2.0 * n + 1.0));
+            let add = term / (2.0 * n + 1.0);
+            sum += add;
+            if add.abs() < 1e-18 * sum.abs().max(1e-300) || n > 200.0 {
+                break;
+            }
+            n += 1.0;
+        }
+        return sum;
+    }
+    if a < 100.0 {
+        return integrate_0_to(a, &|t: f64| t.sin() / t);
+    }
+    // Asymptotic (A&S 5.2): Si(a) ~ π/2 - cos(a)/a·f - sin(a)/a²·g
+    let (s, c) = a.sin_cos();
+    let a2 = a * a;
+    let a4 = a2 * a2;
+    let f = 1.0 - 2.0 / a2 + 24.0 / a4 - 720.0 / (a4 * a2) + 40320.0 / (a4 * a4);
+    let g = 1.0 - 6.0 / a2 + 120.0 / a4 - 5040.0 / (a4 * a2);
+    std::f64::consts::FRAC_PI_2 - c * f / a - s * g / a2
+}
+
+/// Cosine integral Ci(x) = γ + ln|x| + ∫₀ˣ (cos t - 1)/t dt (even).
 pub fn ci_f64(x: f64) -> f64 {
     const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
     if x == 0.0 {
         return f64::NEG_INFINITY;
     }
-    if x.abs() > 30.0 {
-        let (s, c) = x.sin_cos();
-        let x2 = x * x;
-        let f = 1.0 - 2.0 / x2 + 24.0 / (x2 * x2);
-        let g = 1.0 / x - 6.0 / (x2 * x);
-        return s * f / x - c * g / x2 * x2 / x;
-    }
-    // Σ (-1)^n x^(2n) / ((2n)(2n)!)
-    let mut term = 1.0; // x^(2n)/(2n)!
-    let mut sum = 0.0;
-    let mut n = 1.0;
-    loop {
-        term *= -x * x / ((2.0 * n - 1.0) * (2.0 * n));
-        let add = term / (2.0 * n);
-        sum += add;
-        if add.abs() < 1e-18 * sum.abs().max(1e-300) || n > 200.0 {
-            break;
+    let a = x.abs();
+    if a <= 4.0 {
+        // Σ (-1)^n a^(2n) / ((2n)(2n)!)
+        let mut term = 1.0;
+        let mut sum = 0.0;
+        let mut n = 1.0;
+        loop {
+            term *= -a * a / ((2.0 * n - 1.0) * (2.0 * n));
+            let add = term / (2.0 * n);
+            sum += add;
+            if add.abs() < 1e-18 * sum.abs().max(1e-300) || n > 200.0 {
+                break;
+            }
+            n += 1.0;
         }
-        n += 1.0;
+        return EULER_GAMMA + a.ln() + sum;
     }
-    EULER_GAMMA + x.abs().ln() + sum
+    if a < 100.0 {
+        return EULER_GAMMA
+            + a.ln()
+            + integrate_0_to(a, &|t: f64| (t.cos() - 1.0) / t);
+    }
+    let (s, c) = a.sin_cos();
+    let a2 = a * a;
+    let a4 = a2 * a2;
+    let f = 1.0 - 2.0 / a2 + 24.0 / a4 - 720.0 / (a4 * a2) + 40320.0 / (a4 * a4);
+    let g = 1.0 - 6.0 / a2 + 120.0 / a4 - 5040.0 / (a4 * a2);
+    s * f / a - c * g / a2
 }
 
 /// Exponential integral Ei(x) = γ + ln|x| + Σ xⁿ/(n·n!).
@@ -336,6 +403,77 @@ mod tests {
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() <= tol * b.abs().max(1.0)
+    }
+
+    /// Compare against 17-digit references generated with mpmath (mp.si, mp.ci,
+    /// mp.erf, mp.erfc, mp.ei, mp.li). The Taylor series alone lost precision to
+    /// cancellation by x ~ 15 and the negative-x asymptotic branch was wrong;
+    /// this table pins the accuracy down across the whole range.
+    fn check(actual: f64, ref_text: &str) {
+        let reference: f64 = ref_text.parse().unwrap();
+        // Absolute for O(1) quantities (Si and Ci cross zero), relative for
+        // the exponentially-growing ones.
+        let scale = reference.abs().max(1.0);
+        let err = (actual - reference).abs() / scale;
+        assert!(
+            err < 1e-12,
+            "got {:.17}, want {} (scaled error {:.2e})",
+            actual,
+            ref_text,
+            err
+        );
+    }
+
+    #[test]
+    fn reference_table() {
+    // si
+    check(si_f64(1.0f64), "0.94608307036718301");
+    check(si_f64(2.0f64), "1.6054129768026948");
+    check(si_f64(5.0f64), "1.5499312449446741");
+    check(si_f64(10.0f64), "1.658347594218874");
+    check(si_f64(20.0f64), "1.5482417010434398");
+    check(si_f64(30.0f64), "1.5667565400303511");
+    check(si_f64(40.0f64), "1.5869851193547845");
+    check(si_f64(-7.5f64), "-1.5106815309433859");
+    check(si_f64(-40.0f64), "-1.5869851193547845");
+    check(si_f64(150.0f64), "1.5661668327225208");
+    check(si_f64(1000.0f64), "1.5702331219687712");
+    // ci
+    check(ci_f64(1.0f64), "0.33740392290096813");
+    check(ci_f64(5.0f64), "-0.19002974965664388");
+    check(ci_f64(10.0f64), "-0.045456433004455373");
+    check(ci_f64(20.0f64), "0.044419820845353317");
+    check(ci_f64(50.0f64), "-0.0056283863241163054");
+    check(ci_f64(99.0f64), "-0.01009500171205846");
+    check(ci_f64(-40.0f64), "0.019020007896208767");
+    check(ci_f64(150.0f64), "-0.0047964889929105475");
+    // erf
+    check(erf_f64(0.5f64), "0.52049987781304654");
+    check(erf_f64(1.0f64), "0.84270079294971487");
+    check(erf_f64(2.0f64), "0.99532226501895273");
+    check(erf_f64(3.0f64), "0.99997790950300141");
+    check(erf_f64(5.0f64), "0.99999999999846254");
+    check(erf_f64(-2.5f64), "-0.99959304798255504");
+    // erfc
+    check(erfc_f64(0.5f64), "0.47950012218695346");
+    check(erfc_f64(1.0f64), "0.15729920705028513");
+    check(erfc_f64(2.0f64), "0.0046777349810472658");
+    check(erfc_f64(3.0f64), "2.2090496998585441e-5");
+    check(erfc_f64(5.0f64), "1.5374597944280349e-12");
+    check(erfc_f64(10.0f64), "2.0884875837625448e-45");
+    // ei
+    check(ei_f64(0.5f64), "0.45421990486317358");
+    check(ei_f64(1.0f64), "1.8951178163559368");
+    check(ei_f64(5.0f64), "40.185275355803177");
+    check(ei_f64(10.0f64), "2492.2289762418778");
+    check(ei_f64(50.0f64), "1.0585636897131691e+20");
+    check(ei_f64(-1.0f64), "-0.21938393439552027");
+    check(ei_f64(-10.0f64), "-4.1569689296853243e-6");
+    // li
+    check(ei_f64(1.5f64.ln()), "0.12506498631529636");
+    check(ei_f64(2.0f64.ln()), "1.0451637801174928");
+    check(ei_f64(10.0f64.ln()), "6.1655995047872979");
+    check(ei_f64(100.0f64.ln()), "30.12614158407963");
     }
 
     #[test]
