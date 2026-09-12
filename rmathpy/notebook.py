@@ -152,6 +152,10 @@ class Handler(BaseHTTPRequestHandler):
                 text = f.read()
             with _KERNEL_LOCK:
                 statements = get_kernel().split(text)
+            if os.environ.get("RMATH_LOG_REQUESTS") == "1":
+                sys.stderr.write("open %s -> %d statements, %d bytes\n"
+                                 % (path, len(statements), len(text)))
+                sys.stderr.flush()
             self._json({"status": "ok", "path": path, "text": text,
                         "statements": statements})
         except Exception as e:
@@ -520,6 +524,7 @@ function newNotebook() {
   inCounter = 0;
   setInLabel();
   resetKernelQuiet();
+  document.title = 'Untitled-1 — rMath';
   toast('New notebook');
 }
 async function resetKernelQuiet() {
@@ -538,27 +543,67 @@ async function resetKernel() {
       '<div class="prints">Kernel reset — In/Out numbering restarted.</div>';
 }
 
+let lastAction = null;
+
 async function openNotebook(intoInput, givenPath) {
   const path = givenPath || window.prompt(
       'Open script (relative to the working directory):', 'demo/demo.mt');
   if (!path) return;
-  const r = await fetch('/api/open', {method: 'POST',
-    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})});
-  const resp = await r.json();
-  if (resp.status !== 'ok') { toast('Open failed: ' + (resp.error || '')); return; }
-  document.title = resp.path.split('/').pop() + ' — rMath';
-  const statements = (resp.statements && resp.statements.length)
-      ? resp.statements : resp.text.split('\n').filter(s => s.trim());
+  let resp;
+  try {
+    const r = await fetch('/api/open', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})});
+    resp = await r.json();
+  } catch (e) {
+    lastAction = {action: 'open', path: path, error: String(e)};
+    toast('Open failed: ' + e);
+    return;
+  }
+  if (resp.status !== 'ok') {
+    lastAction = {action: 'open', path: path, error: resp.error || 'error'};
+    toast('Open failed: ' + (resp.error || ''));
+    return;
+  }
+
+  // Statements come from the kernel's splitter; fall back to a local split so
+  // an RPC hiccup cannot leave an empty notebook behind.
+  let statements = resp.statements || [];
+  if (!statements.length && resp.text) {
+    statements = resp.text.split('\n')
+        .map(s => s.trim())
+        .filter(s => s.length && !s.startsWith('(*') && !s.startsWith('#'));
+    lastAction = {action: 'open', path: path, statements: statements.length,
+                  note: 'used the local line splitter'};
+  } else {
+    lastAction = {action: 'open', path: path, statements: statements.length};
+  }
+
   if (intoInput) {
-    // Editing mode: put the raw text in the input box.
-    inp.value = resp.text;
+    inp.value = resp.text || '';
     autoGrow();
     toast('Loaded ' + resp.path + ' into the input — Shift+Enter evaluates');
     inp.focus();
     return;
   }
-  // Notebook mode: one cell per statement, evaluated in order.
+
+  if (!statements.length) {
+    // Nothing to open: report it and leave the notebook alone.
+    toast('Open: no statements found in ' + resp.path + ' (notebook unchanged)');
+    lastAction.error = 'no statements';
+    return;
+  }
+
+  const existing = notebook.querySelectorAll('.cell').length;
+  if (existing > 0 && !window.confirm(
+      'Open ' + resp.path + '? This replaces the ' + existing +
+      ' cell(s) in the current notebook.')) {
+    lastAction = {action: 'open', path: path, cancelled: true};
+    toast('Open cancelled — notebook unchanged');
+    return;
+  }
+
   newNotebook();
+  document.title = resp.path.split('/').pop() + ' — rMath';
   toast('Opened ' + resp.path + ' — ' + statements.length + ' cells');
   for (const stmt of statements) {
     history.push(stmt);
@@ -643,6 +688,7 @@ function reportContext() {
     // the input box often explains a "nothing happened" report
     inputBox: (inp.value || '').slice(0, 2000),
     inputBoxLines: (inp.value || '').split('\n').length,
+    lastAction: lastAction,
   });
 }
 
