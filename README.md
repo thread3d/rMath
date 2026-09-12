@@ -123,6 +123,11 @@ One action captures everything needed to diagnose a problem:
   (⇧⌘B).
 - **From a terminal**: `make report` (or `rMath --report`).
 
+The button talks to the app through WebKit's script-message handler, so it works
+whether the page is hosted by the app or (for everything except app-only
+actions) in a browser; in a browser the button is dimmed and explains that
+reports need the app.
+
 It writes `bug-<timestamp>.md` + `bug-<timestamp>.png` into
 `<workspace>/.shots/reports/` (the workspace path is recorded by
 `make app-install`; otherwise `~/Desktop/rMath-reports`), and puts a

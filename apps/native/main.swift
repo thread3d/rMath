@@ -221,7 +221,7 @@ final class PaletteButton: NSView {
 // ---------------------------------------------------------------- app
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-                        WKNavigationDelegate, WKUIDelegate {
+                        WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var webView: WKWebView!
     var server: Process?
@@ -413,6 +413,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // The page talks to the app through this handler (no custom URL scheme,
+        // which the system would otherwise try to open with LaunchServices).
+        config.userContentController.add(self, name: "rmath")
         webView = WKWebView(frame: frame, configuration: config)
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -459,6 +462,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         </body></html>
         """
         webView.loadHTMLString(html, baseURL: nil)
+    }
+
+    // ---- page -> app bridge
+
+    func userContentController(_ controller: WKUserContentController,
+                              didReceive message: WKScriptMessage) {
+        guard message.name == "rmath", let body = message.body as? [String: Any],
+              let action = body["action"] as? String else { return }
+        switch action {
+        case "report":
+            generateBugReport()
+        case "palette":
+            if let name = body["name"] as? String { showPalette(named: name) }
+        case "screenshot":
+            let dest = body["path"] as? String ?? ""
+            saveScreenshot(to: dest.isEmpty ? defaultShotPath() : dest)
+        default:
+            print("rmath bridge: unknown action \(action)")
+        }
     }
 
     // ---- web view navigation: intercept the rmath:// bridge

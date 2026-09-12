@@ -679,6 +679,24 @@ function renderFns(filter) {
 }
 function filterFns() { renderFns(document.getElementById('fnfilter').value); }
 
+/// Talk to the desktop app when it is hosting this page. Returns false in a
+/// plain browser (where a custom URL scheme would only make the system try to
+/// open an unknown application).
+function nativeBridge(action, payload) {
+  const handlers = window.webkit && window.webkit.messageHandlers;
+  const h = handlers && handlers.rmath;
+  if (!h) return false;
+  const msg = Object.assign({action: action}, payload || {});
+  h.postMessage(msg);
+  return true;
+}
+
+function reportBug() {
+  if (!nativeBridge('report')) {
+    toast('Bug reports need the rMath app (Help ▸ Report a Bug), or run: make report');
+  }
+}
+
 // Wire the ribbon/help buttons here: inline onclick handlers are resolved
 // through element -> form -> document -> window, so a global named like a DOM
 // member (e.g. evaluate, which collides with document.evaluate) would be
@@ -703,7 +721,14 @@ function wireControls() {
   const form = document.getElementById('formbtn');
   if (form) form.addEventListener('click', toggleForm);
   const report = document.getElementById('reportbtn');
-  if (report) report.addEventListener('click', function () { window.location.href = 'rmath://report'; });
+  if (report) {
+    report.addEventListener('click', reportBug);
+    // In a browser the app-only controls cannot work; say so up front.
+    if (!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.rmath)) {
+      report.title = 'Report a Bug — available in the rMath desktop app';
+      report.style.opacity = '0.45';
+    }
+  }
   const go = document.getElementById('go');
   if (go) go.addEventListener('click', evalInput);
   const helpClose = document.getElementById('helpclose');
