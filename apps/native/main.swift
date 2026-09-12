@@ -423,17 +423,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return
         }
         if path.lowercased().hasSuffix(".pdf") {
-            let cfg = WKPDFConfiguration()
-            cfg.rect = web.bounds
-            web.createPDF(configuration: cfg) { result in
-                switch result {
-                case .success(let data):
-                    do {
-                        try data.write(to: URL(fileURLWithPath: path))
-                        self.finishShot("ok \(path)")
-                    } catch { self.finishShot("err \(error.localizedDescription)") }
-                case .failure(let err):
-                    self.finishShot("err \(err.localizedDescription)")
+            // Ask the page for its full height so the PDF covers all the
+            // content rather than just the visible viewport.
+            web.evaluateJavaScript(
+                "Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)"
+            ) { value, _ in
+                var height = web.bounds.height
+                if let n = value as? NSNumber, n.doubleValue > 0 {
+                    height = CGFloat(n.doubleValue)
+                }
+                let cfg = WKPDFConfiguration()
+                cfg.rect = CGRect(x: 0, y: 0, width: web.bounds.width, height: height)
+                web.createPDF(configuration: cfg) { result in
+                    switch result {
+                    case .success(let data):
+                        do {
+                            try data.write(to: URL(fileURLWithPath: path))
+                            self.finishShot("ok \(path)")
+                        } catch { self.finishShot("err \(error.localizedDescription)") }
+                    case .failure(let err):
+                        self.finishShot("err \(err.localizedDescription)")
+                    }
                 }
             }
             return
