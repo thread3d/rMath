@@ -617,6 +617,327 @@ pub fn eq_poly(i: &mut Interp, eq: &Expr) -> Result<Option<Expr>, Flow> {
     Ok(Some(diff))
 }
 
+
+// ==================== single-variable polynomial solving ====================
+
+/// Coefficients c0 + c1 x + ... of a polynomial, symbolically (so `a x^2 + b x + c`
+/// keeps a, b, c as expressions).
+fn poly_coeffs_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Vec<Expr>>, Flow> {
+    let sys = i.t.sys;
+    let expanded = crate::builtins::poly::expand_expr(i, e)?;
+    let terms: Vec<Expr> = match expanded.parts() {
+        Some((h, a)) if h.is_symbol(sys.plus) => a.to_vec(),
+        _ => vec![expanded],
+    };
+    let mut coeffs: Vec<Expr> = Vec::new();
+    for t in terms {
+        let factors: Vec<Expr> = match t.parts() {
+            Some((h, a)) if h.is_symbol(sys.times) => a.to_vec(),
+            _ => vec![t.clone()],
+        };
+        let mut coeff_parts: Vec<Expr> = Vec::new();
+        let mut power: usize = 0;
+        for f in &factors {
+            if same_q(f, var) {
+                power += 1;
+                continue;
+            }
+            let handled = if let Some((h, a)) = f.parts() {
+                if h.is_symbol(sys.power) && a.len() == 2 && same_q(&a[0], var) {
+                    match a[1].to_i64_pub() {
+                        Some(n) if n >= 0 => {
+                            power += n as usize;
+                            true
+                        }
+                        _ => return Ok(None),
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !handled {
+                coeff_parts.push(f.clone());
+            }
+        }
+        if power > 64 {
+            return Ok(None);
+        }
+        let coeff = match coeff_parts.len() {
+            0 => Expr::int_i64(1),
+            1 => coeff_parts[0].clone(),
+            _ => eval_call(i, Expr::Sym(sys.times), coeff_parts)?,
+        };
+        if coeffs.len() <= power {
+            coeffs.resize(power + 1, Expr::int_i64(0));
+        }
+        coeffs[power] = eval_call(
+            i,
+            Expr::Sym(sys.plus),
+            vec![coeffs[power].clone(), coeff],
+        )?;
+    }
+    if coeffs.is_empty() {
+        coeffs.push(Expr::int_i64(0));
+    }
+    Ok(Some(coeffs))
+}
+
+fn neg_expr(i: &mut Interp, e: Expr) -> Result<Expr, Flow> {
+    eval_call(i, Expr::Sym(i.t.sys.times), vec![Expr::int_i64(-1), e])
+}
+
+fn is_expr_zero(e: &Expr) -> bool {
+    match e {
+        Expr::Int(n) => n.to_i64() == Some(0),
+        Expr::Rat(r) => r.is_zero(),
+        Expr::Real(x) => *x == 0.0,
+        _ => false,
+    }
+}
+
+/// Exact solutions of c0 + c1 x + ... = 0 (None when no rule applies).
+/// Degrees 1 and 2 use the formula with symbolic coefficients; higher degrees
+/// try rational roots plus deflation, and even-only polynomials use x² = y.
+fn solve_poly_expr(
+    i: &mut Interp,
+    coeffs: &[Expr],
+    var: &Expr,
+    depth: u32,
+) -> Result<Option<Vec<Expr>>, Flow> {
+    let sys = i.t.sys;
+    if depth > 4 {
+        return Ok(None);
+    }
+    let mut c: Vec<Expr> = coeffs.to_vec();
+    while c.len() > 1 && is_expr_zero(&c[c.len() - 1]) {
+        c.pop();
+    }
+    if c.len() <= 1 {
+        // Constant: no solutions (a zero polynomial is an identity; report none).
+        return Ok(Some(Vec::new()));
+    }
+    let deg = c.len() - 1;
+
+    if deg == 1 {
+        let num = neg_expr(i, c[0].clone())?;
+        let inv = Expr::node(Expr::Sym(sys.power), vec![c[1].clone(), Expr::int_i64(-1)]);
+        let root = eval_call(i, Expr::Sym(sys.times), vec![num, inv])?;
+        return Ok(Some(vec![root]));
+    }
+
+    if deg == 2 {
+        let a = c[2].clone();
+        let b = c[1].clone();
+        let cc = c[0].clone();
+        // disc = b^2 - 4 a c
+        let b2 = eval_call(i, Expr::Sym(sys.power), vec![b.clone(), Expr::int_i64(2)])?;
+        let ac = eval_call(i, Expr::Sym(sys.times), vec![a.clone(), cc])?;
+        let fourac = eval_call(i, Expr::Sym(sys.times), vec![Expr::int_i64(4), ac])?;
+        let neg4ac = neg_expr(i, fourac)?;
+        let disc = eval_call(i, Expr::Sym(sys.plus), vec![b2, neg4ac])?;
+        let sqrt_head = i.t.intern("Sqrt");
+        let sq = eval_call(i, Expr::Sym(sqrt_head), vec![disc])?;
+        let two_a = eval_call(i, Expr::Sym(sys.times), vec![Expr::int_i64(2), a])?;
+        let inv2a = Expr::node(Expr::Sym(sys.power), vec![two_a, Expr::int_i64(-1)]);
+        let nb = neg_expr(i, b)?;
+        let nsq = neg_expr(i, sq.clone())?;
+        let p1 = eval_call(i, Expr::Sym(sys.plus), vec![nb.clone(), sq])?;
+        let p2 = eval_call(i, Expr::Sym(sys.plus), vec![nb, nsq])?;
+        let r1 = eval_call(i, Expr::Sym(sys.times), vec![inv2a.clone(), p1])?;
+        let r2 = eval_call(i, Expr::Sym(sys.times), vec![inv2a, p2])?;
+        return Ok(Some(vec![r1, r2]));
+    }
+
+    // Even powers only: solve for y = x^2 and take ±Sqrt[y].
+    if c.iter().enumerate().all(|(k, v)| k % 2 == 0 || is_expr_zero(v)) {
+        let even: Vec<Expr> = c
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| k % 2 == 0)
+            .map(|(_, v)| v.clone())
+            .collect();
+        let y = Expr::Sym(i.t.intern("$y"));
+        if let Some(yroots) = solve_poly_expr(i, &even, &y, depth + 1)? {
+            let mut out = Vec::new();
+            let sqrt_head = i.t.intern("Sqrt");
+            for yr in yroots {
+                let s = eval_call(i, Expr::Sym(sqrt_head), vec![yr])?;
+                let ns = neg_expr(i, s.clone())?;
+                out.push(s);
+                out.push(ns);
+            }
+            return Ok(Some(out));
+        }
+        return Ok(None);
+    }
+
+    // Rational roots, then deflate and solve the remaining factor.
+    let rats: Option<Vec<Rat>> = c.iter().map(|x| x.as_rat_exact()).collect();
+    let Some(rats) = rats else {
+        return Ok(None);
+    };
+    let roots = rational_roots(&rats);
+    if roots.is_empty() {
+        return Ok(None);
+    }
+    let mut cur: Vec<Rat> = rats.clone();
+    let mut out: Vec<Expr> = Vec::new();
+    for r in roots {
+        if cur.len() <= 1 {
+            break;
+        }
+        let divisor = vec![r.clone().neg(), Rat::from_i64(1)];
+        let Some((q, rem)) = crate::builtins::poly::poly_div(&cur, &divisor) else {
+            break;
+        };
+        if !rem.iter().all(|x| x.is_zero()) {
+            break;
+        }
+        out.push(Expr::rat(r));
+        cur = q;
+        while cur.len() > 1 && cur.last().map_or(false, |x| x.is_zero()) {
+            cur.pop();
+        }
+    }
+    if cur.len() > 1 {
+        let rem_expr: Vec<Expr> = cur.iter().map(|x| Expr::rat(x.clone())).collect();
+        match solve_poly_expr(i, &rem_expr, var, depth + 1)? {
+            Some(more) => out.extend(more),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+// ==================== FindRoot ====================
+
+/// Replace `var` with a real number throughout an expression.
+fn subst_real(e: &Expr, var: &Expr, v: f64) -> Expr {
+    if same_q(e, var) {
+        return Expr::real(v);
+    }
+    match e {
+        Expr::Node(nd) => {
+            let args: Vec<Expr> = nd.args.iter().map(|a| subst_real(a, var, v)).collect();
+            Expr::node(nd.head.clone(), args)
+        }
+        other => other.clone(),
+    }
+}
+
+pub fn b_findroot(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    let sys = i.t.sys;
+    if args.len() != 2 {
+        i.message("FindRoot", "argr");
+        return Ok(unevaluated_call(i, "FindRoot", args));
+    }
+    // f == 0 or f
+    let f_expr = {
+        let e = i.eval(&args[0])?;
+        match e.parts() {
+            Some((h, a)) if h.is_symbol(sys.equal) && a.len() == 2 => {
+                let neg_rhs = eval_call(
+                    i,
+                    Expr::Sym(sys.times),
+                    vec![Expr::int_i64(-1), a[1].clone()],
+                )?;
+                eval_call(
+                    i,
+                    Expr::Sym(sys.plus),
+                    vec![a[0].clone(), neg_rhs],
+                )?
+            }
+            _ => e,
+        }
+    };
+    // {x, x0} or {x, x0, x1}
+    let spec = i.eval(&args[1])?;
+    let Some((h, sargs)) = spec.parts() else {
+        i.message("FindRoot", "argr");
+        return Ok(unevaluated_call(i, "FindRoot", args));
+    };
+    if !h.is_symbol(sys.list) || sargs.len() < 2 {
+        i.message("FindRoot", "argr");
+        return Ok(unevaluated_call(i, "FindRoot", args));
+    }
+    let var = sargs[0].clone();
+    let start = match crate::builtins::num::num_val(&sargs[1]) {
+        Some(nv) => crate::builtins::num::nv_f64(&nv),
+        None => {
+            i.message("FindRoot", "nnum");
+            return Ok(unevaluated_call(i, "FindRoot", args));
+        }
+    };
+    let second = sargs.get(2).and_then(|e| {
+        crate::builtins::num::num_val(e).map(|nv| crate::builtins::num::nv_f64(&nv))
+    });
+
+    let eval_at = |i: &mut Interp, x: f64| -> Result<Option<f64>, Flow> {
+        let e = subst_real(&f_expr, &var, x);
+        let v = i.eval(&e)?;
+        let nv = crate::builtins::num::numeric_eval(i, &v);
+        Ok(match crate::builtins::num::num_val(&nv) {
+            Some(n) => Some(crate::builtins::num::nv_f64(&n)),
+            None => None,
+        })
+    };
+
+    let mut x = start;
+    let mut x_prev = second;
+    let mut ok = false;
+    for _ in 0..200 {
+        let Some(fx) = eval_at(i, x)? else { break };
+        if fx.abs() < 1e-14 {
+            ok = true;
+            break;
+        }
+        let next = if let Some(xp) = x_prev {
+            // Secant method.
+            let Some(fxp) = eval_at(i, xp)? else { break };
+            let den = fx - fxp;
+            if den.abs() < 1e-300 {
+                break;
+            }
+            x - fx * (x - xp) / den
+        } else {
+            // Newton with a central-difference derivative.
+            let hstep = 1e-6 * x.abs().max(1.0);
+            let Some(f1) = eval_at(i, x + hstep)? else { break };
+            let Some(f0) = eval_at(i, x - hstep)? else { break };
+            let d = (f1 - f0) / (2.0 * hstep);
+            if d.abs() < 1e-300 {
+                break;
+            }
+            x - fx / d
+        };
+        if !next.is_finite() {
+            break;
+        }
+        x_prev = Some(x);
+        if (next - x).abs() < 1e-15 * x.abs().max(1.0) {
+            x = next;
+            ok = true;
+            break;
+        }
+        x = next;
+    }
+    if !ok {
+        if let Some(fx) = eval_at(i, x)? {
+            if fx.abs() < 1e-8 {
+                ok = true;
+            }
+        }
+    }
+    if !ok {
+        i.message("FindRoot", "cvmit");
+        return Ok(unevaluated_call(i, "FindRoot", args));
+    }
+    let rule = rule_var_to(i, &var, Expr::real(x));
+    Ok(Expr::node(Expr::Sym(sys.list), vec![rule]))
+}
+
 pub fn b_solve(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         i.message("Solve", "argr");
@@ -641,62 +962,18 @@ pub fn b_solve(i: &mut Interp, args: &[Expr]) -> EvalRes {
         let Some(poly) = eq_poly(i, &eqs[0])? else {
             return Ok(unevaluated_call(i, "Solve", args));
         };
-        let Some(coeffs) = crate::builtins::poly::poly_coeffs(i, &poly, &vars[0])? else {
+        let Some(coeffs) = poly_coeffs_expr(i, &poly, &vars[0])? else {
             return Ok(unevaluated_call(i, "Solve", args));
         };
-        // Trim
-        let mut c = coeffs;
-        while c.last().map_or(false, |x| x.is_zero()) {
-            c.pop();
+        let Some(roots) = solve_poly_expr(i, &coeffs, &vars[0], 0)? else {
+            return Ok(unevaluated_call(i, "Solve", args));
+        };
+        let mut out = Vec::new();
+        for r in roots {
+            let rule = rule_var_to(i, &vars[0], r);
+            out.push(Expr::node(Expr::Sym(sys.list), vec![rule]));
         }
-        if c.is_empty() {
-            return Ok(Expr::node(Expr::Sym(sys.list), vec![]));
-        }
-        let deg = c.len() - 1;
-        if deg == 0 {
-            // No solutions.
-            return Ok(Expr::node(Expr::Sym(sys.list), vec![]));
-        }
-        if deg == 1 {
-            let root = c[0].clone().neg().div(&c[1].clone());
-            let rule = rule_var_to(i, &vars[0], Expr::rat(root));
-            return Ok(Expr::node(
-                Expr::Sym(sys.list),
-                vec![Expr::node(Expr::Sym(sys.list), vec![rule])],
-            ));
-        }
-        if deg == 2 {
-            // Quadratic formula.
-            let (bq, cq) = (c[1].clone(), c[0].clone());
-            let a2 = Rat::from_i64(2);
-            let disc = bq.mul(&bq).sub(&c[2].mul(&c[0]).mul(&Rat::from_i64(4)));
-            if disc.is_neg() {
-                return Ok(unevaluated_call(i, "Solve", args));
-            }
-            let sq = crate::builtins::num::exact_sqrt(&disc);
-            let Some(sq) = sq else {
-                return Ok(unevaluated_call(i, "Solve", args));
-            };
-            let d2 = Rat::new(c[2].num.clone().mul(&a2.num), c[2].den.clone().mul(&a2.den));
-            let r1 = bq.clone().neg().add(&sq).div(&d2);
-            let r2 = bq.clone().neg().sub(&sq).div(&d2);
-            let r1r = rule_var_to(i, &vars[0], Expr::rat(r1));
-            let r2r = rule_var_to(i, &vars[0], Expr::rat(r2));
-            let l1 = Expr::node(Expr::Sym(sys.list), vec![r1r]);
-            let l2 = Expr::node(Expr::Sym(sys.list), vec![r2r]);
-            return Ok(Expr::node(Expr::Sym(sys.list), vec![l1, l2]));
-        }
-        // Higher degree: try rational roots.
-        let roots = rational_roots(&c);
-        if roots.len() as i64 == deg as i64 {
-            let mut out = Vec::new();
-            for r in roots {
-                let rule = rule_var_to(i, &vars[0], Expr::rat(r));
-                out.push(Expr::node(Expr::Sym(sys.list), vec![rule]));
-            }
-            return Ok(Expr::node(Expr::Sym(sys.list), out));
-        }
-        return Ok(unevaluated_call(i, "Solve", args));
+        return Ok(Expr::node(Expr::Sym(sys.list), out));
     }
     // Linear systems (all equations linear in all vars).
     let mut rows: Vec<Vec<Rat>> = Vec::new();
@@ -962,18 +1239,27 @@ pub fn b_nsolve(i: &mut Interp, args: &[Expr]) -> EvalRes {
             roots[k] = roots[k].sub(num.div(den));
         }
     }
-    let mut out: Vec<Expr> = Vec::new();
+    let mut vals: Vec<Expr> = Vec::new();
     for r in roots {
         if r.1.abs() < 1e-9 {
-            out.push(Expr::real(r.0));
+            vals.push(Expr::real(r.0));
         } else {
-            out.push(Expr::cnum(
+            vals.push(Expr::cnum(
                 crate::expr::NumVal::F(r.0),
                 crate::expr::NumVal::F(r.1),
             ));
         }
     }
-    let t = &i.t;
-    out.sort_by(|a, b| crate::expr::canon_cmp(t, a, b));
+    {
+        let t = &i.t;
+        vals.sort_by(|a, b| crate::expr::canon_cmp(t, a, b));
+    }
+    // NSolve returns a list of solution lists, as Solve does:
+    // {{x -> 1.}, {x -> 2.}}
+    let mut out: Vec<Expr> = Vec::new();
+    for v in vals {
+        let rule = rule_var_to(i, &var_e, v);
+        out.push(Expr::node(Expr::Sym(sys.list), vec![rule]));
+    }
     Ok(Expr::node(Expr::Sym(sys.list), out))
 }

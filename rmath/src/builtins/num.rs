@@ -132,8 +132,29 @@ pub fn power_numeric(b: &NumVal, e: &NumVal) -> Option<Expr> {
         (NumVal::R(br), NumVal::R(er)) => {
             let p = er.num.to_i64()?;
             let q = er.den.to_i64()?;
-            if q <= 0 || br.num.sign < 0 {
+            if q <= 0 {
                 return None;
+            }
+            if br.num.sign < 0 {
+                // Negative base: exact only when the root of |b| is exact and
+                // the denominator is even, e.g. Sqrt[-4] = 2 I.
+                if q % 2 != 0 || p <= 0 {
+                    return None;
+                }
+                let abs = Rat { num: br.num.clone().abs(), den: br.den.clone() };
+                let r = exact_rat_root(&abs, p, q)?;
+                return Some(if p % 2 == 0 {
+                    // I^p is real: +1 or -1
+                    if (p / 2) % 2 == 0 {
+                        nv_to_expr(&NumVal::R(r))
+                    } else {
+                        nv_to_expr(&NumVal::R(r.neg()))
+                    }
+                } else {
+                    // I^p is imaginary: ±I
+                    let im = if ((p - 1) / 2) % 2 == 0 { r } else { r.neg() };
+                    Expr::cnum(NumVal::R(Rat::from_i64(0)), NumVal::R(im))
+                });
             }
             let r = exact_rat_root(br, p, q)?;
             Some(nv_to_expr(&NumVal::R(r)))
@@ -158,6 +179,40 @@ pub fn machine_power(b: &NumVal, e: &NumVal) -> Option<Expr> {
         return None;
     }
     Some(Expr::real(v))
+}
+
+/// Simplify Sqrt[n] for a positive integer n: n = a^2 * b, giving a Sqrt[b].
+/// Bounded so huge radicands are left alone rather than stalling.
+pub fn simplify_sqrt_int(n: &crate::bigint::BigInt) -> Option<(crate::bigint::BigInt, crate::bigint::BigInt)> {
+    use crate::bigint::BigInt;
+    let one = BigInt::from_i64(1);
+    if n.cmp(&one) != std::cmp::Ordering::Greater {
+        return None;
+    }
+    if n.to_f64() > 1e14 {
+        return None;
+    }
+    let mut rem = n.clone();
+    let mut coef = BigInt::from_i64(1);
+    let mut d = BigInt::from_i64(2);
+    loop {
+        let d2 = d.mul(&d);
+        if d2.cmp(&rem) == std::cmp::Ordering::Greater {
+            break;
+        }
+        let (q, r) = rem.div_rem(&d2);
+        if r.is_zero() {
+            rem = q;
+            coef = coef.mul(&d);
+        } else {
+            d = d.add(&BigInt::from_i64(1));
+        }
+    }
+    if coef.to_i64() == Some(1) {
+        None
+    } else {
+        Some((coef, rem))
+    }
 }
 
 /// Extra constructor used above (machine complex).

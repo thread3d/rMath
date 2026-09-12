@@ -186,6 +186,7 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("MatrixRank", 0, "`MatrixRank[m]`", b_matrixrank),
     builtin!("LinearSolve", 0, "`LinearSolve[m, b]`", b_linearsolve),
     builtin!("Solve", A_HOLDALL, "`Solve[eqs, vars]`", b_solve),
+    builtin!("FindRoot", A_HOLDALL, "`FindRoot[f == 0, {x, x0}]`", b_findroot),
     builtin!("NSolve", A_HOLDALL, "`NSolve[eq, x]`", b_nsolve),
     builtin!("Plot", A_HOLDALL, "`Plot[f, {x, a, b}]`", b_plot),
     builtin!("ListPlot", 0, "`ListPlot[data]`", b_listplot),

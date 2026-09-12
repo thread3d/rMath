@@ -77,15 +77,16 @@ pub fn b_plus(i: &mut Interp, args: &[Expr]) -> EvalRes {
 
     // Complex part, if any.
     if let Some(im) = &c_im {
+        // The real part is the complex real part *plus* any exact/machine
+        // terms (1 + I was collapsing to 0 + 1 I).
+        let base = if any_machine {
+            NumVal::F(exact_sum.to_f64() + machine_sum)
+        } else {
+            NumVal::R(exact_sum.clone())
+        };
         let re = match &c_re {
-            Some(r) => r.clone(),
-            None => {
-                if any_machine {
-                    NumVal::F(exact_sum.to_f64() + machine_sum)
-                } else {
-                    NumVal::R(exact_sum.clone())
-                }
-            }
+            Some(r) => nv_add(r, &base),
+            None => base,
         };
         let e = Expr::cnum(re, im.clone());
         if !crate::expr::same_q(&e, &Expr::int_i64(0)) {
@@ -146,12 +147,22 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
             }
             Expr::Cnum(c) => {
                 let (re, im) = (c.re.clone(), c.im.clone());
-                let cre = c_re.clone().unwrap_or(nv_zero());
-                let cim = c_im.clone().unwrap_or(nv_zero());
-                let nre = nv_sub(&nv_mul(&cre, &re), &nv_mul(&cim, &im));
-                let nim = nv_add(&nv_mul(&cre, &im), &nv_mul(&cim, &re));
-                c_re = Some(nre);
-                c_im = Some(nim);
+                // The first complex factor is assigned, not multiplied into
+                // zero (which silently dropped the imaginary part: 3 I -> 0).
+                match (&c_re, &c_im) {
+                    (None, None) => {
+                        c_re = Some(re);
+                        c_im = Some(im);
+                    }
+                    _ => {
+                        let cre = c_re.clone().unwrap_or_else(nv_zero);
+                        let cim = c_im.clone().unwrap_or_else(nv_zero);
+                        let nre = nv_sub(&nv_mul(&cre, &re), &nv_mul(&cim, &im));
+                        let nim = nv_add(&nv_mul(&cre, &im), &nv_mul(&cim, &re));
+                        c_re = Some(nre);
+                        c_im = Some(nim);
+                    }
+                }
                 if matches!(c.re, NumVal::F(_)) || matches!(c.im, NumVal::F(_)) {
                     mc = Some(mc.unwrap_or(1.0)); // keep machine flag
                 }
@@ -196,7 +207,19 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let mut out: Vec<Expr> = Vec::new();
     // Coefficient first.
     if let (Some(re), Some(im)) = (&c_re, &c_im) {
-        out.push(Expr::cnum(re.clone(), im.clone()));
+        // The exact/machine coefficient must scale the complex part too
+        // (3 I was becoming 1 I).
+        let (sre, sim) = match mc {
+            Some(m) => (
+                nv_mul(re, &NumVal::F(m)),
+                nv_mul(im, &NumVal::F(m)),
+            ),
+            None => (
+                nv_mul(re, &NumVal::R(ec.clone())),
+                nv_mul(im, &NumVal::R(ec.clone())),
+            ),
+        };
+        out.push(Expr::cnum(sre, sim));
     } else {
         if let Some(m) = mc {
             let total = m * ec.to_f64();
@@ -267,6 +290,14 @@ fn push_power(p: &mut Vec<(Expr, Rat, Option<f64>)>, base: &Expr, exp: &Expr) {
 
 // ============================ Power ============================
 
+/// Some(()) when the exponent is exactly 1/2.
+fn as_half(e: &Expr) -> Option<()> {
+    match e {
+        Expr::Rat(r) if r.num.to_i64() == Some(1) && r.den.to_i64() == Some(2) => Some(()),
+        _ => None,
+    }
+}
+
 pub fn b_power(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         i.message("Power", "argr");
@@ -275,6 +306,26 @@ pub fn b_power(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let base = &args[0];
     let exp = &args[1];
     let sys = i.t.sys;
+    // Integer powers of a complex number: multiply out (I^2 = -1, (1+I)^2 = 2 I).
+    if let (Expr::Cnum(c), Some(n)) = (base, expr_to_int(exp)) {
+        if n >= 0 && n <= 64 {
+            let mut re = NumVal::R(Rat::from_i64(1));
+            let mut im = NumVal::R(Rat::from_i64(0));
+            for _ in 0..n {
+                let (nre, nim) = (
+                    nv_sub(&nv_mul(&re, &c.re), &nv_mul(&im, &c.im)),
+                    nv_add(&nv_mul(&re, &c.im), &nv_mul(&im, &c.re)),
+                );
+                re = nre;
+                im = nim;
+            }
+            return Ok(Expr::cnum(re, im));
+        }
+        if n < 0 {
+            let pos = b_power(i, &[base.clone(), Expr::int_i64(-n)])?;
+            return b_power(i, &[pos, Expr::int_i64(-1)]);
+        }
+    }
     if let Some(e0) = expr_to_int(exp) {
         if e0 == 0 {
             if is_numeric_zero(base) {
@@ -301,9 +352,49 @@ pub fn b_power(i: &mut Interp, args: &[Expr]) -> EvalRes {
             }
         }
     }
+    // Sqrt of an integer: extract square factors so Sqrt[8] prints as
+    // 2 Sqrt[2] (and Solve reports Sqrt[2] rather than 1/2 Sqrt[8]).
+    if let (Expr::Int(n), Some(r)) = (base, as_half(exp)) {
+        let _ = r;
+        let pos = n.clone().abs();
+        if let Some((coef, rad)) = crate::builtins::num::simplify_sqrt_int(&pos) {
+            let sqrt_head = i.t.intern("Sqrt");
+            let root = Expr::node(Expr::Sym(sqrt_head), vec![Expr::Int(rad)]);
+            let coeff = Expr::Int(coef);
+            let prod = if n.sign < 0 {
+                let i_sym = Expr::Sym(i.t.intern("I"));
+                Expr::node(Expr::Sym(sys.times), vec![i_sym, coeff, root])
+            } else {
+                Expr::node(Expr::Sym(sys.times), vec![coeff, root])
+            };
+            return i.eval(&prod);
+        }
+    }
     if let (Some(bv), Some(ev)) = (num_val(base), num_val(exp)) {
         if let Some(v) = power_numeric(&bv, &ev) {
             return Ok(v);
+        }
+        // Negative radicand with an even root: pull out the imaginary unit so
+        // the answer appears as I Sqrt[q] rather than Sqrt[-q] (Sqrt[-8]).
+        if let (NumVal::R(br), NumVal::R(er)) = (&bv, &ev) {
+            if br.num.sign < 0 && !er.is_int() {
+                if let (Some(p), Some(q)) = (er.num.to_i64(), er.den.to_i64()) {
+                    if q % 2 == 0 && p > 0 {
+                        let abs = Rat { num: br.num.clone().abs(), den: br.den.clone() };
+                        let root = Expr::node(
+                            Expr::Sym(sys.power),
+                            vec![Expr::rat(abs), Expr::rat(er.clone())],
+                        );
+                        let i_sym = Expr::Sym(i.t.intern("I"));
+                        let ip = Expr::node(
+                            Expr::Sym(sys.power),
+                            vec![i_sym, Expr::int_i64(p)],
+                        );
+                        let prod = Expr::node(Expr::Sym(sys.times), vec![ip, root]);
+                        return i.eval(&prod);
+                    }
+                }
+            }
         }
     }
     Ok(unevaluated_call(i, "Power", args))

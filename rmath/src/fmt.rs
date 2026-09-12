@@ -180,13 +180,28 @@ fn output_into(t: &SymbolTable, e: &Expr, out: &mut String) {
         }
         Expr::Sym(i) => out.push_str(t.name_of(*i)),
         Expr::Cnum(c) => {
-            let (re, im) = (numval_to_expr(&c.re), numval_to_expr(&c.im));
+            // Mathematica's OutputForm: I, -I, 2 I, 1 + I, 1 - I, 3 + 2 I.
+            let re_zero = is_zero_nv(&c.re);
+            if re_zero {
+                if is_exact_one_nv(&c.im) {
+                    out.push('I');
+                } else if is_exact_neg_one_nv(&c.im) {
+                    out.push_str("-I");
+                } else {
+                    output_into(t, &numval_to_expr(&c.im), out);
+                    out.push_str(" I");
+                }
+                return;
+            }
+            let re = numval_to_expr(&c.re);
             output_into(t, &re, out);
-            if is_negative_one(&im) {
+            if is_exact_one_nv(&c.im) {
+                out.push_str(" + I");
+            } else if is_exact_neg_one_nv(&c.im) {
                 out.push_str(" - I");
-            } else if !is_zero_nv(&c.im) {
+            } else if !re_zero {
                 out.push_str(" + ");
-                output_into(t, &im, out);
+                output_into(t, &numval_to_expr(&c.im), out);
                 out.push_str(" I");
             }
         }
@@ -407,6 +422,19 @@ fn is_negative(t: &SymbolTable, e: &Expr) -> bool {
         Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) => {
             matches!(crate::builtins::num::exp_sign_pub(e), Some(-1))
         }
+        // -I (and multiples of it) count as negative so a Plus prints
+        // "a - I Sqrt[3]" rather than "a + -I Sqrt[3]".
+        Expr::Cnum(c) => {
+            let re_zero = match &c.re {
+                crate::expr::NumVal::R(r) => r.is_zero(),
+                crate::expr::NumVal::F(f) => *f == 0.0,
+            };
+            let im_neg = match &c.im {
+                crate::expr::NumVal::R(r) => r.is_neg(),
+                crate::expr::NumVal::F(f) => *f < 0.0,
+            };
+            re_zero && im_neg
+        }
         _ => {
             if let Some((h, hargs)) = e.parts() {
                 if h.is_symbol(t.sys.times) && !hargs.is_empty() {
@@ -423,6 +451,20 @@ fn strip_neg(t: &SymbolTable, e: &Expr) -> Expr {
         Expr::Int(n) => return Expr::Int(n.clone().abs()),
         Expr::Rat(r) => return Expr::rat(r.clone().abs()),
         Expr::Real(x) => return Expr::real(-*x),
+        Expr::Cnum(c) => {
+            let re_zero = match &c.re {
+                crate::expr::NumVal::R(r) => r.is_zero(),
+                crate::expr::NumVal::F(f) => *f == 0.0,
+            };
+            let im_neg = match &c.im {
+                crate::expr::NumVal::R(r) => r.is_neg(),
+                crate::expr::NumVal::F(f) => *f < 0.0,
+            };
+            if re_zero && im_neg {
+                let neg_im = crate::builtins::num::nv_neg(&c.im);
+                return Expr::cnum(c.re.clone(), neg_im);
+            }
+        }
         _ => {}
     }
     if let Some((h, hargs)) = e.parts() {
@@ -434,6 +476,7 @@ fn strip_neg(t: &SymbolTable, e: &Expr) -> Expr {
                 Expr::Int(n) => Expr::Int(n.abs()),
                 Expr::Rat(r) => Expr::rat(r.abs()),
                 Expr::Real(x) => Expr::real(-x),
+                Expr::Cnum(c) => Expr::cnum(c.re.clone(), crate::builtins::num::nv_neg(&c.im)),
                 other => other,
             };
             if args.is_empty() {
@@ -445,6 +488,32 @@ fn strip_neg(t: &SymbolTable, e: &Expr) -> Expr {
         }
     }
     e.clone()
+}
+
+/// Exact +1 / -1 (machine values keep their decimal point, so 1. I prints as
+/// "1. I" while the exact unit prints as "I").
+fn is_exact_one_nv(n: &crate::expr::NumVal) -> bool {
+    matches!(n, crate::expr::NumVal::R(r) if r.is_one_pub())
+}
+
+fn is_exact_neg_one_nv(n: &crate::expr::NumVal) -> bool {
+    matches!(n, crate::expr::NumVal::R(r) if r.num.to_i64() == Some(-1) && r.den.to_i64() == Some(1))
+}
+
+/// True when the machine/exact value is -1.
+fn is_negative_one_nv(n: &crate::expr::NumVal) -> bool {
+    match n {
+        crate::expr::NumVal::R(r) => r.num.to_i64() == Some(-1) && r.den.to_i64() == Some(1),
+        crate::expr::NumVal::F(v) => *v == -1.0,
+    }
+}
+
+/// True when the machine/exact value is 1.
+fn is_one_nv(n: &crate::expr::NumVal) -> bool {
+    match n {
+        crate::expr::NumVal::R(r) => r.is_one_pub(),
+        crate::expr::NumVal::F(v) => *v == 1.0,
+    }
 }
 
 fn is_negative_one(e: &Expr) -> bool {
