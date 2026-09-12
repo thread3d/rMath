@@ -71,7 +71,9 @@ fn symbol_tex(name: &str) -> Option<&'static str> {
         "Omega" => "\\omega",
         "CapitalDelta" => "\\Delta",
         "CapitalOmega" => "\\Omega",
-        "Degree" => "^{\\circ}",
+        // The degree sign needs an empty group as its base: a bare
+        // ^{\circ} has nothing to attach to and is a parse error in KaTeX.
+        "Degree" => "{}^{\\circ}",
         _ => return None,
     })
 }

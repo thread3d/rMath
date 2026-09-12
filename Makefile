@@ -20,7 +20,7 @@ BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
 .PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
-        app app-run app-install app-stop app-uninstall shot svg2png report uitest
+        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck
 
 help:
 	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -93,6 +93,13 @@ report:
 #   make uitest          # against http://127.0.0.1:8787
 uitest:
 	@bash $(ROOT)/scripts/dev/uitest.sh "$(URL)"
+
+# Check that every TeX string the demo produces parses in KaTeX.
+#   make texcheck            # loads demo/demo.mt
+#   make texcheck FILE=other.mt
+FILE ?= demo/demo.mt
+texcheck:
+	@bash $(ROOT)/scripts/dev/texcheck.sh "$(URL)" "$(FILE)"
 
 # Convert an SVG (e.g. an exported plot) to PNG with an independent renderer.
 #   make svg2png IN=plot.svg OUT=plot.png

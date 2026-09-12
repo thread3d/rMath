@@ -395,7 +395,17 @@ function typesetAll(root) {
     const src = texFor(el);
     if (!src) return;
     if (window.katex) {
-      try { katex.render(src, el, {throwOnError: false}); } catch (e) { el.textContent = src; }
+      try {
+        katex.render(src, el, {throwOnError: true});
+      } catch (e) {
+        // Don't dump raw TeX for the whole cell on a parse error: render what
+        // KaTeX can and let it mark just the offending part.
+        try {
+          katex.render(src, el, {throwOnError: false, strict: false});
+        } catch (e2) {
+          el.textContent = src;
+        }
+      }
       el.dataset.done = '1';
     } else { el.textContent = src; }
   });
