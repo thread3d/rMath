@@ -3,10 +3,33 @@
 
 use crate::expr::{has, same_q, Expr, SymbolTable, A_CONSTANT};
 
+/// Output conventions for the TeX printer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Form {
+    /// As in Mathematica's StandardForm: `Sin[x]`, `Factor[x^2]`.
+    Standard,
+    /// As in TraditionalForm: `sin(x)`, italic function names.
+    Traditional,
+}
+
+/// TeX in StandardForm (the default).
 pub fn tex_form(t: &SymbolTable, e: &Expr) -> String {
+    tex_form_as(t, e, Form::Standard)
+}
+
+/// TeX in the requested form.
+pub fn tex_form_as(t: &SymbolTable, e: &Expr, form: Form) -> String {
     let mut s = String::new();
-    tex_into(t, e, &mut s);
+    tex_into(t, e, form, &mut s);
     s
+}
+
+/// The bracket pair used for function application in a given form.
+fn call_brackets(form: Form) -> (&'static str, &'static str) {
+    match form {
+        Form::Standard => ("\\!\\left[", "\\right]"),
+        Form::Traditional => ("\\!\\left(", "\\right)"),
+    }
 }
 
 /// Symbols with special TeX forms.
@@ -54,13 +77,20 @@ fn symbol_tex(name: &str) -> Option<&'static str> {
 }
 
 fn tex_symbol(name: &str) -> String {
+    tex_symbol_as(name, Form::Standard)
+}
+
+fn tex_symbol_as(name: &str, form: Form) -> String {
     if let Some(tex) = symbol_tex(name) {
         return tex.to_string();
     }
     if name.len() == 1 {
         name.to_string()
     } else {
-        format!("\\text{{{}}}", name)
+        match form {
+            Form::Standard => format!("\\text{{{}}}", name),
+            Form::Traditional => format!("\\mathit{{{}}}", name),
+        }
     }
 }
 
@@ -143,7 +173,7 @@ fn strip_neg(t: &SymbolTable, e: &Expr) -> Expr {
     e.clone()
 }
 
-fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
+fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
     match e {
         Expr::Int(n) => out.push_str(&n.to_string()),
         Expr::Rat(r) => {
@@ -166,7 +196,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
             }
             out.push_str("\"}");
         }
-        Expr::Sym(id) => out.push_str(&tex_symbol(t.name_of(*id))),
+        Expr::Sym(id) => out.push_str(&tex_symbol_as(t.name_of(*id), form)),
         Expr::Cnum(c) => {
             // re + im*i, compact
             let (re, im) = (&c.re, &c.im);
@@ -183,13 +213,13 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                 crate::expr::NumVal::F(f) => *f == -1.0,
             };
             if !re_zero {
-                tex_into(t, &crate::fmt::numval_to_expr(re), out);
+                tex_into(t, &crate::fmt::numval_to_expr(re), form, out);
                 if im_neg_one {
                     out.push_str(" - i");
                 } else {
                     out.push_str(" + ");
                     if !im_one {
-                        tex_into(t, &crate::fmt::numval_to_expr(im), out);
+                        tex_into(t, &crate::fmt::numval_to_expr(im), form, out);
                         out.push(' ');
                     }
                     out.push('i');
@@ -199,7 +229,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
             } else if im_one {
                 out.push('i');
             } else {
-                tex_into(t, &crate::fmt::numval_to_expr(im), out);
+                tex_into(t, &crate::fmt::numval_to_expr(im), form, out);
                 out.push_str("\\,i");
             }
         }
@@ -214,16 +244,16 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                             first = false;
                             if is_negative(t, a) {
                                 out.push('-');
-                                tex_into(t, &strip_neg(t, a), out);
+                                tex_into(t, &strip_neg(t, a), form, out);
                             } else {
-                                tex_into(t, a, out);
+                                tex_into(t, a, form, out);
                             }
                         } else if is_negative(t, a) {
                             out.push_str(" - ");
-                            tex_into(t, &strip_neg(t, a), out);
+                            tex_into(t, &strip_neg(t, a), form, out);
                         } else {
                             out.push_str(" + ");
-                            tex_into(t, a, out);
+                            tex_into(t, a, form, out);
                         }
                     }
                     return;
@@ -269,31 +299,31 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                         .into_iter()
                         .filter(|a| !same_q(a, &one))
                         .collect();
-                    let emit = |items: &Vec<Expr>, out: &mut String| {
+                    let emit = |items: &Vec<Expr>, form: Form, out: &mut String| {
                         match items.len() {
                             0 => out.push('1'),
-                            1 => tex_into(t, &items[0], out),
+                            1 => tex_into(t, &items[0], form, out),
                             _ => {
                                 for (k, x) in items.iter().enumerate() {
                                     if k > 0 {
                                         out.push_str(" \\, ");
                                     }
-                                    tex_atom(t, x, 40, out);
+                                    tex_atom(t, x, 40, form, out);
                                 }
                             }
                         }
                     };
                     if denom.is_empty() {
-                        emit(&numer, out);
+                        emit(&numer, form, out);
                     } else {
                         out.push_str("\\frac{");
-                        emit(&numer, out);
+                        emit(&numer, form, out);
                         out.push_str("}{");
                         if denom.len() == 1 {
-                            tex_into(t, &denom[0], out);
+                            tex_into(t, &denom[0], form, out);
                         } else {
                             let d = Expr::node(Expr::Sym(sys.times), denom);
-                            tex_into(t, &d, out);
+                            tex_into(t, &d, form, out);
                         }
                         out.push('}');
                     }
@@ -310,7 +340,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                     );
                     if exp_half {
                         out.push_str("\\sqrt{");
-                        tex_into(t, &nd.args[0], out);
+                        tex_into(t, &nd.args[0], form, out);
                         out.push('}');
                         return;
                     }
@@ -321,71 +351,71 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                                 vec![nd.args[0].clone(), Expr::int_i64(-n)],
                             );
                             out.push_str("\\frac{1}{");
-                            tex_atom(t, &inv, 40, out);
+                            tex_atom(t, &inv, 40, form, out);
                             out.push('}');
                             return;
                         }
                     }
-                    tex_atom(t, &nd.args[0], 50, out);
+                    tex_atom(t, &nd.args[0], 50, form, out);
                     out.push('^');
                     out.push('{');
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     out.push('}');
                     return;
                 }
                 if (*id == sys.rule || *id == sys.ruledelayed) && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str(" \\to ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.equal && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str(" = ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.unequal && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str(" \\neq ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.less && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str(" < ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.greater && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str(" > ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.lessequal && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str(" \\leq ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.greaterequal && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str(" \\geq ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.and {
-                    join_tex(t, &nd.args, " \\land ", out);
+                    join_tex(t, &nd.args, " \\land ", form, out);
                     return;
                 }
                 if *id == sys.or {
-                    join_tex(t, &nd.args, " \\lor ", out);
+                    join_tex(t, &nd.args, " \\lor ", form, out);
                     return;
                 }
                 if *id == sys.not && nd.args.len() == 1 {
                     out.push_str("\\neg ");
-                    tex_atom(t, &nd.args[0], 30, out);
+                    tex_atom(t, &nd.args[0], 30, form, out);
                     return;
                 }
                 if *id == sys.list {
@@ -394,7 +424,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                         if k > 0 {
                             out.push_str(", ");
                         }
-                        tex_into(t, a, out);
+                        tex_into(t, a, form, out);
                     }
                     out.push_str("\\right\\}");
                     return;
@@ -406,22 +436,22 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                 if *id == sys.set || *id == sys.setdelayed {
                     // f[x_] := body
                     if nd.args.len() == 2 {
-                        tex_into(t, &nd.args[0], out);
+                        tex_into(t, &nd.args[0], form, out);
                         out.push_str(if *id == sys.set { " = " } else { " := " });
-                        tex_into(t, &nd.args[1], out);
+                        tex_into(t, &nd.args[1], form, out);
                         return;
                     }
                 }
                 if *id == sys.condition && nd.args.len() == 2 {
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str("\\;/\\; ");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     return;
                 }
                 if *id == sys.pattern && nd.args.len() == 2 {
                     // x_ / x_Integer / x:pat
                     if let Expr::Sym(name) = &nd.args[0] {
-                        out.push_str(&tex_symbol(t.name_of(*name)));
+                        out.push_str(&tex_symbol_as(t.name_of(*name), form));
                         if let Some((h2, a2)) = nd.args[1].parts() {
                             if h2.is_symbol(sys.blank) {
                                 if a2.is_empty() {
@@ -453,7 +483,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                         }
                         // generic: x:rhs
                         out.push_str(":");
-                        tex_into(t, &nd.args[1], out);
+                        tex_into(t, &nd.args[1], form, out);
                         return;
                     }
                 }
@@ -473,36 +503,39 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                 let name = t.name_of(hid).to_string();
                 if name == "Exp" && nd.args.len() == 1 {
                     out.push_str("e^{");
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push('}');
                     return;
                 }
                 if name == "Sqrt" && nd.args.len() == 1 {
                     out.push_str("\\sqrt{");
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push('}');
                     return;
                 }
                 if name == "Abs" && nd.args.len() == 1 {
                     out.push_str("\\left|");
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str("\\right|");
                     return;
                 }
                 if name == "Log" && nd.args.len() == 2 {
+                    let (bo, bc) = call_brackets(form);
                     out.push_str("\\log_{");
-                    tex_into(t, &nd.args[0], out);
-                    out.push_str("}\\!\\left[");
-                    tex_into(t, &nd.args[1], out);
-                    out.push_str("\\right]");
+                    tex_into(t, &nd.args[0], form, out);
+                    out.push_str("}");
+                    out.push_str(bo);
+                    tex_into(t, &nd.args[1], form, out);
+                    out.push_str(bc);
                     return;
                 }
                 if nd.args.len() == 1 {
                     if let Some(op) = fn_tex_name(t, hid) {
+                        let (bo, bc) = call_brackets(form);
                         out.push_str(op);
-                        out.push_str("\\!\\left[");
-                        tex_into(t, &nd.args[0], out);
-                        out.push_str("\\right]");
+                        out.push_str(bo);
+                        tex_into(t, &nd.args[0], form, out);
+                        out.push_str(bc);
                         return;
                     }
                 }
@@ -512,44 +545,44 @@ fn tex_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                 }
                 if name == "Rational" && nd.args.len() == 2 {
                     out.push_str("\\frac{");
-                    tex_into(t, &nd.args[0], out);
+                    tex_into(t, &nd.args[0], form, out);
                     out.push_str("}{");
-                    tex_into(t, &nd.args[1], out);
+                    tex_into(t, &nd.args[1], form, out);
                     out.push('}');
                     return;
                 }
             }
-            // Generic f[a, b, ...] — square brackets, as in Mathematica's
-            // StandardForm.
-            tex_into(t, &nd.head, out);
-            out.push_str("\\!\\left[");
+            // Generic f[a, b, ...] — brackets depend on the form.
+            let (bo, bc) = call_brackets(form);
+            tex_into(t, &nd.head, form, out);
+            out.push_str(bo);
             for (k, a) in nd.args.iter().enumerate() {
                 if k > 0 {
                     out.push_str(", ");
                 }
-                tex_into(t, a, out);
+                tex_into(t, a, form, out);
             }
-            out.push_str("\\right]");
+            out.push_str(bc);
         }
     }
 }
 
-fn join_tex(t: &SymbolTable, args: &[Expr], sep: &str, out: &mut String) {
+fn join_tex(t: &SymbolTable, args: &[Expr], sep: &str, form: Form, out: &mut String) {
     for (k, a) in args.iter().enumerate() {
         if k > 0 {
             out.push_str(sep);
         }
-        tex_into(t, a, out);
+        tex_into(t, a, form, out);
     }
 }
 
-fn tex_atom(t: &SymbolTable, e: &Expr, min_rank: u8, out: &mut String) {
+fn tex_atom(t: &SymbolTable, e: &Expr, min_rank: u8, form: Form, out: &mut String) {
     if node_rank(t, e) < min_rank {
         out.push_str("\\left(");
-        tex_into(t, e, out);
+        tex_into(t, e, form, out);
         out.push_str("\\right)");
     } else {
-        tex_into(t, e, out);
+        tex_into(t, e, form, out);
     }
 }
 
@@ -608,6 +641,20 @@ mod tests {
         assert_eq!(tex("1/x"), "\\frac{1}{x}");
         assert_eq!(tex("Pi"), "\\pi");
         assert_eq!(tex("Sin[x]"), "\\sin\\!\\left[x\\right]");
+    }
+
+    #[test]
+    fn tex_forms_differ() {
+        let mut i = crate::eval::Interp::new();
+        let e = crate::parser::parse_input(&mut i.t, "Factor[x^2 - 1]").unwrap();
+        let std = tex_form_as(&i.t, &e, Form::Standard);
+        let trad = tex_form_as(&i.t, &e, Form::Traditional);
+        assert!(std.contains("\\left["), "standard uses brackets: {}", std);
+        assert!(trad.contains("\\left("), "traditional uses parens: {}", trad);
+        assert!(trad.contains("\\mathit{Factor}"), "traditional italicises: {}", trad);
+        let e2 = crate::parser::parse_input(&mut i.t, "Sin[x]").unwrap();
+        assert_eq!(tex_form_as(&i.t, &e2, Form::Traditional),
+                   "\\sin\\!\\left(x\\right)");
     }
 
     #[test]

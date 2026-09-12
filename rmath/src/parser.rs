@@ -553,6 +553,13 @@ impl<'t> Parser<'t> {
     // ----- L17: @* /* (and leading unary - that must bind above ^) -----
     fn parse_l17(&mut self) -> Result<Expr, ParseError> {
         let sys = self.t.sys;
+        // √x — the radical sign is a prefix operator for Sqrt.
+        if self.at(&TokKind::Radical) {
+            self.advance();
+            let e = self.parse_l17()?;
+            let h = self.sym("Sqrt");
+            return Ok(self.node(h, vec![e]));
+        }
         match self.peek_kind() {
             TokKind::Minus => {
                 self.advance();

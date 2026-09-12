@@ -134,6 +134,69 @@ func timestamp() -> String {
     return f.string(from: Date())
 }
 
+// ---------------------------------------------------------------- palette button
+
+/// A palette button drawn by hand: NSButton's system appearance does not
+/// render into an offscreen bitmap, and palettes are snapshot for
+/// verification. Looks like an AppKit push button, behaves like one.
+final class PaletteButton: NSView {
+    let label: String
+    let insertText: String
+    weak var target: AnyObject?
+    var action: Selector?
+    private var highlighted = false
+
+    init(frame: NSRect, label: String, insertText: String) {
+        self.label = label
+        self.insertText = insertText
+        super.init(frame: frame)
+        self.toolTip = "Insert " + label
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func draw(_ dirty: NSRect) {
+        let r = bounds.insetBy(dx: 1, dy: 1)
+        let path = NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4)
+        if highlighted {
+            NSColor.selectedControlColor.setFill()
+        } else {
+            NSColor.controlBackgroundColor.setFill()
+        }
+        path.fill()
+        (highlighted ? NSColor.controlAccentColor : NSColor.gridColor).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let text = label as NSString
+        let size = text.size(withAttributes: attrs)
+        text.draw(at: NSPoint(x: bounds.midX - size.width / 2,
+                              y: bounds.midY - size.height / 2),
+                  withAttributes: attrs)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        highlighted = true
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        highlighted = false
+        needsDisplay = true
+        let p = convert(event.locationInWindow, from: nil)
+        if bounds.contains(p), let action = action {
+            _ = NSApp.sendAction(action, to: target, from: self)
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
 // ---------------------------------------------------------------- app
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
@@ -184,6 +247,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             exit(0)
         }
 
+        if let idx = args.firstIndex(of: "--screenshot-palette") {
+            let name = idx + 1 < args.count ? args[idx + 1] : "Basic Math"
+            let out = idx + 2 < args.count ? args[idx + 2] : "/tmp/palette.png"
+            guard let defs = AppDelegate.paletteDefs.first(where: { $0.0 == name })?.1 else {
+                FileHandle.standardError.write(Data("unknown palette\n".utf8))
+                exit(2)
+            }
+            let view = paletteView(named: name, defs: defs)
+            let holder = NSWindow(contentRect: view.frame,
+                                  styleMask: [.titled, .closable, .utilityWindow],
+                                  backing: .buffered, defer: false)
+            holder.contentView = view
+            // Order it on screen for a moment: AppKit only draws windows that
+            // have actually been displayed, so the snapshot needs a draw pass.
+            holder.makeKeyAndOrderFront(nil)
+            holder.displayIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            view.layoutSubtreeIfNeeded()
+            view.displayIfNeeded()
+            view.wantsLayer = true
+            guard let layer = view.layer else { exit(1) }
+            let scale: CGFloat = 1
+            let w = Int(view.bounds.width), h = Int(view.bounds.height)
+            guard let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+                exit(1)
+            }
+            rep.size = NSSize(width: view.bounds.width, height: view.bounds.height)
+            NSGraphicsContext.saveGraphicsState()
+            if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+                NSGraphicsContext.current = ctx
+                if scale != 1 { ctx.cgContext.scaleBy(x: scale, y: scale) }
+                layer.render(in: ctx.cgContext)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            holder.orderOut(nil)
+            if let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: out))
+                print("ok \(out)")
+                exit(0)
+            }
+            exit(1)
+        }
+
         if args.contains("--stop") {
             // Stop whatever instance is running: pidfile first, then any
             // leftover notebook/kernel processes.
@@ -214,11 +323,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             let dest = idx + 1 < args.count ? args[idx + 1] : ""
             var js = ""
             var delay = 2.5
+            var what = "page"
             if let j = args.firstIndex(of: "--js"), j + 1 < args.count { js = args[j + 1] }
             if let d = args.firstIndex(of: "--delay"), d + 1 < args.count {
                 delay = Double(args[d + 1]) ?? 2.5
             }
-            exit(requestScreenshot(dest: dest, js: js, delay: delay) ? 0 : 1)
+            if let p = args.firstIndex(of: "--palette"), p + 1 < args.count {
+                what = "palette:" + args[p + 1]
+            }
+            exit(requestScreenshot(dest: dest, js: js, delay: delay, what: what) ? 0 : 1)
         }
 
         let headless = args.contains("--no-window")
@@ -393,10 +506,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc func menuSavePlot() { runJS("saveLastPlotSvg()") }
     @objc func menuResetKernel() { runJS("resetKernel()") }
     @objc func menuHelp() { runJS("showHelp(true)") }
+    @objc func menuStandardForm() { runJS("setForm('standard')") }
+    @objc func menuTraditionalForm() { runJS("setForm('traditional')") }
+    @objc func menuToggleForm() { runJS("toggleForm()") }
     @objc func menuFunctionList() { runJS("showHelp(true)") }
     @objc func menuToggleBrackets() { runJS("toggleBrackets()") }
     @objc func menuFocusInput() { runJS("focusInput()") }
     @objc func menuDeleteAll() { runJS("newNotebook()") }
+
+    // ---- palettes (real floating windows)
+
+    /// Button labels for each palette; the second element is inserted at the
+    /// cursor in the notebook (Unicode characters are understood by the kernel).
+    static let paletteDefs: [(String, [(String, String)])] = [
+        ("Basic Math", [
+            ("π", "π"), ("∞", "∞"), ("√", "√"), ("°", "°"),
+            ("≤", "≤"), ("≥", "≥"), ("≠", "≠"), ("→", "→"),
+            ("×", "×"), ("θ", "θ"), ("α", "α"), ("β", "β"),
+            ("γ", "γ"), ("λ", "λ"), ("μ", "μ"), ("σ", "σ"),
+        ]),
+        ("Algebra", [
+            ("Expand[", "Expand["), ("Factor[", "Factor["),
+            ("Together[", "Together["), ("Collect[", "Collect["),
+            ("Coefficient[", "Coefficient["), ("Exponent[", "Exponent["),
+            ("Variables[", "Variables["), ("Solve[", "Solve["),
+        ]),
+        ("Calculus", [
+            ("D[", "D["), ("Integrate[", "Integrate["),
+            ("Limit[", "Limit["), ("Series[", "Series["),
+            ("Normal[", "Normal["), ("Sum[", "Sum["),
+            ("Product[", "Product["), ("N[", "N["),
+        ]),
+        ("Linear Algebra", [
+            ("Det[", "Det["), ("Inverse[", "Inverse["),
+            ("Transpose[", "Transpose["), ("Dot[", "Dot["),
+            ("LinearSolve[", "LinearSolve["), ("RowReduce[", "RowReduce["),
+            ("MatrixPower[", "MatrixPower["), ("IdentityMatrix[", "IdentityMatrix["),
+        ]),
+        ("Plot", [
+            ("Plot[", "Plot["), ("ListPlot[", "ListPlot["),
+            ("ListLinePlot[", "ListLinePlot["), ("ParametricPlot[", "ParametricPlot["),
+            ("Table[", "Table["), ("Range[", "Range["),
+            ("PlotRange →", "PlotRange -> "), ("PlotStyle →", "PlotStyle -> "),
+        ]),
+        ("Patterns", [
+            ("x_", "x_"), ("x__", "x__"), ("x___", "x___"),
+            ("_Integer", "_Integer"), ("_?test", "_?test"),
+            ("/;", " /; "), ("->", " -> "), (":>", " :> "),
+            ("/.", " /. "), ("//.", " //. "),
+        ]),
+    ]
+
+    var palettes: [String: NSWindow] = [:]
+
+    func paletteView(named name: String, defs: [(String, String)]) -> NSView {
+        // Explicit frames: palettes must render identically on screen and in
+        // an offscreen snapshot (used for verification).
+        let perRow = 4
+        let bw: CGFloat = 68, bh: CGFloat = 24, gap: CGFloat = 5, pad: CGFloat = 10
+        let rows = (defs.count + perRow - 1) / perRow
+        let width = pad * 2 + CGFloat(perRow) * bw + CGFloat(perRow - 1) * gap
+        let height = pad * 2 + CGFloat(rows) * bh + CGFloat(max(0, rows - 1)) * gap
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        container.wantsLayer = true
+        for (idx, def) in defs.enumerated() {
+            let r = idx / perRow, c = idx % perRow
+            let x = pad + CGFloat(c) * (bw + gap)
+            let y = height - pad - CGFloat(r + 1) * bh - CGFloat(r) * gap
+            let b = PaletteButton(frame: NSRect(x: x, y: y, width: bw, height: bh),
+                                  label: def.0, insertText: def.1)
+            b.target = self
+            b.action = #selector(paletteButtonPressed(_:))
+            container.addSubview(b)
+        }
+        return container
+    }
+
+    func showPalette(named name: String) {
+        if let existing = palettes[name] {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let defs = AppDelegate.paletteDefs.first(where: { $0.0 == name })?.1 else { return }
+        let view = paletteView(named: name, defs: defs)
+        let win = NSWindow(contentRect: view.frame,
+                           styleMask: [.titled, .closable, .utilityWindow],
+                           backing: .buffered, defer: false)
+        win.title = name + " Palette"
+        win.isReleasedWhenClosed = false
+        win.level = .floating                       // palettes float above the notebook
+        win.contentView = view
+        win.setFrameAutosaveName("rMathPalette-" + name)
+        // park it near the top-right of the main window
+        if let main = window {
+            let f = main.frame
+            win.setFrameOrigin(NSPoint(x: f.maxX - win.frame.width - 20, y: f.maxY - 140))
+        } else {
+            win.center()
+        }
+        win.makeKeyAndOrderFront(nil)
+        palettes[name] = win
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func paletteButtonPressed(_ sender: Any?) {
+        if let b = sender as? PaletteButton { insert(b.insertText) }
+    }
+
+    @objc func openBasicPalette() { showPalette(named: "Basic Math") }
+    @objc func openAlgebraPalette() { showPalette(named: "Algebra") }
+    @objc func openCalculusPalette() { showPalette(named: "Calculus") }
+    @objc func openLinalgPalette() { showPalette(named: "Linear Algebra") }
+    @objc func openPlotPalette() { showPalette(named: "Plot") }
+    @objc func openPatternPalette() { showPalette(named: "Patterns") }
 
     // ---- menus
 
@@ -495,6 +718,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let formatItem = NSMenuItem(title: "Format", action: nil, keyEquivalent: "")
         main.addItem(formatItem)
         let format = NSMenu(title: "Format")
+        addItem(format, "StandardForm", #selector(menuStandardForm), "t", target: self)
+        addItem(format, "TraditionalForm", #selector(menuTraditionalForm), "t",
+                [.command, .shift], target: self)
+        addItem(format, "Toggle Typeseing Form", #selector(menuToggleForm), "T",
+                [.control, .shift], target: self)
+        format.addItem(.separator())
         addItem(format, "Zoom In", #selector(zoomIn), "+", target: self)
         addItem(format, "Zoom Out", #selector(zoomOut), "-", target: self)
         addItem(format, "Actual Size", #selector(zoomReset), "0", target: self)
@@ -522,16 +751,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let palItem = NSMenuItem(title: "Palettes", action: nil, keyEquivalent: "")
         main.addItem(palItem)
         let pal = NSMenu(title: "Palettes")
-        for (label, text) in [("Basic Math (π, ∞, √, ∫)", "Pi"),
-                              ("Algebra (Expand, Factor)", "Expand["),
-                              ("Calculus (D, Integrate)", "D["),
-                              ("Linear Algebra (Det, Inverse)", "Det[")] {
-            let it = NSMenuItem(title: label, action: #selector(menuInsertSpecial(_:)),
-                                keyEquivalent: "")
-            it.target = self
-            it.representedObject = text
-            pal.addItem(it)
-        }
+        addItem(pal, "Basic Math Palette", #selector(openBasicPalette), "1",
+                [.command, .option], target: self)
+        addItem(pal, "Algebra Palette", #selector(openAlgebraPalette), "2",
+                [.command, .option], target: self)
+        addItem(pal, "Calculus Palette", #selector(openCalculusPalette), "3",
+                [.command, .option], target: self)
+        addItem(pal, "Linear Algebra Palette", #selector(openLinalgPalette), "4",
+                [.command, .option], target: self)
+        addItem(pal, "Plot Palette", #selector(openPlotPalette), "5",
+                [.command, .option], target: self)
+        addItem(pal, "Patterns Palette", #selector(openPatternPalette), "6",
+                [.command, .option], target: self)
         palItem.submenu = pal
 
         // --- Window
@@ -601,6 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ///   line 1: destination path ("" = default Desktop path)
     ///   line 2: optional JavaScript to run first (e.g. evaluate an expression)
     ///   line 3: optional delay in seconds before the snapshot (default 2.5)
+    ///   line 4: optional target — "page" (default) or "palette:<name>"
     func pollShotRequest() {
         let req = shotRequestURL()
         guard let raw = try? String(contentsOf: req, encoding: .utf8) else { return }
@@ -611,7 +843,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let delay = lines.isEmpty
             ? 2.5
             : (Double(lines.removeFirst().trimmingCharacters(in: .whitespaces)) ?? 2.5)
+        let what = lines.isEmpty ? "page" : lines.removeFirst().trimmingCharacters(in: .whitespaces)
         let target = dest.isEmpty ? defaultShotPath() : dest
+
+        if what.hasPrefix("palette:") {
+            let name = String(what.dropFirst("palette:".count))
+            showPalette(named: name)
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(delay, 1.0)) {
+                self.savePaletteScreenshot(named: name, to: target)
+            }
+            return
+        }
         guard !js.isEmpty, let web = webView else {
             saveScreenshot(to: target)
             return
@@ -621,6 +863,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 self.saveScreenshot(to: target)
             }
+        }
+    }
+
+    /// Snapshot a palette window by rendering its layer tree (works for an
+    /// on-screen window and needs no screen-recording permission).
+    func savePaletteScreenshot(named name: String, to path: String) {
+        guard let win = palettes[name], let view = win.contentView else {
+            finishShot("err no palette \(name)")
+            return
+        }
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        view.wantsLayer = true
+        guard let layer = view.layer else {
+            finishShot("err palette has no layer")
+            return
+        }
+        let w = Int(view.bounds.width), h = Int(view.bounds.height)
+        guard w > 0, h > 0,
+              let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+            finishShot("err palette bitmap")
+            return
+        }
+        rep.size = NSSize(width: view.bounds.width, height: view.bounds.height)
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            layer.render(in: ctx.cgContext)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+            finishShot("ok \(path)")
+        } else {
+            finishShot("err png encode")
         }
     }
 
@@ -703,7 +983,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     /// Ask the running instance for a screenshot; returns true on success.
-    func requestScreenshot(dest: String, js: String = "", delay: Double = 2.5) -> Bool {
+    func requestScreenshot(dest: String, js: String = "", delay: Double = 2.5,
+                           what: String = "page") -> Bool {
         if !healthOK(port) {
             FileHandle.standardError.write(Data(
                 "rMath: no running instance on port \(port) to screenshot\n".utf8))
@@ -712,7 +993,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         try? FileManager.default.removeItem(at: shotDoneURL())
         let target = dest.isEmpty ? URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("rMath-\(timestamp()).png").path : dest
-        let request = "\(target)\n\(js.replacingOccurrences(of: "\n", with: " "))\n\(delay)\n"
+        let request = "\(target)\n\(js.replacingOccurrences(of: "\n", with: " "))\n\(delay)\n\(what)\n"
         do {
             try request.write(to: shotRequestURL(), atomically: true, encoding: .utf8)
         } catch {

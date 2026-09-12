@@ -56,6 +56,7 @@ pub enum TokKind {
     Minus,
     Star,
     Slash,
+    Radical,      // √ (prefix Sqrt)
     Caret,
     Dot,
     DotDot,    // .. (Repeated)
@@ -142,6 +143,68 @@ impl<'a> Lexer<'a> {
     fn push(&mut self, kind: TokKind, text: String) {
         self.toks.push(Tok { kind, text, space_before: self.space, line: self.line });
         self.space = false;
+    }
+
+    /// Accept Mathematica-style Unicode math characters (π, ∞, ≤, √, Greek
+    /// letters, …) as their Wolfram equivalents. Returns true if consumed.
+    fn unicode_math(&mut self, c: char) -> Result<bool, LexError> {
+        // Operators map to their token kinds so they stay infix operators.
+        let op: Option<TokKind> = match c {
+            '≤' => Some(TokKind::LessEq),
+            '≥' => Some(TokKind::GreaterEq),
+            '≠' => Some(TokKind::BangEq),
+            '→' | '⟶' => Some(TokKind::Rule),
+            '↦' => Some(TokKind::RuleDelayed),
+            '×' | '·' | '∗' => Some(TokKind::Star),
+            '√' => Some(TokKind::Radical),
+            _ => None,
+        };
+        if let Some(kind) = op {
+            for _ in 0..c.len_utf8() {
+                self.bump();
+            }
+            self.push(kind, String::new());
+            return Ok(true);
+        }
+        // Named symbols.
+        let name: Option<&'static str> = match c {
+            'π' => Some("Pi"),
+            '∞' => Some("Infinity"),
+            '°' => Some("Degree"),
+            'θ' => Some("Theta"),
+            'α' => Some("Alpha"),
+            'β' => Some("Beta"),
+            'γ' => Some("Gamma"),
+            'δ' => Some("Delta"),
+            'ε' => Some("Epsilon"),
+            'ζ' => Some("Zeta"),
+            'η' => Some("Eta"),
+            'λ' => Some("Lambda"),
+            'μ' => Some("Mu"),
+            'ν' => Some("Nu"),
+            'ξ' => Some("Xi"),
+            'ρ' => Some("Rho"),
+            'σ' => Some("Sigma"),
+            'τ' => Some("Tau"),
+            'φ' => Some("Phi"),
+            'χ' => Some("Chi"),
+            'ψ' => Some("Psi"),
+            'ω' => Some("Omega"),
+            _ => None,
+        };
+        if let Some(name) = name {
+            for _ in 0..c.len_utf8() {
+                self.bump();
+            }
+            self.push(TokKind::Sym, name.to_string());
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Decode the UTF-8 character starting at byte index `at`.
+    fn decode_char_at(&self, at: usize) -> Option<char> {
+        std::str::from_utf8(&self.s[at..]).ok()?.chars().next()
     }
 
     fn err(&self, msg: &str) -> LexError {
@@ -624,7 +687,25 @@ impl<'a> Lexer<'a> {
                     return Err(self.err("unexpected backslash"));
                 }
                 _ => {
-                    return Err(self.err(&format!("unexpected character {:?}", c as char)));
+                    // Non-ASCII input arrives here as UTF-8 lead bytes: decode
+                    // the whole character before giving up.
+                    if c >= 0x80 {
+                        if let Some(ch) = self.decode_char_at(self.i) {
+                            if self.unicode_math(ch)? {
+                                continue;
+                            }
+                            let width = ch.len_utf8();
+                            for _ in 0..width {
+                                self.bump();
+                            }
+                            return Err(self
+                                .err(&format!("unexpected character {:?}", ch)));
+                        }
+                    }
+                    return Err(self.err(&format!(
+                        "unexpected character {:?}",
+                        c as char
+                    )));
                 }
             }
         }

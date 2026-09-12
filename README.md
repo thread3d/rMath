@@ -101,6 +101,17 @@ The window is a Mathematica-style notebook:
   ↑/↓ walk history.
 - **Insert/Palettes menus** insert `Pi`, `Infinity`, `Sqrt[`, `Integrate[`,
   `Sum[`, comparison and rule operators, plus ready-made Plot/Table examples.
+- **Typesetting form toggle**: **StandardForm** (default: `Factor[x² - 1]`,
+  upright names) ⇄ **TraditionalForm** (`Factor(x² - 1)`, italic function
+  names, parentheses). Switch from the **Format** menu (⌘T / ⇧⌘T), ⌃⇧T, or the
+  **Standard/Traditional** button in the ribbon; existing cells re-typeset
+  instantly (both renderings come back from the kernel, so nothing is
+  re-evaluated).
+- **Palettes**: real floating palette windows (⌥⌘1…⌥⌘6 or the **Palettes**
+  menu) — Basic Math, Algebra, Calculus, Linear Algebra, Plot, Patterns. They
+  stay above the notebook and their buttons insert at the cursor; the math
+  palette inserts true Unicode (`π ∞ √ ≤ ≥ ≠ → θ α β …`), which the kernel
+  parses directly (√ is a prefix operator: `√16` → `4`, `45 °` → `π/4`).
 - **Help** (⌘? or the Help button) opens a searchable list of every kernel
   function; click a name to insert it.
 
@@ -122,9 +133,13 @@ because it renders its own view rather than capturing the display.
          --delay 6                                        # drive the page, then shoot
   ```
 
-  The running app polls `<tmpdir>/rMath-shot.request` (line 1: destination,
-  line 2: optional JavaScript, line 3: optional delay) and answers through
-  `rMath-shot.done`.
+  Add `--palette "Basic Math"` to open a palette in the running app and
+  capture *it* instead of the page. The app polls
+  `<tmpdir>/rMath-shot.request` (line 1: destination, line 2: optional
+  JavaScript, line 3: optional delay, line 4: `page` or `palette:<name>`) and
+  answers through `rMath-shot.done`. `rMath --screenshot-palette <name>
+  <out.png>` renders a palette standalone. `rMath --dump-menus` prints the
+  menu tree.
 
 ### Verifying output without screen-capture permissions
 

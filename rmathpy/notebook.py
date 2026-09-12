@@ -302,6 +302,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14M5 7h4"/></svg></button>
   <button class="tb" title="Zoom in" onclick="zoomIn()">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14M5 7h4M7 5v4"/></svg></button>
+  <span class="sep"></span>
+  <button class="tb wide" id="formbtn" title="Typesetting form (StandardForm / TraditionalForm)"
+          onclick="toggleForm()">Standard</button>
   <span class="spacer"></span>
   <span class="brand">rMath</span>
   <button class="tb wide" title="Help (Cmd-?)" onclick="showHelp(true)">
@@ -355,20 +358,38 @@ function esc(s) {
 function escAttr(s) {
   return (s + '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
-function mathSpan(tex) {
-  return '<span class="tex" data-tex="' + escAttr(tex) + '"></span>';
+// Two TeX renderings per expression (StandardForm / TraditionalForm); the
+// Format menu switches between them instantly, without re-evaluating.
+let currentForm = localStorage.getItem('rmath-form') || 'standard';
+function mathSpan(texStd, texTrad) {
+  return '<span class="tex" data-tex-std="' + escAttr(texStd || '') +
+         '" data-tex-trad="' + escAttr(texTrad || '') + '"></span>';
+}
+function texFor(el) {
+  const std = el.dataset.texStd || '', trad = el.dataset.texTrad || '';
+  return (currentForm === 'traditional') ? (trad || std) : (std || trad);
 }
 function typesetAll(root) {
   if (!root || !root.querySelectorAll) return;
-  root.querySelectorAll('span.tex[data-tex]').forEach(el => {
-    if (el.dataset.done === '1') return;
-    const src = el.dataset.tex;
+  root.querySelectorAll('span.tex').forEach(el => {
+    const src = texFor(el);
     if (!src) return;
     if (window.katex) {
       try { katex.render(src, el, {throwOnError: false}); } catch (e) { el.textContent = src; }
       el.dataset.done = '1';
     } else { el.textContent = src; }
   });
+}
+function setForm(form) {
+  currentForm = (form === 'traditional') ? 'traditional' : 'standard';
+  localStorage.setItem('rmath-form', currentForm);
+  const b = document.getElementById('formbtn');
+  if (b) b.textContent = (currentForm === 'traditional') ? 'Traditional' : 'Standard';
+  typesetAll(document);
+  toast('Typesetting form: ' + b.textContent + 'Form');
+}
+function toggleForm() {
+  setForm(currentForm === 'traditional' ? 'standard' : 'traditional');
 }
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -420,7 +441,8 @@ async function evaluateLine(input, cell) {
   inLbl.textContent = 'In[' + inN + ']:=';
   setInLabel();
   if (resp.tex_in) {
-    inContent.innerHTML = '<div class="texrow">' + mathSpan(resp.tex_in) + '</div>';
+    inContent.innerHTML = '<div class="texrow">' +
+        mathSpan(resp.tex_in, resp.tex_in_trad) + '</div>';
     inContent.title = input;
   }
 
@@ -436,7 +458,7 @@ async function evaluateLine(input, cell) {
       html += '<div class="svgbox">' + resp.svg + '</div>';
       lastPlotSvg = resp.svg;
     } else if (resp.tex) {
-      html += mathSpan(resp.tex);
+      html += mathSpan(resp.tex, resp.tex_trad);
     } else if (resp.result && resp.result.trim()) {
       html += esc(resp.result);
     }
@@ -637,6 +659,7 @@ document.addEventListener('keydown', e => {
 });
 
 setInLabel();
+setForm(currentForm);
 inp.focus();
 autoGrow();
 </script>
