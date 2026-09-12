@@ -508,28 +508,34 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
                     }
                 }
             }
-            // Known function heads: \sin(x), \ln(x), e^{x}, \sqrt{x}
+            // Function heads. In StandardForm the name is shown exactly as it
+            // must be typed (Sin[x], Exp[x], Abs[x]), because rendering Sin as
+            // the operator "sin" invites typing an undefined lowercase name.
+            // TraditionalForm uses the conventional operators (sin(x), |x|).
             if let Some(hid) = nd.head.sym_id() {
                 let name = t.name_of(hid).to_string();
-                if name == "Exp" && nd.args.len() == 1 {
-                    out.push_str("e^{");
-                    tex_into(t, &nd.args[0], form, out);
-                    out.push('}');
-                    return;
-                }
+                let traditional = form == Form::Traditional;
                 if name == "Sqrt" && nd.args.len() == 1 {
                     out.push_str("\\sqrt{");
                     tex_into(t, &nd.args[0], form, out);
                     out.push('}');
                     return;
                 }
-                if name == "Abs" && nd.args.len() == 1 {
+                if traditional && name == "Exp" && nd.args.len() == 1 {
+                    out.push_str("\\exp");
+                    let (bo, bc) = call_brackets(form);
+                    out.push_str(bo);
+                    tex_into(t, &nd.args[0], form, out);
+                    out.push_str(bc);
+                    return;
+                }
+                if traditional && name == "Abs" && nd.args.len() == 1 {
                     out.push_str("\\left|");
                     tex_into(t, &nd.args[0], form, out);
                     out.push_str("\\right|");
                     return;
                 }
-                if name == "Log" && nd.args.len() == 2 {
+                if traditional && name == "Log" && nd.args.len() == 2 {
                     let (bo, bc) = call_brackets(form);
                     out.push_str("\\log_{");
                     tex_into(t, &nd.args[0], form, out);
@@ -539,7 +545,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
                     out.push_str(bc);
                     return;
                 }
-                if nd.args.len() == 1 {
+                if traditional && nd.args.len() == 1 {
                     if let Some(op) = fn_tex_name(t, hid) {
                         let (bo, bc) = call_brackets(form);
                         out.push_str(op);
@@ -650,7 +656,7 @@ mod tests {
         assert_eq!(tex("Sqrt[x]"), "\\sqrt{x}");
         assert_eq!(tex("1/x"), "\\frac{1}{x}");
         assert_eq!(tex("Pi"), "\\pi");
-        assert_eq!(tex("Sin[x]"), "\\sin\\!\\left[x\\right]");
+        assert_eq!(tex("Sin[x]"), "\\text{Sin}\\!\\left[x\\right]");
     }
 
     #[test]
@@ -688,7 +694,7 @@ mod tests {
         assert_eq!(tex_form(&i.t, &v), "\\frac{5}{6}");
         let e = crate::parser::parse_input(&mut i.t, "D[Sin[x]^2, x]").unwrap();
         let v = i.eval(&e).unwrap();
-        assert_eq!(tex_form(&i.t, &v), "2 \\, \\cos\\!\\left[x\\right] \\, \\sin\\!\\left[x\\right]");
+        assert_eq!(tex_form(&i.t, &v), "2 \\, \\text{Cos}\\!\\left[x\\right] \\, \\text{Sin}\\!\\left[x\\right]");
         let e = crate::parser::parse_input(&mut i.t, "f[x_] := x^2").unwrap();
         assert_eq!(tex_form(&i.t, &e), "f\\!\\left[x\\_\\right] := x^{2}");
     }

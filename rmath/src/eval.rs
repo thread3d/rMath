@@ -210,6 +210,28 @@ impl Interp {
                     return Ok((res, ch));
                 }
             }
+            // Nothing matched: if the name differs from a real function only by
+            // case, say so (typing sin[x] instead of Sin[x] is an easy slip, and
+            // the message is emitted once per name).
+            if self.t.data[id].builtin.is_none() && self.t.data[id].down.is_empty() {
+                let name = self.t.name_of(id).to_string();
+                if !name.is_empty() && !name.ends_with('$') {
+                    if let Some(real) = self.t.case_insensitive_match(&name) {
+                        if real != name {
+                            let tag = format!("{}::case", name);
+                            if !self.messages.iter().any(|(t, _)| *t == tag) {
+                                self.messages.push((
+                                    tag,
+                                    format!(
+                                        "{} is not a defined function; did you mean {}?",
+                                        name, real
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok((Expr::node(head, vargs), changed_pre))
     }
@@ -627,5 +649,46 @@ impl MatchCtx for Interp {
     }
     fn sys_syms(&mut self) -> crate::expr::Sys {
         self.t.sys
+    }
+}
+#[cfg(test)]
+mod tests {
+    use crate::expr::Expr;
+
+    fn eval_str(src: &str) -> (String, Vec<String>) {
+        let mut i = super::Interp::new();
+        let e = crate::parser::parse_input(&mut i.t, src).unwrap();
+        let v = i.eval(&e).unwrap();
+        let text = crate::fmt::output_form(&i.t, &v);
+        let msgs = i.messages.iter().map(|(_, t)| t.clone()).collect();
+        (text, msgs)
+    }
+
+    #[test]
+    fn case_mismatch_hint() {
+        // Typing sin[x] instead of Sin[x] should explain itself.
+        let (_, msgs) = eval_str("sin[x]");
+        assert!(
+            msgs.iter().any(|m| m.contains("did you mean Sin?")),
+            "expected a hint, got {:?}",
+            msgs
+        );
+        // A correctly spelled call emits nothing.
+        let (_, msgs) = eval_str("Sin[x]");
+        assert!(msgs.is_empty(), "unexpected messages: {:?}", msgs);
+        // Unknown names without a case-mate stay quiet.
+        let (_, msgs) = eval_str("zzz[1]");
+        assert!(msgs.is_empty(), "unexpected messages: {:?}", msgs);
+    }
+
+    #[test]
+    fn standard_form_shows_typable_names() {
+        let mut i = super::Interp::new();
+        let e = crate::parser::parse_input(&mut i.t, "Sin[x] + Exp[x]").unwrap();
+        let tex = crate::tex::tex_form(&i.t, &e);
+        assert!(tex.contains("Sin"), "StandardForm keeps Sin: {}", tex);
+        assert!(tex.contains("Exp"), "StandardForm keeps Exp: {}", tex);
+        let trad = crate::tex::tex_form_as(&i.t, &e, crate::tex::Form::Traditional);
+        assert!(trad.contains("\\sin"), "TraditionalForm uses \\sin: {}", trad);
     }
 }

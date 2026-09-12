@@ -468,6 +468,29 @@ pub struct SymbolTable {
 }
 
 impl SymbolTable {
+    /// Find a symbolic name matching `name` case-insensitively (for
+    /// "did you mean Sin?" hints). Skips internal renamed symbols (name$N).
+    pub fn case_insensitive_match(&self, name: &str) -> Option<String> {
+        let lower = name.to_lowercase();
+        let mut best: Option<String> = None;
+        for d in &self.data {
+            if d.name.is_empty() || d.name.contains('$') {
+                continue;
+            }
+            if d.name.to_lowercase() == lower && d.name != name {
+                let interesting = d.builtin.is_some() || d.own.is_some();
+                if interesting {
+                    return Some(d.name.clone());
+                }
+                if best.is_none() {
+                    best = Some(d.name.clone());
+                }
+            }
+        }
+        best
+    }
+
+
     pub fn new() -> SymbolTable {
         let mut t = SymbolTable {
             names: HashMap::new(),
