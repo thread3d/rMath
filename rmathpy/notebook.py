@@ -4,6 +4,7 @@ Usage: python3 -m rmathpy.notebook [--port 8787]
 """
 
 import json
+import os
 import signal
 import sys
 import threading
@@ -40,8 +41,12 @@ def handle_eval(body: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):  # quiet
-        pass
+    def log_message(self, fmt, *args):
+        # Quiet by default; set RMATH_LOG_REQUESTS=1 to trace requests
+        # (useful when diagnosing the app or a stuck page).
+        if os.environ.get("RMATH_LOG_REQUESTS") == "1":
+            sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+            sys.stderr.flush()
 
     def _send(self, code, ctype, payload: bytes):
         self.send_response(code)

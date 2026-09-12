@@ -21,3 +21,6 @@ demo/saved.txt
 
 # macOS app bundle build output
 dist/
+
+# Swift build cache
+apps/native/.build/

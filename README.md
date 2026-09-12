@@ -43,37 +43,45 @@ cd rmath && ~/.cargo/bin/cargo build --release     # build the kernel
 cd .. && python3 -m rmathpy.notebook --port 8787   # foreground server
 ```
 
-### macOS app (double-clickable)
+### macOS app (native window)
 
 ```bash
-make app            # build dist/rMath.app
+make app            # build dist/rMath.app  (native window app, ~3.4 MB)
 make app-install    # install into ~/Applications + register with Spotlight
 open ~/Applications/rMath.app        # or double-click it in Finder
 ```
 
-The bundle is self-contained (~3 MB: kernel binary, notebook server, KaTeX
-fonts/CSS/JS, and the demo files) and needs nothing from this source tree at
-run time — only a `python3` for the notebook server. Double-clicking it:
+`rMath.app` is a native Cocoa application: it embeds a **WKWebView** in a real
+window (no browser needed) and starts the bundled notebook server + Rust kernel
+as child processes. The bundle is self-contained — kernel binary, notebook
+server, KaTeX fonts/CSS/JS, and the demo files — needing only a `python3`.
 
-- starts the kernel + notebook server (port 8787, or a free port if busy),
-- opens `http://127.0.0.1:8787` in your default browser,
-- shows an **rMath** icon in the Dock while it runs; quitting the app stops the
-  server and its kernel.
+- **Menus**: ⌘R reload, ⌘+ / ⌘- / ⌘0 zoom, standard Cut/Copy/Paste, ⌘Q quit.
+- **Quitting stops everything**: the server and its kernel are terminated with
+  the app (no orphan processes).
+- **Startup**: it uses port 8787, automatically moving to the next free port if
+  that one is taken, shows a "Starting rMath…" splash, then swaps in the
+  notebook. If startup fails it shows the log path instead.
+- **State**: working directory `~/Library/Application Support/rMath/work`
+  (seeded with a copy of `demo/`), log `~/Library/Logs/rMath.log`.
 
-Extra launcher flags (usable from a terminal):
+Terminal controls shipped inside the bundle:
 
 ```bash
-~/Applications/rMath.app/Contents/MacOS/rMath --stop        # stop a running instance
-~/Applications/rMath.app/Contents/MacOS/rMath --no-open     # start without a browser
-~/Applications/rMath.app/Contents/MacOS/rMath --port=9000   # different port
+APP=~/Applications/rMath.app/Contents/MacOS
+"$APP/rMath" --stop          # stop a running instance (native app)
+"$APP/rMath" --no-window     # start server, wait for health, exit (self-test)
+"$APP/rMath" --port=9000     # different port
+"$APP/rMath-cli" --stop      # shell-launcher equivalent (browser-based)
+"$APP/rMath-cli" --no-open   # start without opening a browser
 ```
 
-State lives in `~/Library/Application Support/rMath` (kernel working directory
-with a copy of `demo/`), and the server logs to `~/Library/Logs/rMath.log`.
-`make app-stop` stops it; `make app-uninstall` removes it. If `python3` is not
-in a standard location, set `RMATH_PYTHON=/path/to/python3` before launching.
+Useful environment variables: `RMATH_PYTHON=/path/to/python3` (choosing the
+interpreter), `RMATH_LOG_REQUESTS=1` (log every HTTP request to the app log),
+and `RMATH_NO_NATIVE=1 make app` (build the older browser-launcher bundle
+instead of the native app).
 
-### Command-line reference
+### Command-line reference### Command-line reference
 
 | Command | What it does |
 |---------|--------------|
@@ -85,7 +93,7 @@ in a standard location, set `RMATH_PYTHON=/path/to/python3` before launching.
 | `make notebook` | notebook server in the foreground (Ctrl-C stops) |
 | `make notebook-bg` | notebook server detached (log: `/tmp/rmath-notebook.log`) |
 | `make stop` / `make restart` | stop / restart the server |
-| `make app` / `make app-run` | build / build + launch the macOS app bundle |
+| `make app` / `make app-run` | build / build + launch the macOS app (native window) |
 | `make app-install` / `make app-uninstall` | install into `~/Applications` / remove |
 | `make app-stop` | stop the app's server |
 | `make clean` | remove Rust build artifacts |

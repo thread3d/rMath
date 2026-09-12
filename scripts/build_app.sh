@@ -30,9 +30,35 @@ cp -R "$ROOT"/rmathpy/katex/dist/katex "$RES/rmathpy/katex/dist/katex"
 mkdir -p "$RES/demo"
 cp "$ROOT"/demo/demo.mt "$ROOT"/demo/data.csv "$RES/demo/"
 
-# Launcher
-cp "$ROOT/scripts/rmath-launcher.sh" "$APP/Contents/MacOS/rMath"
-chmod +x "$APP/Contents/MacOS/rMath"
+# Launchers: native window app (Swift) + CLI fallback (shell).
+cp "$ROOT/scripts/rmath-launcher.sh" "$APP/Contents/MacOS/rMath-cli"
+chmod +x "$APP/Contents/MacOS/rMath-cli"
+
+echo "==> native window app"
+if [ "${RMATH_NO_NATIVE:-0}" = "1" ]; then
+  echo "    skipped (RMATH_NO_NATIVE=1) — using the CLI launcher"
+  cp "$ROOT/scripts/rmath-launcher.sh" "$APP/Contents/MacOS/rMath"
+  chmod +x "$APP/Contents/MacOS/rMath"
+elif command -v swiftc >/dev/null 2>&1; then
+  CACHE="$ROOT/apps/native/.build/modulecache"
+  mkdir -p "$CACHE"
+  if CLANG_MODULE_CACHE_PATH="$CACHE" swiftc -O "$ROOT/apps/native/main.swift" \
+       -o "$APP/Contents/MacOS/rMath" \
+       -framework Cocoa -framework WebKit -module-cache-path "$CACHE" 2>&1 | tail -20; then
+    chmod +x "$APP/Contents/MacOS/rMath"
+    echo "    built native app"
+  else
+    echo "    swiftc failed — falling back to the CLI launcher" >&2
+    cp "$ROOT/scripts/rmath-launcher.sh" "$APP/Contents/MacOS/rMath"
+    chmod +x "$APP/Contents/MacOS/rMath"
+  fi
+else
+  echo "    swiftc not found — using the CLI launcher"
+  cp "$ROOT/scripts/rmath-launcher.sh" "$APP/Contents/MacOS/rMath"
+  chmod +x "$APP/Contents/MacOS/rMath"
+fi
+# Keep a copy of the CLI launcher reachable for terminal use as well.
+ln -sf "$APP/Contents/MacOS/rMath-cli" "$APP/Contents/MacOS/rmath-cli" 2>/dev/null || true
 
 echo "==> icon"
 python3 "$ROOT/scripts/make_icon.py" "$RES/rMath.icns" >/dev/null
