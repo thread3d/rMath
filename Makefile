@@ -20,7 +20,7 @@ BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
 .PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
-        app app-run app-install app-stop app-uninstall
+        app app-run app-install app-stop app-uninstall shot svg2png
 
 help:
 	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -63,6 +63,32 @@ restart: stop notebook-bg
 
 clean:
 	cd $(ROOT)/rmath && $(CARGO) clean
+
+# ---------------- development helpers ----------------
+# Render the running notebook (or any URL) to a PNG with WebKit — no screen
+# recording permission needed, because it renders the page rather than
+# capturing the screen.
+#   make shot                                   # http://127.0.0.1:8787
+#   make shot URL=http://127.0.0.1:8787 JS='document.getElementById("inp").value="1+1"; evaluate();'
+URL ?= http://127.0.0.1:8787
+JS  ?=
+OUT ?= /tmp/rmath-shot.png
+shot: scripts/dev/screenshot
+	@scripts/dev/screenshot "$(URL)" "$(OUT)" 8 '$(JS)'
+	@echo "wrote $(OUT)"
+
+scripts/dev/screenshot: scripts/dev/screenshot.swift
+	@mkdir -p $(ROOT)/scripts/dev/.build/modulecache
+	@CLANG_MODULE_CACHE_PATH="$(ROOT)/scripts/dev/.build/modulecache" \
+	  swiftc -O "$<" -o "$@" -framework Cocoa -framework WebKit \
+	  -module-cache-path "$(ROOT)/scripts/dev/.build/modulecache"
+	@echo "built $@"
+
+# Convert an SVG (e.g. an exported plot) to PNG with an independent renderer.
+#   make svg2png IN=plot.svg OUT=plot.png
+RSVG ?= $(shell command -v rsvg-convert 2>/dev/null || echo $(HOME)/miniconda3/bin/rsvg-convert)
+svg2png:
+	@$(RSVG) -o "$(OUT)" "$(IN)" && echo "wrote $(OUT)"
 
 # ---------------- macOS application bundle ----------------
 APPDIR   ?= $(HOME)/Applications

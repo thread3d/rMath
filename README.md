@@ -81,6 +81,28 @@ interpreter), `RMATH_LOG_REQUESTS=1` (log every HTTP request to the app log),
 and `RMATH_NO_NATIVE=1 make app` (build the older browser-launcher bundle
 instead of the native app).
 
+### Verifying output without screen-capture permissions
+
+macOS gates real screen capture (`screencapture`, AppleScript UI scripting)
+behind TCC permissions. Rendering-based tools need none, and are just as
+useful for checking the notebook:
+
+```bash
+make shot                       # render http://127.0.0.1:8787 through WebKit -> /tmp/rmath-shot.png
+make shot JS='document.getElementById("inp").value="Plot[Sin[x],{x,0,2 Pi}]"; evaluate();'
+make svg2png IN=plot.svg OUT=plot.png     # independent renderer (rsvg-convert)
+qlmanage -t -s 800 -o /tmp page.html      # QuickLook preview of an HTML/SVG file
+```
+
+`make shot` uses `scripts/dev/screenshot.swift` — WebKit, the same engine the
+app embeds — so it shows exactly what the window shows (minus window chrome).
+
+If you *do* want real screen/window capture (to include the native window
+frame), grant **Screen Recording** — and for UI scripting, **Accessibility** —
+to the app that launched the harness (usually Terminal.app):
+System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording, then
+restart that app. Note that restarting Terminal ends the current agent session.
+
 ### Command-line reference### Command-line reference
 
 | Command | What it does |
@@ -96,6 +118,8 @@ instead of the native app).
 | `make app` / `make app-run` | build / build + launch the macOS app (native window) |
 | `make app-install` / `make app-uninstall` | install into `~/Applications` / remove |
 | `make app-stop` | stop the app's server |
+| `make shot` | render the notebook/app page to PNG via WebKit (no permissions needed) |
+| `make svg2png IN=… OUT=…` | convert an SVG plot to PNG with `rsvg-convert` |
 | `make clean` | remove Rust build artifacts |
 
 Port can be changed with `make notebook-bg PORT=9000`. Note that this Rust
