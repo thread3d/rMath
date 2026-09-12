@@ -21,18 +21,53 @@ Out[4]= <an SVG plot in the notebook>
 
 ## Quick start
 
-```bash
-# 1. Build the kernel (Rust)
-cd rmath
-cargo build --release
+Everything is driven by the `Makefile` from the project root:
 
-# 2. Start the notebook (Python, stdlib only)
-cd ..
-python3 -m rmathpy.notebook            # → http://127.0.0.1:8787
+```bash
+make help          # list all commands
+make release       # build the kernel (release)
+make notebook-bg   # start the web notebook in the background
+make stop          # stop it
+make restart       # stop + start again
 ```
 
-Then open `http://127.0.0.1:8787` in a browser and evaluate cells
-(Enter or Shift+Enter submits; ↑/↓ walk history; Ctrl+Space autocompletes).
+The notebook then runs at **http://127.0.0.1:8787** — open it and evaluate
+cells (Enter evaluates, Shift+Enter inserts a newline, ↑/↓ walk history,
+Ctrl+Space autocompletes). Inputs and outputs are typeset with LaTeX, plots
+render as SVG.
+
+Without `make`:
+
+```bash
+cd rmath && ~/.cargo/bin/cargo build --release     # build the kernel
+cd .. && python3 -m rmathpy.notebook --port 8787   # foreground server
+```
+
+### Command-line reference
+
+| Command | What it does |
+|---------|--------------|
+| `make build` / `make release` | build the kernel (debug / release) |
+| `make test` | unit tests + golden end-to-end suite |
+| `make repl` | interactive kernel REPL (`Quit[]` or Ctrl-D exits) |
+| `make eval E='D[Sin[x]^2, x]'` | one-shot evaluation |
+| `make demo` | evaluate `demo/demo.mt` headlessly |
+| `make notebook` | notebook server in the foreground (Ctrl-C stops) |
+| `make notebook-bg` | notebook server detached (log: `/tmp/rmath-notebook.log`) |
+| `make stop` / `make restart` | stop / restart the server |
+| `make clean` | remove Rust build artifacts |
+
+Port can be changed with `make notebook-bg PORT=9000`. Note that this Rust
+toolchain was installed with `--no-modify-path`, so `cargo` lives at
+`~/.cargo/bin/cargo`; add it to your shell with
+`export PATH="$HOME/.cargo/bin:$PATH"` if you want to call it directly.
+
+To check the server from a terminal:
+
+```bash
+curl -s http://127.0.0.1:8787/api/health
+curl -s -X POST http://127.0.0.1:8787/api/eval -d '{"input":"1 + 2*3"}'
+```
 
 ## Components
 

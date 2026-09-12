@@ -15,7 +15,7 @@ fn run_input(i: &mut Interp, src: &str) -> (Option<String>, Vec<String>) {
             vec![format!("Syntax error at line {}: {}", e.line, e.msg)],
         ),
         Ok(e) => {
-            let mut msgs: Vec<String> = Vec::new();
+            let msgs: Vec<String> = Vec::new();
             match i.eval(&e) {
                 Ok(v) => {
                     for p in i.prints.drain(..) {

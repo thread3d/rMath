@@ -4,7 +4,7 @@
 use crate::bigint::BigInt;
 use crate::builtins::core::unevaluated_call;
 use crate::eval::{EvalRes, Flow, Interp};
-use crate::expr::{same_q, Expr};
+use crate::expr::Expr;
 use crate::json::J;
 use std::io::Write;
 

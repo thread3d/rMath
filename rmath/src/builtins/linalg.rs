@@ -797,16 +797,6 @@ pub fn b_solve(i: &mut Interp, args: &[Expr]) -> EvalRes {
     ))
 }
 
-fn coef() {}
-
-fn expanded_parts(i: &mut Interp, e: &Expr) -> Result<Vec<Expr>, Flow> {
-    let sys = i.t.sys;
-    Ok(match e.parts() {
-        Some((h, args)) if h.is_symbol(sys.plus) => args.to_vec(),
-        _ => vec![e.clone()],
-    })
-}
-
 fn var_index(i: &mut Interp, e: &Expr, vars: &[Expr]) -> Result<Option<usize>, Flow> {
     for (k, v) in vars.iter().enumerate() {
         if same_q(e, v) {
@@ -871,12 +861,6 @@ impl Cx {
     fn div(self, o: Cx) -> Cx {
         let d = o.0 * o.0 + o.1 * o.1;
         Cx((self.0 * o.0 + self.1 * o.1) / d, (self.1 * o.0 - self.0 * o.1) / d)
-    }
-    fn scale(self, s: f64) -> Cx {
-        Cx(self.0 * s, self.1 * s)
-    }
-    fn abs(self) -> f64 {
-        (self.0 * self.0 + self.1 * self.1).sqrt()
     }
 }
 

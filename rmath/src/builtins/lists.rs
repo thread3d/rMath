@@ -847,14 +847,6 @@ pub fn b_valueq(i: &mut Interp, args: &[Expr]) -> EvalRes {
 
 // ---------- strings ----------
 
-fn str_of(e: &Expr) -> Option<&str> {
-    if let Expr::Str(s) = e {
-        Some(s)
-    } else {
-        None
-    }
-}
-
 pub fn b_stringjoin(_i: &mut Interp, args: &[Expr]) -> EvalRes {
     let mut s = String::new();
     for a in args {

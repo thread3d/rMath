@@ -2,7 +2,6 @@
 //! with fractions, powers, roots, trig, greek letters, and pattern forms.
 
 use crate::expr::{has, same_q, Expr, SymbolTable, A_CONSTANT};
-use crate::rational::Rat;
 
 pub fn tex_form(t: &SymbolTable, e: &Expr) -> String {
     let mut s = String::new();
@@ -39,7 +38,6 @@ fn symbol_tex(name: &str) -> Option<&'static str> {
         "Nu" => "\\nu",
         "Xi" => "\\xi",
         "Omicron" => "o",
-        "Pi" => "\\pi",
         "Rho" => "\\rho",
         "Sigma" => "\\sigma",
         "Tau" => "\\tau",

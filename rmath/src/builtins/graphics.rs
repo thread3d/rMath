@@ -5,10 +5,6 @@ use crate::builtins::core::unevaluated_call;
 use crate::eval::{EvalRes, Flow, Interp};
 use crate::expr::Expr;
 
-fn eval_call(i: &mut Interp, head: Expr, args: Vec<Expr>) -> EvalRes {
-    i.eval(&Expr::node(head, args))
-}
-
 /// Split trailing Rule arguments as options; returns (positional, options).
 pub fn split_options(i: &mut Interp, args: &[Expr]) -> Result<(Vec<Expr>, Vec<(String, Expr)>), Flow> {
     let sys = i.t.sys;

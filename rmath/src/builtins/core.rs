@@ -100,24 +100,6 @@ pub enum Iter {
     List { var: usize, vals: Vec<Expr> },
 }
 
-impl Iter {
-    fn len(&self) -> i64 {
-        match self {
-            Iter::Count(n) => *n,
-            Iter::Range { lo, hi, step, .. } => {
-                if *step == 0 {
-                    0
-                } else if (*hi - *lo) * (*step) < 0 {
-                    0
-                } else {
-                    ((*hi - *lo) / *step + 1).max(0)
-                }
-            }
-            Iter::List { vals, .. } => vals.len() as i64,
-        }
-    }
-}
-
 fn eval_int(i: &mut Interp, e: &Expr) -> Result<Option<i64>, Flow> {
     let v = i.eval(e)?;
     Ok(expr_to_int(&v))

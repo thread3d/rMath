@@ -2,7 +2,7 @@
 //! machine numeric evaluation (N), sign helpers.
 
 use crate::bigint::BigInt;
-use crate::expr::{CNum, Expr, NumVal, SymbolTable, A_CONSTANT, A_NUMERICFUNCTION};
+use crate::expr::{CNum, Expr, NumVal, SymbolTable, A_CONSTANT};
 use crate::rational::Rat;
 
 pub fn nv_to_expr(n: &NumVal) -> Expr {

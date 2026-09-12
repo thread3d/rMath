@@ -225,9 +225,6 @@ fn one_minus_y2(i: &mut Interp, y: &Expr) -> Expr {
     Expr::node(Expr::Sym(i.t.sys.plus), vec![Expr::int_i64(1), neg1(i, y2)])
 }
 
-fn times3(i: &mut Interp, a: Expr, b: Expr, c: Expr) -> Expr {
-    Expr::node(Expr::Sym(i.t.sys.times), vec![a, b, c])
-}
 
 // ============================ integration ============================
 
