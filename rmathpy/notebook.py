@@ -219,10 +219,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
              border-radius: 0 2px 2px 0; pointer-events: none; }
   .nobrackets .bracket { display: none; }
   .row { display: flex; align-items: flex-start; min-height: 20px; }
+  /* In/Out labels: identical font, size, weight and background (as in a
+     Mathematica notebook) — only the text differs. Colouring Out differently
+     made it read as smaller, because a lighter colour at this size looks
+     thinner. */
   .lbl { flex: 0 0 auto; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
-         font-weight: 700; padding-top: 3px; }
-  .inlbl { color: var(--inlabel); margin-right: 10px; }
-  .outlbl { color: var(--outlabel); margin-right: 10px; }
+         font-weight: 700; color: #2f2f2f; background: #f0ece1;
+         padding: 2px 6px; border-radius: 3px; }
+  .inlbl { margin-right: 9px; }
+  .outlbl { margin-right: 9px; }
   .content { flex: 1 1 auto; min-width: 0; font-family: "SF Mono", Menlo, Consolas, monospace;
              font-size: 13px; white-space: pre-wrap; word-break: break-word; line-height: 1.42; }
   .prints { color: #55606b; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
@@ -245,7 +250,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #inputbar .inner { max-width: 940px; margin: 0 auto; padding: 0 16px;
                      display: flex; align-items: flex-start; gap: 8px; }
   #inlabel { font-family: "SF Mono", Menlo, monospace; font-weight: 700; font-size: 12.5px;
-             color: var(--inlabel); padding-top: 8px; min-width: 58px; }
+             color: #2f2f2f; background: #f0ece1; padding: 7px 6px; border-radius: 3px;
+             min-width: 62px; text-align: right; }
   #inp { flex: 1; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
          padding: 7px 9px; border: 1px solid #b9b9b9; border-radius: 3px; outline: 0;
          resize: none; overflow-y: auto; max-height: 110px; line-height: 1.4; background: #fff; }
