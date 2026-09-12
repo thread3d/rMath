@@ -359,6 +359,7 @@ fn apply_numeric_fn(i: &crate::eval::Interp, id: usize, args: &[Expr]) -> Option
             "ExpIntegralEi" => crate::builtins::special::ei_f64(x),
             "LogIntegral" if x > 1.0 => crate::builtins::special::ei_f64(x.ln()),
             "Sinc" => crate::builtins::special::sinc_f64(x),
+            "Gamma" => gamma_f64(x),
             "SinhIntegral" => crate::builtins::special::shi_f64(x),
             "CoshIntegral" => crate::builtins::special::chi_f64(x),
             "Sign" => {
@@ -411,6 +412,7 @@ fn apply_numeric_fn(i: &crate::eval::Interp, id: usize, args: &[Expr]) -> Option
                     return Some(Expr::real(crate::builtins::special::ei_f64(x.ln())))
                 }
                 "Sinc" => return Some(Expr::real(crate::builtins::special::sinc_f64(x))),
+                "Gamma" => return Some(Expr::real(gamma_f64(x))),
                 "SinhIntegral" => {
                     return Some(Expr::real(crate::builtins::special::shi_f64(x)))
                 }
@@ -464,16 +466,18 @@ pub fn cnum_f64(c: &CNum) -> (f64, f64) {
 /// Lanczos gamma (g=7, n=9) for machine-precision real arguments.
 pub fn gamma_f64(x: f64) -> f64 {
     const G: f64 = 7.0;
+    // Lanczos coefficients for g = 7, N = 9 (standard values; the first four
+    // were correct but the rest had been mistyped, giving ~1e-3 errors).
     const C: [f64; 9] = [
-        0.99999999999980993,
-        676.5203681218851,
-        -1259.1392167224028,
-        771.32342877765313,
-        -176.61502916214059,
-        12.251375001847186,
-        -0.5749398749789366,
-        1.4797409415920228,
-        -0.095038886608988712,
+        0.999_999_999_999_809_93,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
     ];
     if x < 0.5 {
         std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * gamma_f64(1.0 - x))
@@ -487,7 +491,10 @@ pub fn gamma_f64(x: f64) -> f64 {
             }
             a += ci / (x1 + idx as f64);
         }
-        (2.0 * std::f64::consts::PI).sqrt() * t.powf(t - 0.5) * (-t).exp() * a
+        // Lanczos: Γ(x) = sqrt(2π) t^(x1+0.5) e^-t A(x), with x1 = x - 1 and
+        // t = x1 + g + 0.5. The exponent is x1 + 0.5, not t - 0.5 (that slipped
+        // the constant g into the power and made every non-exact value wrong).
+        (2.0 * std::f64::consts::PI).sqrt() * t.powf(x1 + 0.5) * (-t).exp() * a
     }
 }
 /// Exact rational square root when the radicand is a perfect square.

@@ -147,6 +147,7 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("Cosh", A_LISTABLE, "`Cosh[x]`", b_cosh),
     builtin!("Tanh", A_LISTABLE, "`Tanh[x]`", b_tanh),
     builtin!("Factorial", 0, "`n!`", b_factorial),
+    builtin!("Gamma", A_LISTABLE | A_NUMERICFUNCTION, "`Gamma[z]` gamma function", b_gamma),
     builtin!("Erf", A_LISTABLE | A_NUMERICFUNCTION, "`Erf[x]` error function", b_erf),
     builtin!("Erfc", A_LISTABLE | A_NUMERICFUNCTION, "`Erfc[x]` complementary error function", b_erfc),
     builtin!("SinIntegral", A_LISTABLE | A_NUMERICFUNCTION, "`SinIntegral[x]` sine integral", b_sinintegral),

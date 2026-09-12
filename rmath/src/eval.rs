@@ -430,7 +430,14 @@ impl Interp {
             } else {
                 body
             };
-            let v = self.eval(&effective)?;
+            // Return[expr] inside a function body returns from that function
+            // (previously it unwound all the way out, aborting the caller).
+            let v = match self.eval(&effective) {
+                Ok(v) => v,
+                Err(Flow::Return(Some(v))) => v,
+                Err(Flow::Return(None)) => Expr::Sym(self.t.sys.null),
+                Err(e) => return Err(e),
+            };
             return Ok(Some(v));
         }
         Ok(None)

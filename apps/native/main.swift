@@ -1193,7 +1193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         do {
             try request.write(to: shotRequestURL(), atomically: true, encoding: .utf8)
         } catch { return false }
-        let deadline = Date().addingTimeInterval(30)
+        let deadline = Date().addingTimeInterval(180)
         while Date() < deadline {
             if let done = try? String(contentsOf: shotDoneURL(), encoding: .utf8) {
                 try? FileManager.default.removeItem(at: shotDoneURL())
@@ -1223,7 +1223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             FileHandle.standardError.write(Data("rMath: cannot write request: \(error)\n".utf8))
             return false
         }
-        let deadline = Date().addingTimeInterval(20)
+        // Generous: the page may be busy evaluating a long file when the
+        // request arrives.
+        let deadline = Date().addingTimeInterval(180)
         while Date() < deadline {
             if let done = try? String(contentsOf: shotDoneURL(), encoding: .utf8) {
                 try? FileManager.default.removeItem(at: shotDoneURL())

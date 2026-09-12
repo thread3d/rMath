@@ -81,6 +81,19 @@ interpreter), `RMATH_LOG_REQUESTS=1` (log every HTTP request to the app log),
 and `RMATH_NO_NATIVE=1 make app` (build the older browser-launcher bundle
 instead of the native app).
 
+### Demonstration file
+
+`demo/demo.mt` is a tour of the kernel: **335 verified examples in 21 sections**
+(arithmetic, complex numbers, elementary and special functions, Unicode input,
+patterns, rules, scoping, lists, functional programming, algebra, polynomials,
+calculus, equations, linear algebra, strings, logic, control flow, information
+utilities, random numbers, file I/O) plus a function inventory taken from
+`Names[]`, ending with a plot.
+
+Every example was executed against the kernel when the file was generated, so
+nothing in it is aspirational. Load it with `Get["demo/demo.mt"]` (in the app:
+**File ▸ Open…**, which loads each statement as its own cell).
+
 ### Notebook interface
 
 The window is a Mathematica-style notebook:

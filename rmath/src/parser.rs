@@ -241,6 +241,10 @@ impl<'t> Parser<'t> {
                 TokKind::Amp => {
                     self.advance();
                     lhs = self.node(Expr::Sym(sys.function), vec![lhs]);
+                    // A pure function can be applied immediately: #^2 &[7].
+                    if self.at(&TokKind::LBracket) {
+                        lhs = self.apply_args(lhs)?;
+                    }
                 }
                 TokKind::SlashAt => {
                     self.advance();
@@ -294,6 +298,28 @@ impl<'t> Parser<'t> {
         } else {
             Ok(e)
         }
+    }
+
+    /// `head[arg, ...]` — arguments are full expressions, so a compound
+    /// expression or an assignment is allowed inside the brackets.
+    fn apply_args(&mut self, head: Expr) -> Result<Expr, ParseError> {
+        self.advance(); // [
+        let mut args = Vec::new();
+        if !self.at(&TokKind::RBracket) {
+            loop {
+                args.push(self.parse_l1()?);
+                if self.at(&TokKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        if !self.at(&TokKind::RBracket) {
+            return Err(self.err_here("expected ]"));
+        }
+        self.advance();
+        Ok(self.node(head, args))
     }
 
     // ----- L5: /. and //. -----
@@ -648,23 +674,7 @@ impl<'t> Parser<'t> {
         loop {
             match self.peek_kind() {
                 TokKind::LBracket => {
-                    self.advance();
-                    let mut args = Vec::new();
-                    if !self.at(&TokKind::RBracket) {
-                        loop {
-                            args.push(self.parse_l2()?);
-                            if self.at(&TokKind::Comma) {
-                                self.advance();
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    if !self.at(&TokKind::RBracket) {
-                        return Err(self.err_here("expected ]"));
-                    }
-                    self.advance();
-                    lhs = self.node(lhs, args);
+                    lhs = self.apply_args(lhs)?;
                 }
                 TokKind::DblLBracket => {
                     self.advance();

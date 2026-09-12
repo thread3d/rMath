@@ -443,6 +443,15 @@ fn num1(i: &mut Interp, args: &[Expr], f: fn(f64) -> f64, name: &str) -> EvalRes
             if args[0].to_i64_pub() == Some(1) {
                 return Ok(Expr::int_i64(0));
             }
+            // Log[E] = 1 (and Log[E^n] = n)
+            if args[0].is_symbol(i.t.intern("E")) {
+                return Ok(Expr::int_i64(1));
+            }
+            if let Some((h, a)) = args[0].parts() {
+                if h.is_symbol(i.t.sys.power) && a.len() == 2 && a[0].is_symbol(i.t.intern("E")) {
+                    return Ok(a[1].clone());
+                }
+            }
         }
         _ => {}
     }
@@ -837,38 +846,68 @@ pub fn b_total(i: &mut Interp, args: &[Expr]) -> EvalRes {
 }
 
 pub fn b_range(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    let mut vals: Vec<i64> = Vec::new();
-    for a in args {
-        let e = i.eval(a)?;
-        match expr_to_int(&e) {
-            Some(n) => vals.push(n),
-            None => return Ok(unevaluated_call(i, "Range", args)),
-        }
-    }
-    let (lo, hi, step) = match vals.len() {
-        1 => (1, vals[0], 1),
-        2 => (vals[0], vals[1], 1),
-        3 => (vals[0], vals[1], vals[2]),
-        _ => return Ok(unevaluated_call(i, "Range", args)),
-    };
-    if step == 0 {
+    let sys = i.t.sys;
+    if args.is_empty() || args.len() > 3 {
         return Ok(unevaluated_call(i, "Range", args));
     }
-    let mut out = Vec::new();
-    if step > 0 {
-        let mut k = lo;
-        while k <= hi {
-            out.push(Expr::int_i64(k));
-            k += step;
-        }
-    } else {
-        let mut k = lo;
-        while k >= hi {
-            out.push(Expr::int_i64(k));
-            k += step;
-        }
+    let mut vals: Vec<Expr> = Vec::new();
+    for a in args {
+        vals.push(i.eval(a)?);
     }
-    Ok(Expr::node(Expr::Sym(i.t.sys.list), out))
+    let list = |out: Vec<Expr>| Expr::node(Expr::Sym(sys.list), out);
+    const LIMIT: usize = 1_000_000;
+
+    // Exact rationals (integers included): Range[0, 1, 1/4] stays exact.
+    let rats: Option<Vec<Rat>> = vals.iter().map(|v| v.as_rat_exact()).collect();
+    if let Some(r) = rats {
+        let (lo, hi, step) = match r.len() {
+            1 => (Rat::from_i64(1), r[0].clone(), Rat::from_i64(1)),
+            2 => (r[0].clone(), r[1].clone(), Rat::from_i64(1)),
+            _ => (r[0].clone(), r[1].clone(), r[2].clone()),
+        };
+        if step.is_zero() {
+            return Ok(unevaluated_call(i, "Range", args));
+        }
+        let up = !step.is_neg();
+        let mut out = Vec::new();
+        let mut x = lo;
+        while if up { x.cmp(&hi) != std::cmp::Ordering::Greater } else { x.cmp(&hi) != std::cmp::Ordering::Less } {
+            out.push(Expr::rat(x.clone()));
+            x = x.add(&step);
+            if out.len() > LIMIT {
+                return Ok(unevaluated_call(i, "Range", args));
+            }
+        }
+        return Ok(list(out));
+    }
+
+    // Machine numbers.
+    let fs: Option<Vec<f64>> = vals
+        .iter()
+        .map(|v| num_val(v).map(|n| nv_f64(&n)))
+        .collect();
+    if let Some(f) = fs {
+        let (lo, hi, step) = match f.len() {
+            1 => (1.0, f[0], 1.0),
+            2 => (f[0], f[1], 1.0),
+            _ => (f[0], f[1], f[2]),
+        };
+        if step == 0.0 {
+            return Ok(unevaluated_call(i, "Range", args));
+        }
+        let mut out = Vec::new();
+        let mut x = lo;
+        let tol = 1e-12 * hi.abs().max(1.0);
+        while if step > 0.0 { x <= hi + tol } else { x >= hi - tol } {
+            out.push(Expr::real(x));
+            x += step;
+            if out.len() > LIMIT {
+                return Ok(unevaluated_call(i, "Range", args));
+            }
+        }
+        return Ok(list(out));
+    }
+    Ok(unevaluated_call(i, "Range", args))
 }
 pub fn b_chop(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 1 {

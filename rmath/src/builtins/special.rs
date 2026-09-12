@@ -179,6 +179,59 @@ pub fn b_coshintegral(i: &mut Interp, args: &[Expr]) -> EvalRes {
     num1(i, "CoshIntegral", args, chi_f64)
 }
 
+/// Gamma[z]: exact for positive integers and half-integers, numeric otherwise.
+pub fn b_gamma(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    use crate::bigint::BigInt;
+    if args.len() != 1 {
+        i.message("Gamma", "argr");
+        return Ok(unevaluated_call(i, "Gamma", args));
+    }
+    let z = i.eval(&args[0])?;
+    match &z {
+        // Gamma[n] = (n-1)!
+        Expr::Int(n) => {
+            if let Some(k) = n.to_i64() {
+                if k > 0 && k <= 200 {
+                    let mut f = BigInt::from_i64(1);
+                    for m in 2..k {
+                        f = f.mul(&BigInt::from_i64(m));
+                    }
+                    return Ok(Expr::Int(f));
+                }
+            }
+        }
+        // Gamma[n + 1/2] = (2n)! / (4^n n!) Sqrt[Pi]
+        Expr::Rat(r) if r.den.to_i64() == Some(2) => {
+            if let Some(two_n) = r.num.to_i64() {
+                let n = (two_n - 1) / 2;
+                if n >= 0 && n <= 20 {
+                    let mut fact2n = BigInt::from_i64(1);
+                    for m in 2..=(2 * n) {
+                        fact2n = fact2n.mul(&BigInt::from_i64(m));
+                    }
+                    let mut factn = BigInt::from_i64(1);
+                    for m in 2..=n {
+                        factn = factn.mul(&BigInt::from_i64(m));
+                    }
+                    let den = BigInt::from_i64(4).pow(n as u32).mul(&factn);
+                    let coef = crate::rational::Rat::new(fact2n, den);
+                    let pi = Expr::Sym(i.t.get("Pi").unwrap_or(i.t.sys.indeterminate));
+                    let sqrt_head = i.t.intern("Sqrt");
+                    let root = Expr::node(Expr::Sym(sqrt_head), vec![pi]);
+                    let prod = Expr::node(
+                        Expr::Sym(i.t.sys.times),
+                        vec![Expr::rat(coef), root],
+                    );
+                    return i.eval(&prod);
+                }
+            }
+        }
+        Expr::Real(x) => return Ok(Expr::real(crate::builtins::num::gamma_f64(*x))),
+        _ => {}
+    }
+    Ok(unevaluated_call(i, "Gamma", &[z]))
+}
+
 /// Sinc[x] = Sin[x]/x, with Sinc[0] = 1 (Mathematica's normalisation).
 pub fn b_sinc(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 1 {

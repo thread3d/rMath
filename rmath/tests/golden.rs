@@ -33,7 +33,8 @@ fn run_golden_file(path: &std::path::Path) -> Result<(), String> {
     for line in text.lines() {
         line_no += 1;
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        // Comments are "# ..." (a bare "#" starts a slot expression: #^2 &).
+        if line.is_empty() || line.starts_with("# ") || line == "#" {
             continue;
         }
         if let Some(rest) = line.strip_prefix("=>") {
