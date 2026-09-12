@@ -312,6 +312,14 @@ k.eval("x = 5; x^2")["result"]       # "25"
 - `Eigenvalues` only for 2×2 matrices.
 - Symbolic `Sum`/`Product` are not computed in closed form.
 - Up-values (`f /: g[f[x]] = ...` parse but are not applied).
+- `Integrate` covers polynomials, `1/(a x + b)`, sums, constant factors, the
+  elementary functions with linear arguments, and the special cases
+  `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`, `Exp[-x^2]`
+  (integration by parts, partial fractions and trigonometric substitution are
+  not implemented, so e.g. `Integrate[x Sin[x], x]` stays unevaluated).
+- Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
+  `ExpIntegralEi`, `LogIntegral` (machine-precision numeric evaluation, exact
+  values at 0/±Infinity, and derivatives).
 
 ## Architecture
 

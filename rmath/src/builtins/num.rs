@@ -297,6 +297,12 @@ fn apply_numeric_fn(i: &crate::eval::Interp, id: usize, args: &[Expr]) -> Option
             "Log" => x.ln(),
             "Sqrt" => x.sqrt(),
             "Abs" => x.abs(),
+            "Erf" => crate::builtins::special::erf_f64(x),
+            "Erfc" => crate::builtins::special::erfc_f64(x),
+            "SinIntegral" => crate::builtins::special::si_f64(x),
+            "CosIntegral" => crate::builtins::special::ci_f64(x),
+            "ExpIntegralEi" => crate::builtins::special::ei_f64(x),
+            "LogIntegral" if x > 1.0 => crate::builtins::special::ei_f64(x.ln()),
             "Sign" => {
                 if x > 0.0 {
                     1.0
@@ -338,6 +344,14 @@ fn apply_numeric_fn(i: &crate::eval::Interp, id: usize, args: &[Expr]) -> Option
                 "Log" if x > 0.0 => return Some(Expr::real(x.ln())),
                 "Sqrt" if x >= 0.0 => return Some(Expr::real(x.sqrt())),
                 "Abs" => return Some(Expr::real(x.abs())),
+                "Erf" => return Some(Expr::real(crate::builtins::special::erf_f64(x))),
+                "Erfc" => return Some(Expr::real(crate::builtins::special::erfc_f64(x))),
+                "SinIntegral" => return Some(Expr::real(crate::builtins::special::si_f64(x))),
+                "CosIntegral" => return Some(Expr::real(crate::builtins::special::ci_f64(x))),
+                "ExpIntegralEi" => return Some(Expr::real(crate::builtins::special::ei_f64(x))),
+                "LogIntegral" if x > 1.0 => {
+                    return Some(Expr::real(crate::builtins::special::ei_f64(x.ln())))
+                }
                 "Re" => return Some(Expr::real(x)),
                 "Im" => return Some(Expr::real(0.0)),
                 _ => {}

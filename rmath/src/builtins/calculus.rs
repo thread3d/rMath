@@ -172,7 +172,37 @@ fn derivative_table(i: &mut Interp, head: usize, y: &Expr) -> Option<Expr> {
         }
         "Exp" => Some(app(i, "Exp", y)),
         "Log" => Some(pw(i, y, Expr::int_i64(-1))),
-        "Sqrt" => Some(pw(i, y, half())),
+        // special functions
+        "SinIntegral" => {
+            let s = app(i, "Sin", y);
+            let inv = pw(i, y, Expr::int_i64(-1));
+            Some(mul2(i, s, inv))
+        }
+        "CosIntegral" => {
+            let c = app(i, "Cos", y);
+            let inv = pw(i, y, Expr::int_i64(-1));
+            Some(mul2(i, c, inv))
+        }
+        "ExpIntegralEi" => {
+            let e1 = app(i, "Exp", y);
+            let inv = pw(i, y, Expr::int_i64(-1));
+            Some(mul2(i, e1, inv))
+        }
+        "LogIntegral" => {
+            let l = app(i, "Log", y);
+            Some(pw(i, &l, Expr::int_i64(-1)))
+        }
+        "Erf" | "Erfc" => {
+            let sq = pw(i, y, Expr::int_i64(2));
+            let neg_sq = neg1(i, sq);
+            let e = app(i, "Exp", &neg_sq);
+            let pi = i.t.get("Pi").unwrap_or(i.t.sys.indeterminate);
+            let root_pi = Expr::node(Expr::Sym(i.t.intern("Sqrt")), vec![Expr::Sym(pi)]);
+            let inv = pw(i, &root_pi, Expr::int_i64(-1));
+            let prod = mul2(i, e, inv);
+            let v = mul2(i, Expr::int_i64(2), prod);
+            Some(if name == "Erfc" { neg1(i, v) } else { v })
+        }
         "ArcSin" => {
             let d = one_minus_y2(i, y);
             Some(pw(i, &d, half()))
@@ -229,6 +259,120 @@ fn one_minus_y2(i: &mut Interp, y: &Expr) -> Expr {
 // ============================ integration ============================
 
 /// Integrate[expr, x] core (expr already evaluated).
+
+
+/// Some(c) when `e` is `c*x` for a non-zero integer c (c = 1 for plain x).
+fn coefficient_of_var(i: &Interp, e: &Expr, var: &Expr) -> Option<i64> {
+    if same_q(e, var) {
+        return Some(1);
+    }
+    if let Some((h, args)) = e.parts() {
+        if h.is_symbol(i.t.sys.times) && args.len() == 2 {
+            if let Expr::Int(n) = &args[0] {
+                if same_q(&args[1], var) {
+                    let c = n.to_i64()?;
+                    if c != 0 {
+                        return Some(c);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Antiderivatives that need a special function:
+///   Sin[u]/u -> SinIntegral[u],  Cos[u]/u -> CosIntegral[u],
+///   Exp[u]/u -> ExpIntegralEi[u], 1/Log[u] -> LogIntegral[u],
+///   Exp[-x^2] -> Sqrt[Pi]/2 Erf[x].
+fn special_antiderivative(i: &mut Interp, e: &Expr, var: &Expr) -> Option<Expr> {
+    let sys = i.t.sys;
+    let (h, args) = e.parts()?;
+    let head_name = h.sym_id().map(|id| i.t.name_of(id).to_string());
+    let head_is = |n: &str| head_name.as_deref() == Some(n);
+
+    // Exp[-x^2]
+    if head_is("Exp") && args.len() == 1 {
+        let (eh, eargs) = args[0].parts()?;
+        if eh.is_symbol(sys.times) && eargs.len() == 2 {
+            let minus_one = matches!(&eargs[0], Expr::Int(n) if n.to_i64() == Some(-1));
+            let x_squared = Expr::node(
+                Expr::Sym(sys.power),
+                vec![var.clone(), Expr::int_i64(2)],
+            );
+            if minus_one && same_q(&eargs[1], &x_squared) {
+                // Sqrt[Pi]/2 * Erf[x]
+                let pi = i.t.get("Pi").unwrap_or(i.t.sys.indeterminate);
+                let root_pi = Expr::node(Expr::Sym(i.t.intern("Sqrt")), vec![Expr::Sym(pi)]);
+                let half = Expr::rat(crate::rational::Rat::new(
+                    crate::bigint::BigInt::from_i64(1),
+                    crate::bigint::BigInt::from_i64(2),
+                ));
+                let coef = mul2(i, half, root_pi);
+                let erf = app(i, "Erf", var);
+                return Some(mul2(i, coef, erf));
+            }
+        }
+        return None;
+    }
+
+    // 1/Log[u] -> LogIntegral[u]
+    if h.is_symbol(sys.power) && args.len() == 2 {
+        let minus_one = matches!(&args[1], Expr::Int(n) if n.to_i64() == Some(-1));
+        if minus_one {
+            if let Some((lh, largs)) = args[0].parts() {
+                let lname = lh.sym_id().map(|id| i.t.name_of(id).to_string());
+                if lname.as_deref() == Some("Log") && largs.len() == 1 && same_q(&largs[0], var) {
+                    let u = largs[0].clone();
+                    return Some(app(i, "LogIntegral", &u));
+                }
+            }
+        }
+        return None;
+    }
+
+    // f(c x)/(a x)  ->  (1/a) · Special(c x), for f in {Sin, Cos, Exp}.
+    // Times is Orderless, so either argument may be the reciprocal.
+    if h.is_symbol(sys.times) && args.len() == 2 {
+        for (num_idx, den_idx) in [(0usize, 1usize), (1usize, 0usize)] {
+            let num = &args[num_idx];
+            let den = &args[den_idx];
+            let Some((ph, pargs)) = den.parts() else { continue };
+            if !ph.is_symbol(sys.power) || pargs.len() != 2 {
+                continue;
+            }
+            if !matches!(&pargs[1], Expr::Int(n) if n.to_i64() == Some(-1)) {
+                continue;
+            }
+            let Some(a) = coefficient_of_var(i, &pargs[0], var) else { continue };
+            let Some((fh, fargs)) = num.parts() else { continue };
+            if fargs.len() != 1 {
+                continue;
+            }
+            let Some(_c) = coefficient_of_var(i, &fargs[0], var) else { continue };
+            let fname = fh.sym_id().map(|id| i.t.name_of(id).to_string());
+            let special = match fname.as_deref() {
+                Some("Sin") => "SinIntegral",
+                Some("Cos") => "CosIntegral",
+                Some("Exp") => "ExpIntegralEi",
+                _ => continue,
+            };
+            let v = fargs[0].clone();
+            let anti = app(i, special, &v);
+            if a == 1 {
+                return Some(anti);
+            }
+            let scale = Expr::rat(crate::rational::Rat::new(
+                crate::bigint::BigInt::from_i64(1),
+                crate::bigint::BigInt::from_i64(a),
+            ));
+            return Some(mul2(i, scale, anti));
+        }
+        return None;
+    }
+    None
+}
+
 pub fn integrate_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
     integrate_rec(i, e, var, 0)
 }
@@ -248,6 +392,10 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
     // ∫ c dx = c x for anything free of the variable.
     if is_free_of(i, e, var)? {
         return eval_call(i, Expr::Sym(sys.times), vec![e.clone(), var.clone()]);
+    }
+    // Recognisable special-function antiderivatives first.
+    if let Some(anti) = special_antiderivative(i, e, var) {
+        return Ok(anti);
     }
     // Linearity over Plus.
     if let Some((h, args)) = e.parts() {

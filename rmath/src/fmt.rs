@@ -268,6 +268,36 @@ fn output_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                     return;
                 }
                 if *id == sys.power && nd.args.len() == 2 {
+                    // Half powers print as radicals (as in Mathematica) and
+                    // other rational exponents are parenthesized, so `x^1/2`
+                    // can never be misread as (x^1)/2.
+                    match &nd.args[1] {
+                        Expr::Rat(r) if r.num.to_i64() == Some(1) && r.den.to_i64() == Some(2) => {
+                            out.push_str("Sqrt[");
+                            output_into(t, &nd.args[0], out);
+                            out.push(']');
+                            return;
+                        }
+                        Expr::Rat(r)
+                            if r.num.to_i64() == Some(-1) && r.den.to_i64() == Some(2) =>
+                        {
+                            out.push_str("1/Sqrt[");
+                            output_into(t, &nd.args[0], out);
+                            out.push(']');
+                            return;
+                        }
+                        Expr::Rat(_) | Expr::Real(_) => {
+                            parenthesize(t, &nd.args[0], 31, out);
+                            out.push('^');
+                            let mut tmp = String::new();
+                            output_into(t, &nd.args[1], &mut tmp);
+                            out.push('(');
+                            out.push_str(&tmp);
+                            out.push(')');
+                            return;
+                        }
+                        _ => {}
+                    }
                     parenthesize(t, &nd.args[0], 31, out);
                     out.push('^');
                     parenthesize(t, &nd.args[1], 30, out);

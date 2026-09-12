@@ -8,8 +8,11 @@ use crate::builtins::calculus::*;
 use crate::builtins::graphics::*;
 use crate::builtins::linalg::*;
 use crate::builtins::poly::*;
+use crate::builtins::special::*;
 use crate::eval::{EvalRes, Interp};
-use crate::expr::{A_HOLDALL, A_HOLDALLCOMPLETE, A_HOLDFIRST, A_HOLDREST, A_LISTABLE, Expr};
+use crate::expr::{
+    A_HOLDALL, A_HOLDALLCOMPLETE, A_HOLDFIRST, A_HOLDREST, A_LISTABLE, A_NUMERICFUNCTION, Expr,
+};
 
 pub type BFn = fn(&mut Interp, &[Expr]) -> EvalRes;
 
@@ -35,6 +38,7 @@ pub mod graphics;
 pub mod linalg;
 pub mod num;
 pub mod poly;
+pub mod special;
 
 pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("List", 0, "`{e1, e2, ...}` list", b_list),
@@ -143,6 +147,12 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("Cosh", A_LISTABLE, "`Cosh[x]`", b_cosh),
     builtin!("Tanh", A_LISTABLE, "`Tanh[x]`", b_tanh),
     builtin!("Factorial", 0, "`n!`", b_factorial),
+    builtin!("Erf", A_LISTABLE | A_NUMERICFUNCTION, "`Erf[x]` error function", b_erf),
+    builtin!("Erfc", A_LISTABLE | A_NUMERICFUNCTION, "`Erfc[x]` complementary error function", b_erfc),
+    builtin!("SinIntegral", A_LISTABLE | A_NUMERICFUNCTION, "`SinIntegral[x]` sine integral", b_sinintegral),
+    builtin!("CosIntegral", A_LISTABLE | A_NUMERICFUNCTION, "`CosIntegral[x]` cosine integral", b_cosintegral),
+    builtin!("ExpIntegralEi", A_LISTABLE | A_NUMERICFUNCTION, "`ExpIntegralEi[x]` exponential integral", b_expintegralei),
+    builtin!("LogIntegral", A_LISTABLE | A_NUMERICFUNCTION, "`LogIntegral[x]` logarithmic integral", b_logintegral),
     builtin!("Expand", 0, "`Expand[expr]`", b_expand),
     builtin!("ExpandAll", 0, "`ExpandAll[expr]`", b_expandall),
     builtin!("Together", 0, "`Together[expr]`", b_together),

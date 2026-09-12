@@ -60,10 +60,11 @@ D[Log[x], x]
 Series[Cos[x], {x, 0, 4}]
 => SeriesData[x, 0, {1, 0, -1/2, 0, 1/24}, 0, 4, 1]
 
-# Integrate: unevaluable integrands stay unevaluated instead of overflowing the
-# stack (found via the app's bug-report button), and bare symbols are covered
-Integrate[Sin[x]/x, x]
-=> Integrate[Sin[x]/x, x]
+# Integrate: integrands with no rule stay unevaluated instead of overflowing the
+# stack (found via the app's bug-report button), and bare symbols are covered.
+# (Sin[x]/x now has a rule: see special.mt)
+Integrate[Sin[x]/x^2, x]
+=> Integrate[Sin[x]/x^2, x]
 Integrate[x, x]
 => 1/2 x^2
 Integrate[2 x, x]
