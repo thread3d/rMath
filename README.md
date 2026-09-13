@@ -208,6 +208,7 @@ Requirements and knobs:
 |---|---|
 | `dsh` | found on `PATH`, at `~/.npm-packages/bin/dsh`, or via `DSH_BIN=…` |
 | API key | headless runs need a provider key: paste it once with **Set API key…** (stored in `~/Library/Application Support/rMath/harness.env`, mode 0600, outside the repo) or export `DEEPSEEK_API_KEY`. Note the Harness *web* UI's browser-session credential is not a provider key, so it does not cover the one-shot profile. |
+| endpoint | the harness defaults to `https://api.deepseek.com` (route `deepseek-official`, adapter `dsh-llm-deepseek`); **Set API key…** also takes a base URL, written as `DEEPSEEK_BASE_URL` — any OpenAI-compatible gateway works. Alternatively set `llm-deepseek:` / `llm-pi-ai:` sections in `$DSH_HOME/settings.yaml`, which the Harness web Models page writes and both profiles share. |
 | profile | `RMATH_DSH_PROFILE` (default `headless`) |
 | workspace | `RMATH_HARNESS_ROOT` (default: this repository) |
 | keyfile | `RMATH_HARNESS_KEYFILE` |

@@ -142,7 +142,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"status": "error", "error": "empty key"})
             else:
                 try:
-                    self._json({"status": "ok", "path": harness.store_key(key)})
+                    self._json({"status": "ok",
+                                "path": harness.store_key(key, body.get("base_url") or "")})
                 except OSError as e:
                     self._json({"status": "error", "error": str(e)})
 
@@ -1027,10 +1028,14 @@ function wireControls() {
   const agentKey = document.getElementById('agentkey');
   if (agentKey) agentKey.addEventListener('click', async function () {
     const key = window.prompt(
-      'DeepSeek API key for the harness (stored outside the repository, mode 0600):', '');
+      'API key for the harness (stored outside the repository, mode 0600):', '');
     if (!key) return;
+    const base = window.prompt(
+      'Endpoint base URL — blank for the DeepSeek default (https://api.deepseek.com),\n' +
+      'or any OpenAI-compatible gateway:', '');
     const r = await fetch('/api/agent/key', {method: 'POST',
-      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({key: key})});
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: key, base_url: base || ''})});
     const resp = await r.json();
     agentStatus(resp.status === 'ok' ? ('key stored in ' + resp.path) : ('failed: ' + resp.error));
   });

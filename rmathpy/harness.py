@@ -77,13 +77,42 @@ def read_key():
     return ""
 
 
-def store_key(key):
-    """Persist a pasted key with 0600 permissions. Returns the path."""
+# Environment names the keyfile may carry through to the harness. The adapter
+# resolves the endpoint from $DEEPSEEK_BASE_URL (default https://api.deepseek.com)
+# and the key through its credentials seam, then the environment.
+PASSTHROUGH = ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "RMATH_DSH_PROFILE")
+
+
+def read_env():
+    """Environment additions for a headless run, from the keyfile."""
+    out = {}
+    key = read_key()
+    if key:
+        out["DEEPSEEK_API_KEY"] = key
+    try:
+        with open(keyfile()) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name, _, val = line.partition("=")
+                name, val = name.strip(), val.strip()
+                if name in PASSTHROUGH and val:
+                    out[name] = val
+    except OSError:
+        pass
+    return out
+
+
+def store_key(key, base_url=""):
+    """Persist the key (and optional endpoint) with 0600 permissions."""
     path = keyfile()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write("DEEPSEEK_API_KEY=%s\n" % key.strip())
+        if base_url.strip():
+            f.write("DEEPSEEK_BASE_URL=%s\n" % base_url.strip())
     return path
 
 
@@ -109,9 +138,7 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
     root = cwd or workspace_root()
     cmd = [dsh, "--profile", profile(), task]
     env = dict(os.environ)
-    key = read_key()
-    if key:
-        env["DEEPSEEK_API_KEY"] = key
+    env.update(read_env())
     try:
         proc = subprocess.Popen(
             cmd,
