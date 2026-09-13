@@ -232,14 +232,23 @@ non-zero or positivity side condition that is not wired up yet.
 approximations, complex numbers, `GCD`/`LCM`, bare expressions that are not
 claims, and derivative shapes needing side conditions.
 
-**On the persistent Lean server.** `rmathpy/lean.py` contains a full LSP client
-(`lean --server`, one Mathlib load per session: 0.5–0.9 s per check instead of
-~10 s). It is **opt-in** (`RMATH_LEAN_SERVER=1`) and never decides verdicts,
-because testing showed it publishes *empty* diagnostic batches for files with
-genuine errors — `example : (1 : ℚ) = 2 := by norm_num` came back with no
-diagnostics, which would have reported false claims as verified. Verdicts
-therefore come from the authoritative one-shot `lake env lean` run (exit status
-plus diagnostics), and repeated claims are cached (a re-check is instant).
+**On speed: why verdicts are not server-backed yet.** `rmathpy/lean.py` contains
+a full LSP client (`lean --server`: Mathlib loads once, 0.5–0.9 s per check
+instead of ~10 s). It is **opt-in** (`RMATH_LEAN_SERVER=1`) and never decides
+verdicts, because testing showed it publishes *empty* diagnostic batches for
+files with genuine errors — `example : (1 : ℚ) = 2 := by norm_num` came back
+with no diagnostics, which would have reported false claims as verified.
+Verdicts therefore come from the authoritative one-shot `lake env lean` run (its
+exit status and diagnostics are the elaborator's own), and repeated claims are
+cached, so a re-check is instant.
+
+Two further routes to a fast *and* trustworthy server were attempted and are
+documented, not shipped: hand-driving `Elab.Frontend.processCommands` against an
+`importModules` environment (compiles, but returns with an empty message log —
+elaboration is deferred to the snapshot machinery), and `runFrontend` with
+incremental snapshots (the save step needs `supportInterpreter`). Both are
+recorded in `lean/RMathServer.lean`, which is marked experimental and is not
+wired into any code path.
 
 **In the app**: the Lean ribbon button (or **Help ▸ Lean… ⇧⌘L**) opens a panel
 with a snippet box (Mathlib is imported automatically), a **Check** button, and

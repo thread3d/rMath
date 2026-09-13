@@ -7,3 +7,7 @@ scope = "leanprover-community"
 
 [[lean_lib]]
 name = "RMathProofs"
+
+[[lean_exe]]
+name = "rmath_lean_server"
+root = "RMathServer"
