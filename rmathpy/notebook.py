@@ -153,8 +153,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/agent/stream":
             self.api_agent_stream(body)
         elif path == "/api/agent/cancel":
-            from . import harness
-            self._json(harness.cancel_current())
+            from . import acp, harness
+            if acp.current():
+                self._json(acp.cancel())
+            else:
+                self._json(harness.cancel_current())
         elif path == "/api/lean/check":
             from . import lean
             self._json(lean.run_lean(body.get("code", "")))
@@ -226,10 +229,22 @@ class Handler(BaseHTTPRequestHandler):
         def on_line(text, kind="reasoning"):
             emit({"line": text, "kind": kind})
 
-        r = harness.run_task(task, on_line=on_line)
+        r = None
+        from . import acp
+        if acp.available():
+            try:
+                r = acp.run_task(task, timeout=1800, on_line=on_line)
+            except Exception as e:
+                emit({"line": "ACP unavailable (%s); using the headless profile" % e,
+                      "kind": "meta"})
+                r = None
+        if r is None:
+            r = harness.run_task(task, on_line=on_line)
         emit({"done": True, "status": r.get("status"), "answer": r.get("answer", ""),
               "error": r.get("error", ""), "exit": r.get("exit"),
-              "cancelled": r.get("cancelled", False)})
+              "via": r.get("via", "headless"),
+              "stop_reason": r.get("stop_reason"),
+              "cancelled": r.get("cancelled", False) or r.get("stop_reason") == "cancelled"})
 
     # ---- notebook file operations (relative paths use the kernel work dir) ----
 
@@ -438,6 +453,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agent .row .status { font-size: 11.5px; color: #6b7280; }
   #agentlog .l-reasoning { color: #8fa6b8; font-style: italic; }
   #agentlog .l-tool { color: #f0c674; }                 /* tool calls and results */
+  #agentlog .l-meta { color: #7f8c99; }                 /* context usage, notices */
   #agentlog .l-answer { color: #eaf3ec; }
   #agentanswer.md p { margin: 0 0 7px; }
   #agentanswer.md h1, #agentanswer.md h2, #agentanswer.md h3 { margin: 9px 0 5px; line-height: 1.25; }
@@ -1577,7 +1593,8 @@ function agentLog(text, kind) {
   const box = document.getElementById("agentlog");
   const span = document.createElement("span");
   span.className = kind === "answer" ? "l-answer"
-                 : kind === "tool" ? "l-tool" : "l-reasoning";
+                 : kind === "tool" ? "l-tool"
+                 : kind === "meta" ? "l-meta" : "l-reasoning";
   span.textContent = text + "\n";
   box.appendChild(span);
   box.scrollTop = box.scrollHeight;
