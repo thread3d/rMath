@@ -83,7 +83,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/agent/status":
             from . import harness
             url, source = harness.endpoint()
-            self._json({"running": harness.current(),
+            from .paths import preflight
+            self._json({"preflight": preflight(),
+                        "running": harness.current(),
                         "available": harness.available(),
                         "dsh": harness.find_dsh(),
                         "workspace": harness.workspace_root(),
@@ -1497,8 +1499,9 @@ async function leanVerifyLastCell() {
       body: JSON.stringify({input: input, result: result})});
     const res = await r.json();
     const stmt = document.getElementById("leanstmt");
-    if (res.lean) {
-      mdRenderInto(stmt, "```lean\n" + res.lean.trim() + "\n```");
+    const shown = (res.lean_display || res.lean || "").trim();
+    if (shown) {
+      mdRenderInto(stmt, "```lean\n" + shown + "\n```");
     } else {
       stmt.innerHTML = "";
     }
@@ -1546,12 +1549,13 @@ function showAgent(task) {
   document.getElementById("agentwho").textContent = "DeepSeek Harness";
   document.getElementById("agenttask").focus();
   fetch("/api/agent/status").then(r => r.json()).then(s => {
-    document.getElementById("agentwho").textContent = s.available
+    const pf = (s.preflight && s.preflight.problems || []);
+    document.getElementById("agentwho").textContent = (pf.length ? ("\u26a0 " + pf[0] + "  ") : "") + (s.available
       ? ("dsh " + s.profile + " → " + s.endpoint + " (" + s.endpoint_source + ")" +
          (s.model ? ", model " + s.model : "") +
          (s.ollama ? ", ollama has " + s.ollama_models.length + " model(s)" : "") +
          (s.key ? "" : "  — no API key: use “Set API key…” or export DEEPSEEK_API_KEY"))
-      : "dsh not found — set DSH_BIN";
+      : "dsh not found — set DSH_BIN");
   }).catch(() => {});
 }
 function hideAgent() { document.getElementById("agent").classList.remove("open"); }

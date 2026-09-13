@@ -903,6 +903,8 @@ def verify(lhs_text, rhs_text=None, relation="=", timeout=600, use_cache=True):
         return {"status": "error", "error": str(e), "lean": None, "outcome": "cannot verify"}
     res = run_lean(code, timeout=timeout, filename="RMathVerify.lean", persistent=False)
     res["lean"] = code
+    # The file needs the linter options; the panel should show the statement.
+    res["lean_display"] = code.replace(QUIET, "")
     res["proposition"] = prop
     res["type"] = ty
     res["variables"] = vs

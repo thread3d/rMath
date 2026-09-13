@@ -25,18 +25,8 @@ def find_dsh():
     env = os.environ.get("DSH_BIN")
     if env and os.path.isfile(env):
         return env
-    found = shutil.which("dsh")
-    if found:
-        return found
-    for cand in (
-        os.path.expanduser("~/.npm-packages/bin/dsh"),
-        os.path.expanduser("~/.local/bin/dsh"),
-        "/usr/local/bin/dsh",
-        "/opt/homebrew/bin/dsh",
-    ):
-        if os.path.isfile(cand):
-            return cand
-    return None
+    from .paths import find_tool
+    return find_tool("dsh")
 
 
 def workspace_root():
@@ -257,7 +247,11 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
         }
     root = cwd or workspace_root()
     cmd = [dsh, "--profile", profile(), task]
-    env = dict(os.environ)
+    # A minimal PATH cannot run a node script: `dsh` would die with
+    # "env: node: No such file or directory", which is exactly what a bundled
+    # app showed.
+    from .paths import child_env
+    env = child_env()
     env.update(read_env())
     try:
         proc = subprocess.Popen(
