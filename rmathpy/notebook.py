@@ -85,7 +85,8 @@ class Handler(BaseHTTPRequestHandler):
                         "endpoint": url,
                         "endpoint_source": source,
                         "ollama": harness.ollama_available(),
-                        "ollama_models": harness.ollama_models()})
+                        "ollama_models": harness.ollama_models(),
+                        "model": harness.harness_model()})
         elif path.startswith("/katex/"):
             self.serve_katex(path[len("/katex/"):])
         else:
@@ -883,6 +884,7 @@ function showAgent(task) {
   fetch("/api/agent/status").then(r => r.json()).then(s => {
     document.getElementById("agentwho").textContent = s.available
       ? ("dsh " + s.profile + " → " + s.endpoint + " (" + s.endpoint_source + ")" +
+         (s.model ? ", model " + s.model : "") +
          (s.ollama ? ", ollama has " + s.ollama_models.length + " model(s)" : "") +
          (s.key ? "" : "  — no API key: use “Set API key…” or export DEEPSEEK_API_KEY"))
       : "dsh not found — set DSH_BIN";

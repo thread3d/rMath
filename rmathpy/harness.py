@@ -89,6 +89,37 @@ def endpoint():
     return DEEPSEEK_DEFAULT, "default"
 
 
+def settings_path():
+    home = os.environ.get("DSH_HOME") or os.path.expanduser("~/.dsh")
+    return os.environ.get("RMATH_DSH_SETTINGS") or os.path.join(home, "settings.yaml")
+
+
+def harness_model():
+    """The default model the harness starts agents on, read from its settings
+    document (a tiny parse of the `agent-default-model:` section, so no YAML
+    dependency is needed)."""
+    try:
+        with open(settings_path()) as f:
+            lines = f.readlines()
+    except OSError:
+        return ""
+    section = None
+    for raw in lines:
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        body = line.strip()
+        if indent == 0:
+            section = body[:-1] if body.endswith(":") else None
+            continue
+        if section == "agent-default-model":
+            name, _, val = body.partition(":")
+            if name.strip() == "model":
+                return val.strip().strip("\"'")
+    return ""
+
+
 def _keyfile_lines():
     try:
         with open(keyfile()) as f:

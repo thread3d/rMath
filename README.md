@@ -209,7 +209,8 @@ Requirements and knobs:
 | `dsh` | found on `PATH`, at `~/.npm-packages/bin/dsh`, or via `DSH_BIN=…` |
 | API key | headless runs need a provider key: paste it once with **Set API key…** (stored in `~/Library/Application Support/rMath/harness.env`, mode 0600, outside the repo) or export `DEEPSEEK_API_KEY`. Note the Harness *web* UI's browser-session credential is not a provider key, so it does not cover the one-shot profile. |
 | endpoint | resolved in this order: `$DEEPSEEK_BASE_URL`, the keyfile's `DEEPSEEK_BASE_URL`, then **a local Ollama (`http://localhost:11434/v1`) if one answers**, else `https://api.deepseek.com`. For a local endpoint the key is a placeholder, since Ollama ignores it. The panel header shows the resolved endpoint and its source. |
-| harness settings | `$DSH_HOME/settings.yaml` is shared by every profile: point the route at Ollama with `llm-deepseek: {baseURL: http://localhost:11434/v1}` and choose a model Ollama actually serves with `agent-default-model: {provider: deepseek-official, model: …}`. The adapter POSTs to `<baseURL>/chat/completions`, so the `/v1` suffix is required. |
+| harness settings | `$DSH_HOME/settings.yaml` is shared by every profile: point the route at Ollama with `llm-deepseek: {baseURL: http://localhost:11434/v1}` and choose a model Ollama actually serves with `agent-default-model: {provider: deepseek-official, model: …}` (currently `ornith-1.5:35b`, a local reasoning model). The adapter POSTs to `<baseURL>/chat/completions`, so the `/v1` suffix is required. The panel header shows the endpoint and the model the harness will start on. |
+| note on local models | a local model needs tool calling for agent runs; `ornith-1.5:35b` does (verified: it listed `demo/` from the file system). Expect minutes per run rather than seconds. |
 | profile | `RMATH_DSH_PROFILE` (default `headless`) |
 | workspace | `RMATH_HARNESS_ROOT` (default: this repository) |
 | keyfile | `RMATH_HARNESS_KEYFILE` |
