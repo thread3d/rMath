@@ -198,8 +198,12 @@ repository, edit files and run commands, including the build and the tests.
   *"Ask the harness to fix this"*; the agent reads the report, finds the bug,
   edits the code, rebuilds, and runs `make test` / `make uitest`, then summarises
   what changed.
-- Reasoning and tool output stream into the panel; the final answer is shown
-  below it. Every run uses model calls, and its file edits land in the working
+- Reasoning and tool output stream into the panel (dimmed, so it reads as
+  thinking rather than output); the final answer is rendered as **markdown** —
+  headings, lists, tables-free GitHub-flavoured subset, fenced code blocks with
+  their language label, blockquotes, links, and `$…$` math through KaTeX. The
+  renderer is self-contained (no new dependency) and escapes the answer before
+  applying any formatting, so model output cannot inject markup. Every run uses model calls, and its file edits land in the working
   tree (review them with `git diff`).
 
 Requirements and knobs:

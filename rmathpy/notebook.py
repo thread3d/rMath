@@ -202,8 +202,8 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-        def on_line(text):
-            emit({"line": text})
+        def on_line(text, kind="reasoning"):
+            emit({"line": text, "kind": kind})
 
         r = harness.run_task(task, on_line=on_line)
         emit({"done": True, "status": r.get("status"), "answer": r.get("answer", ""),
@@ -389,12 +389,35 @@ INDEX_HTML = r"""<!DOCTYPE html>
                        font-size: 12px; font-weight: 600; }
   #agent .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
   #agent .row .status { font-size: 11.5px; color: #6b7280; }
-  #agentlog { flex: 1; min-height: 90px; overflow: auto; background: #14181d; color: #cfe3d4;
+  #agentlog .l-reasoning { color: #8fa6b8; font-style: italic; }
+  #agentlog .l-answer { color: #eaf3ec; }
+  #agentanswer.md p { margin: 0 0 7px; }
+  #agentanswer.md h1, #agentanswer.md h2, #agentanswer.md h3 { margin: 9px 0 5px; line-height: 1.25; }
+  #agentanswer.md h1 { font-size: 16px; } #agentanswer.md h2 { font-size: 14.5px; }
+  #agentanswer.md h3 { font-size: 13.5px; }
+  #agentanswer.md ul, #agentanswer.md ol { margin: 4px 0 7px; padding-left: 22px; }
+  #agentanswer.md li { margin: 2px 0; }
+  #agentanswer.md code { background: #f2f0ea; border: 1px solid #e3e0d6; border-radius: 3px;
+                         padding: 0 3px; font-size: 12px; }
+  #agentanswer.md pre.mdcode { background: #14181d; color: #e6ecef; border-radius: 4px;
+                               padding: 8px 10px; overflow: auto; margin: 5px 0 8px; position: relative; }
+  #agentanswer.md pre.mdcode code { background: none; border: 0; padding: 0; color: inherit;
+                                    font-size: 11.5px; line-height: 1.45; }
+  #agentanswer.md pre.mdcode[data-lang]:before { content: attr(data-lang); position: absolute;
+        top: 0; right: 6px; font-size: 10px; color: #7d8b93; }
+  #agentanswer.md blockquote { margin: 5px 0 8px; padding: 3px 10px; border-left: 3px solid #d6d2c4;
+                               color: #4b5563; background: #faf9f5; }
+  #agentanswer.md hr { border: 0; border-top: 1px solid #e2ded2; margin: 9px 0; }
+  #agentanswer.md a { color: #2c5a8f; }
+  #agentanswer.md strong { font-weight: 700; }
+  #agentlog { flex: 0 1 auto; max-height: 34%; min-height: 74px; overflow: auto; background: #14181d; color: #cfe3d4;
               font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.45;
               padding: 8px 10px; border-radius: 4px; white-space: pre-wrap; }
-  #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; max-height: 34%;
-                 overflow: auto; font-size: 12.5px; white-space: pre-wrap;
-                 font-family: "SF Mono", Menlo, monospace; display: none; }
+  #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; flex: 1 1 auto;
+                 overflow: auto; font-size: 12.5px; display: none;
+                 font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+                 color: #1f2937; background: #fdfdfb; }
+  #agentanswer:not(.md) { white-space: pre-wrap; font-family: "SF Mono", Menlo, monospace; }
   #agentanswer.show { display: block; }
   .asklink { color: #2c5a8f; cursor: pointer; text-decoration: underline dotted; }
 
@@ -862,17 +885,114 @@ function showReport(path, summary) {
   toast('Bug report saved — path copied to clipboard');
 }
 
+
+// ---------------- minimal markdown for harness answers ----------------
+// Self-contained (no new dependency). Input is HTML-escaped *first*, then the
+// formatting is applied, so a model answer can never inject markup.
+
+function mdEscape(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                  .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function mdInline(s) {
+  // Math first, as a placeholder element rendered by KaTeX afterwards.
+  s = s.replace(/\$([^$\n]+)\$/g, function (m, tex) {
+    return '<span class="mdmath" data-tex="' + mdEscape(tex) + '"></span>';
+  });
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  s = s.replace(/(^|[\s(])_([^_\n]+)_/g, "$1<em>$2</em>");
+  s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+                '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return s;
+}
+
+function mdToHtml(src) {
+  const lines = String(src == null ? "" : src).split("\n");
+  let html = "", list = null, para = [];
+  const closeList = function () { if (list) { html += "</" + list + ">"; list = null; } };
+  const flushPara = function () { if (para.length) { html += "<p>" + mdInline(para.join(" ")) + "</p>"; para = []; } };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = line.match(/^\s*```(\w*)\s*$/);
+    if (fence) {
+      flushPara(); closeList();
+      const buf = []; i++;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++;
+      html += '<pre class="mdcode"' + (fence[1] ? ' data-lang="' + mdEscape(fence[1]) + '"' : "") +
+              "><code>" + mdEscape(buf.join("\n")) + "</code></pre>";
+      continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      flushPara(); closeList();
+      const n = h[1].length;
+      html += "<h" + n + ">" + mdInline(mdEscape(h[2])) + "</h" + n + ">";
+      i++; continue;
+    }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { flushPara(); closeList(); html += "<hr>"; i++; continue; }
+    if (/^\s*>\s?/.test(line)) {
+      flushPara(); closeList();
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+      html += "<blockquote>" + mdToHtml(buf.join("\n")) + "</blockquote>";
+      continue;
+    }
+    const li = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+    if (li) {
+      flushPara();
+      const want = /^\d/.test(li[1]) ? "ol" : "ul";
+      if (list !== want) { closeList(); html += "<" + want + ">"; list = want; }
+      html += "<li>" + mdInline(mdEscape(li[2])) + "</li>";
+      i++; continue;
+    }
+    if (!line.trim()) { flushPara(); closeList(); i++; continue; }
+    para.push(mdEscape(line.trim()));
+    i++;
+  }
+  flushPara(); closeList();
+  return html;
+}
+
+/// Typeset any $...$ left as placeholders by mdInline.
+function mdTypeset(root) {
+  if (!window.katex) return;
+  root.querySelectorAll(".mdmath").forEach(function (el) {
+    try { katex.render(el.dataset.tex, el, {throwOnError: false, displayMode: false}); }
+    catch (e) { el.textContent = el.dataset.tex; }
+  });
+}
+
+/// Render markdown into a container (escaping first, always).
+function mdRenderInto(el, text) {
+  el.innerHTML = mdToHtml(text);
+  mdTypeset(el);
+}
+
 // ---------------- harness (agent) panel ----------------
 
-function agentLog(text) {
+function agentLog(text, kind) {
   const box = document.getElementById("agentlog");
-  box.textContent += text + "\n";
+  const span = document.createElement("span");
+  span.className = kind === "answer" ? "l-answer" : "l-reasoning";
+  span.textContent = text + "\n";
+  box.appendChild(span);
   box.scrollTop = box.scrollHeight;
 }
 function agentStatus(text) { document.getElementById("agentstatus").textContent = text; }
 function agentAnswer(text) {
   const a = document.getElementById("agentanswer");
-  a.textContent = text;
+  a.innerHTML = "";
+  a.classList.remove("md");
+  if (text) {
+    try { mdRenderInto(a, text); a.classList.add("md"); }
+    catch (e) { a.textContent = text; }   // never lose the answer to a render bug
+  }
   a.classList.toggle("show", !!text);
 }
 function showAgent(task) {
@@ -941,7 +1061,7 @@ async function runAgent(body) {
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
-        if (ev.line) agentLog(ev.line);
+        if (ev.line) agentLog(ev.line, ev.kind);
         if (ev.done) {
           agentStatus(ev.status === "ok" ? "done" : ("failed: " + (ev.error || ev.status)));
           agentAnswer(ev.answer || "(no answer)");

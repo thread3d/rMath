@@ -232,17 +232,20 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
 
     out_lines, err_lines = [], []
 
-    def pump(stream, sink, prefix):
+    def pump(stream, sink, kind):
+        # The headless contract: reasoning streams on stderr, the final answer
+        # is flushed to stdout. Keep them apart so the panel can show the
+        # reasoning quietly and typeset the answer.
         try:
             for line in stream:
                 sink.append(line)
                 if on_line is not None:
-                    on_line(prefix + line.rstrip("\n"))
+                    on_line(line.rstrip("\n"), kind)
         except Exception:
             pass
 
-    t_out = threading.Thread(target=pump, args=(proc.stdout, out_lines, ""), daemon=True)
-    t_err = threading.Thread(target=pump, args=(proc.stderr, err_lines, ""), daemon=True)
+    t_out = threading.Thread(target=pump, args=(proc.stdout, out_lines, "answer"), daemon=True)
+    t_err = threading.Thread(target=pump, args=(proc.stderr, err_lines, "reasoning"), daemon=True)
     t_out.start()
     t_err.start()
     try:
