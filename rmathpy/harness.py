@@ -10,10 +10,12 @@ command runs in, so rMath points it at the project: the agent can read the
 repository, edit files and run the build.
 """
 
+import json
 import os
 import shutil
 import subprocess
 import threading
+import urllib.request
 
 
 def find_dsh():
@@ -48,6 +50,53 @@ def profile():
     return os.environ.get("RMATH_DSH_PROFILE", "headless")
 
 
+# Ollama serves an OpenAI-compatible API at /v1; the adapter POSTs to
+# <baseURL>/chat/completions, so the suffix is required.
+OLLAMA_DEFAULT = "http://localhost:11434/v1"
+DEEPSEEK_DEFAULT = "https://api.deepseek.com"
+
+
+def ollama_available(timeout=1.5):
+    """True when a local Ollama answers on its default port."""
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/version", timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def ollama_models(timeout=4):
+    """Model ids the local Ollama offers (OpenAI-compatible listing)."""
+    try:
+        req = urllib.request.Request("http://localhost:11434/v1/models")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.load(r)
+        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+    except Exception:
+        return []
+
+
+def endpoint():
+    """The endpoint the harness should use, and where that choice came from."""
+    env = os.environ.get("DEEPSEEK_BASE_URL", "").strip()
+    if env:
+        return env, "environment"
+    for line in _keyfile_lines():
+        if line.startswith("DEEPSEEK_BASE_URL="):
+            return line.split("=", 1)[1].strip(), "keyfile"
+    if ollama_available():
+        return OLLAMA_DEFAULT, "local ollama"
+    return DEEPSEEK_DEFAULT, "default"
+
+
+def _keyfile_lines():
+    try:
+        with open(keyfile()) as f:
+            return [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    except OSError:
+        return []
+
+
 def keyfile():
     """Where a pasted provider key is kept (never inside the repository)."""
     env = os.environ.get("RMATH_HARNESS_KEYFILE")
@@ -60,20 +109,19 @@ def keyfile():
 
 
 def read_key():
-    """The provider key for headless runs: environment first, then the keyfile."""
+    """The provider key for headless runs: environment, keyfile, then a
+    placeholder for a local endpoint (Ollama ignores the value)."""
     env = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if env:
         return env
-    try:
-        with open(keyfile()) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("DEEPSEEK_API_KEY="):
-                    return line.split("=", 1)[1].strip()
-                if line and "=" not in line:
-                    return line  # a bare key
-    except OSError:
-        pass
+    # Only an explicit DEEPSEEK_API_KEY= line counts; treating arbitrary file
+    # content as a secret would send whatever happens to be there.
+    for line in _keyfile_lines():
+        if line.startswith("DEEPSEEK_API_KEY="):
+            return line.split("=", 1)[1].strip()
+    url, _ = endpoint()
+    if "localhost" in url or "127.0.0.1" in url:
+        return "ollama"  # any non-empty value satisfies the credentials seam
     return ""
 
 
@@ -84,23 +132,21 @@ PASSTHROUGH = ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "RMATH_DSH_PROFILE")
 
 
 def read_env():
-    """Environment additions for a headless run, from the keyfile."""
+    """Environment additions for a headless run (key, endpoint, profile)."""
     out = {}
+    for line in _keyfile_lines():
+        if "=" not in line:
+            continue
+        name, _, val = line.partition("=")
+        name, val = name.strip(), val.strip()
+        if name in PASSTHROUGH and val:
+            out[name] = val
     key = read_key()
     if key:
         out["DEEPSEEK_API_KEY"] = key
-    try:
-        with open(keyfile()) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                name, _, val = line.partition("=")
-                name, val = name.strip(), val.strip()
-                if name in PASSTHROUGH and val:
-                    out[name] = val
-    except OSError:
-        pass
+    url, _ = endpoint()
+    if url:
+        out["DEEPSEEK_BASE_URL"] = url
     return out
 
 
@@ -178,6 +224,7 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
     t_out.join(timeout=3)
     t_err.join(timeout=3)
 
+    url, source = endpoint()
     return {
         "status": "ok" if code == 0 else "error",
         "answer": "".join(out_lines).strip(),
@@ -185,6 +232,8 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
         "exit": code,
         "error": "" if code == 0 else "harness exited with code %s" % code,
         "workspace": root,
+        "endpoint": url,
+        "endpoint_source": source,
     }
 
 
