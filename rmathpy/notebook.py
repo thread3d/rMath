@@ -454,6 +454,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agentlog .l-reasoning { color: #8fa6b8; font-style: italic; }
   #agentlog .l-tool { color: #f0c674; }                 /* tool calls and results */
   #agentlog .l-meta { color: #7f8c99; }                 /* context usage, notices */
+  #agentjump { display: none; position: absolute; right: 26px; bottom: 12px;
+              font-size: 11px; padding: 2px 8px; border-radius: 10px; cursor: pointer;
+              background: #2c5a8f; color: #fff; border: 1px solid #24486f; }
+  #agentjump.show { display: inline-block; }
   #agentlog .l-answer { color: #eaf3ec; }
   #agentanswer.md p { margin: 0 0 7px; }
   #agentanswer.md h1, #agentanswer.md h2, #agentanswer.md h3 { margin: 9px 0 5px; line-height: 1.25; }
@@ -474,7 +478,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agentanswer.md hr { border: 0; border-top: 1px solid #e2ded2; margin: 9px 0; }
   #agentanswer.md a { color: #2c5a8f; }
   #agentanswer.md strong { font-weight: 700; }
-  #agentlog { flex: 0 1 auto; max-height: 30vh; min-height: 74px; overflow: auto; background: #14181d; color: #cfe3d4;
+  /* Scrollbars are shown permanently and styled: macOS overlay bars are
+     invisible until you scroll, so the log gave no sign that earlier lines
+     existed. */
+  #agentlog, #leandiag, #leanstmt, #agentanswer, #historylist { scrollbar-width: thin; }
+  #agentlog::-webkit-scrollbar, #agentanswer::-webkit-scrollbar { width: 12px; height: 12px; }
+  #agentlog::-webkit-scrollbar-track, #agentanswer::-webkit-scrollbar-track { background: #0e1217; }
+  #agentlog::-webkit-scrollbar-thumb, #agentanswer::-webkit-scrollbar-thumb {
+      background: #5b6875; border: 2px solid #0e1217; border-radius: 6px; }
+  #agentlog::-webkit-scrollbar-thumb:hover, #agentanswer::-webkit-scrollbar-thumb:hover {
+      background: #7a8896; }
+  #leandiag::-webkit-scrollbar, #leanstmt::-webkit-scrollbar, #historylist::-webkit-scrollbar {
+      width: 12px; height: 12px; }
+  #leandiag::-webkit-scrollbar-track, #leanstmt::-webkit-scrollbar-track,
+  #historylist::-webkit-scrollbar-track { background: #f2f1ec; }
+  #leandiag::-webkit-scrollbar-thumb, #leanstmt::-webkit-scrollbar-thumb,
+  #historylist::-webkit-scrollbar-thumb { background: #c3c0b6; border: 2px solid #f2f1ec;
+      border-radius: 6px; }
+  #leandiag::-webkit-scrollbar-thumb:hover, #leanstmt::-webkit-scrollbar-thumb:hover,
+  #historylist::-webkit-scrollbar-thumb:hover { background: #a8a49a; }
+  #agentlog { flex: 0 1 auto; max-height: 30vh; min-height: 74px; overflow-y: scroll; background: #14181d; color: #cfe3d4;
               font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.45;
               padding: 8px 10px; border-radius: 4px; white-space: pre-wrap; }
   #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; flex: 0 1 auto;
@@ -509,7 +532,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #lean .row .status { font-size: 11.5px; color: #6b7280; }
   #leanstmt:empty { display: none; }
   #leanstmt { border: 1px solid #e6e2d6; border-radius: 4px; padding: 8px 10px; background: #fbfaf6; }
-  #leandiag { flex: 0 1 auto; min-height: 42px; max-height: 46vh; overflow: auto; font-family: "SF Mono", Menlo, monospace;
+  #leandiag { flex: 0 1 auto; min-height: 42px; max-height: 46vh; overflow-y: scroll; font-family: "SF Mono", Menlo, monospace;
               font-size: 11.5px; line-height: 1.5; }
   #leandiag .d { padding: 3px 7px; border-radius: 3px; margin-bottom: 4px; white-space: pre-wrap; }
   #leandiag .error { background: #fdecec; color: #8c1c1c; border-left: 3px solid #c0392b; }
@@ -655,6 +678,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <span class="status" id="agentstatus"></span>
     </div>
     <div id="agentlog"></div>
+    <button id="agentjump" class="jump" title="Jump to the newest line">&#9660; newest</button>
   </div>
   <div id="agentanswer"></div>
 </div>
@@ -1589,6 +1613,21 @@ async function leanVerifyLastCell() {
 
 // ---------------- harness (agent) panel ----------------
 
+// The log follows the tail while you are at the bottom; scroll up and it stops
+// pulling you back (and offers a jump button) so earlier lines can be read while
+// a run is still going.
+let followLog = true;
+
+function logAtBottom() {
+  const box = document.getElementById("agentlog");
+  return box.scrollHeight - box.clientHeight - box.scrollTop < 24;
+}
+
+function updateJumpButton() {
+  const btn = document.getElementById("agentjump");
+  if (btn) btn.classList.toggle("show", !followLog);
+}
+
 function agentLog(text, kind) {
   const box = document.getElementById("agentlog");
   const span = document.createElement("span");
@@ -1597,7 +1636,8 @@ function agentLog(text, kind) {
                  : kind === "meta" ? "l-meta" : "l-reasoning";
   span.textContent = text + "\n";
   box.appendChild(span);
-  box.scrollTop = box.scrollHeight;
+  if (followLog) box.scrollTop = box.scrollHeight;
+  else updateJumpButton();
 }
 let agentStatusText = "";
 function agentStatus(text) {
@@ -1667,6 +1707,8 @@ let agentAbort = null;
 async function runAgent(body) {
   const log = document.getElementById("agentlog");
   log.textContent = "";
+  followLog = true;
+  updateJumpButton();
   agentAnswer("");
   const send = document.getElementById("agentsend");
   send.disabled = true;
@@ -1709,7 +1751,8 @@ async function runAgent(body) {
             agentStatus("stopped after " + mins);
             act.end(false, "stopped after " + mins);
           } else {
-            agentStatus(ev.status === "ok" ? ("done in " + mins) : ("failed: " + (ev.error || ev.status)));
+            const via = ev.via ? (" \u00b7 " + ev.via) : "";
+            agentStatus(ev.status === "ok" ? ("done in " + mins + via) : ("failed: " + (ev.error || ev.status)));
             agentAnswer(ev.answer || "(no answer)");
             act.end(ev.status === "ok", (ev.status === "ok" ? "done in " : "failed after ") + mins);
           }
@@ -1820,6 +1863,18 @@ function wireControls() {
   const agentSend = document.getElementById('agentsend');
   if (agentSend) agentSend.addEventListener('click', function () {
     runAgent({task: document.getElementById('agenttask').value});
+  });
+  const agentLogEl = document.getElementById('agentlog');
+  if (agentLogEl) agentLogEl.addEventListener('scroll', function () {
+    followLog = logAtBottom();
+    updateJumpButton();
+  });
+  const agentJump = document.getElementById('agentjump');
+  if (agentJump) agentJump.addEventListener('click', function () {
+    const box = document.getElementById('agentlog');
+    followLog = true;
+    box.scrollTop = box.scrollHeight;
+    updateJumpButton();
   });
   const agentStopBtn = document.getElementById('agentstop');
   if (agentStopBtn) agentStopBtn.addEventListener('click', stopAgent);
