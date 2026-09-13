@@ -572,6 +572,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc func menuSavePlot() { runJS("saveLastPlotSvg()") }
     @objc func menuResetKernel() { runJS("resetKernel()") }
     @objc func menuHelp() { runJS("showHelp(true)") }
+    @objc func menuAskHarness() { runJS("showAgent('')") }
+    @objc func menuFixBug() { runJS("askAboutCell()") }
     @objc func menuStandardForm() { runJS("setForm('standard')") }
     @objc func menuTraditionalForm() { runJS("setForm('traditional')") }
     @objc func menuToggleForm() { runJS("toggleForm()") }
@@ -849,6 +851,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         main.addItem(helpItem)
         let help = NSMenu(title: "Help")
         addItem(help, "rMath Help", #selector(menuHelp), "?", target: self)
+        addItem(help, "Ask the Harness…", #selector(menuAskHarness), "H",
+                [.command, .shift], target: self)
         addItem(help, "Report a Bug…", #selector(menuReportBug), "B",
                 [.command, .shift], target: self)
         addItem(help, "Function List", #selector(menuFunctionList), "", target: self)

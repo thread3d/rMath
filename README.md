@@ -184,6 +184,38 @@ because it renders its own view rather than capturing the display.
   <out.png>` renders a palette standalone. `rMath --dump-menus` prints the
   menu tree.
 
+### Harness integration (DeepSeek Harness)
+
+The notebook can hand work to the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+running as an agent with **this project as its workspace root** — it can read the
+repository, edit files and run commands, including the build and the tests.
+
+- **Open the panel**: the robot button in the ribbon, or **Help ▸ Ask the
+  Harness… (⇧⌘H)**.
+- **Ask about a cell**: "Ask about the last cell" sends that cell's input, output
+  and messages, and the agent explains — or fixes — what it finds.
+- **Fix a reported bug**: after **Report a Bug**, the report cell offers
+  *"Ask the harness to fix this"*; the agent reads the report, finds the bug,
+  edits the code, rebuilds, and runs `make test` / `make uitest`, then summarises
+  what changed.
+- Reasoning and tool output stream into the panel; the final answer is shown
+  below it. Every run uses model calls, and its file edits land in the working
+  tree (review them with `git diff`).
+
+Requirements and knobs:
+
+| | |
+|---|---|
+| `dsh` | found on `PATH`, at `~/.npm-packages/bin/dsh`, or via `DSH_BIN=…` |
+| API key | headless runs need a provider key: paste it once with **Set API key…** (stored in `~/Library/Application Support/rMath/harness.env`, mode 0600, outside the repo) or export `DEEPSEEK_API_KEY`. Note the Harness *web* UI's browser-session credential is not a provider key, so it does not cover the one-shot profile. |
+| profile | `RMATH_DSH_PROFILE` (default `headless`) |
+| workspace | `RMATH_HARNESS_ROOT` (default: this repository) |
+| keyfile | `RMATH_HARNESS_KEYFILE` |
+
+Endpoints: `GET /api/agent/status`, `POST /api/agent` (one task, JSON),
+`POST /api/agent/stream` (NDJSON: `{"line": …}` events then `{"done": …, "answer": …}`),
+`POST /api/agent/key`.
+
 ### Verifying output without screen-capture permissions
 
 macOS gates real screen capture (`screencapture`, AppleScript UI scripting)

@@ -74,6 +74,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"names": names})
         elif path == "/api/health":
             self._json({"ok": True})
+        elif path == "/api/agent/status":
+            from . import harness
+            self._json({"available": harness.available(),
+                        "dsh": harness.find_dsh(),
+                        "workspace": harness.workspace_root(),
+                        "profile": harness.profile(),
+                        "key": bool(harness.read_key())})
         elif path.startswith("/katex/"):
             self.serve_katex(path[len("/katex/"):])
         else:
@@ -124,8 +131,76 @@ class Handler(BaseHTTPRequestHandler):
             self.api_open(body)
         elif path == "/api/save-svg":
             self.api_save_svg(body)
+        elif path == "/api/agent":
+            self.api_agent(body)
+        elif path == "/api/agent/stream":
+            self.api_agent_stream(body)
+        elif path == "/api/agent/key":
+            from . import harness
+            key = (body.get("key") or "").strip()
+            if not key:
+                self._json({"status": "error", "error": "empty key"})
+            else:
+                try:
+                    self._json({"status": "ok", "path": harness.store_key(key)})
+                except OSError as e:
+                    self._json({"status": "error", "error": str(e)})
+
         else:
             self._send(404, "text/plain", b"not found")
+
+    # ---- harness (DeepSeek Harness) ----
+
+    def build_agent_task(self, body: dict):
+        from . import harness
+        mode = body.get("mode", "raw")
+        if mode == "cell":
+            return harness.cell_task(
+                body.get("input", ""), body.get("result", ""),
+                body.get("messages", ""), body.get("instruction", ""))
+        if mode == "fix":
+            return harness.fix_task(body.get("report", ""), body.get("extra", ""))
+        return body.get("task", "")
+
+    def api_agent(self, body: dict):
+        """Run one headless harness task and return its answer."""
+        from . import harness
+        task = self.build_agent_task(body)
+        if not task.strip():
+            self._json({"status": "error", "error": "empty task"})
+            return
+        r = harness.run_task(task)
+        self._json(r)
+
+    def api_agent_stream(self, body: dict):
+        """Run a headless harness task, streaming its output as NDJSON."""
+        from . import harness
+        task = self.build_agent_task(body)
+        if not task.strip():
+            self._json({"status": "error", "error": "empty task"})
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        lock = threading.Lock()
+
+        def emit(obj):
+            with lock:
+                try:
+                    self.wfile.write((json.dumps(obj) + "\n").encode("utf-8"))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+
+        def on_line(text):
+            emit({"line": text})
+
+        r = harness.run_task(task, on_line=on_line)
+        emit({"done": True, "status": r.get("status"), "answer": r.get("answer", ""),
+              "error": r.get("error", ""), "exit": r.get("exit")})
 
     # ---- notebook file operations (relative paths use the kernel work dir) ----
 
@@ -285,6 +360,37 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #help .tips { color: #4a5560; font-size: 12.5px; line-height: 1.7; margin-bottom: 12px; }
   #help .tips code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
 
+  /* ---------------- harness (agent) panel ---------------- */
+  #agent { position: fixed; top: 52px; bottom: 84px; left: 0; right: 0; margin: 0 auto;
+           width: min(760px, 94vw); background: #fff; border: 1px solid #b9b9b9;
+           border-radius: 6px; z-index: 45; box-shadow: 0 14px 44px rgba(0,0,0,.3);
+           display: none; flex-direction: column; }
+  #agent.open { display: flex; }
+  #agent header { padding: 9px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
+                  font-size: 13.5px; display: flex; align-items: center; gap: 9px; }
+  #agent header .who { color: #6b7280; font-weight: 400; font-size: 12px; }
+  #agent header button { margin-left: auto; background: #eee; border: 1px solid #ccc;
+                         border-radius: 4px; cursor: pointer; padding: 3px 9px; font-size: 12px; }
+  #agent .body { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px;
+                 min-height: 0; flex: 1; }
+  #agent textarea { width: 100%; height: 84px; font-family: "SF Mono", Menlo, monospace;
+                    font-size: 12px; padding: 7px 8px; border: 1px solid #c5c5c5;
+                    border-radius: 4px; outline: 0; resize: vertical; }
+  #agent .row { display: flex; align-items: center; gap: 8px; }
+  #agent .row button { background: linear-gradient(#4a7fb5, #2c5a8f); border: 1px solid #24486f;
+                       color: #fff; padding: 6px 14px; border-radius: 4px; cursor: pointer;
+                       font-size: 12px; font-weight: 600; }
+  #agent .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
+  #agent .row .status { font-size: 11.5px; color: #6b7280; }
+  #agentlog { flex: 1; min-height: 90px; overflow: auto; background: #14181d; color: #cfe3d4;
+              font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.45;
+              padding: 8px 10px; border-radius: 4px; white-space: pre-wrap; }
+  #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; max-height: 34%;
+                 overflow: auto; font-size: 12.5px; white-space: pre-wrap;
+                 font-family: "SF Mono", Menlo, monospace; display: none; }
+  #agentanswer.show { display: block; }
+  .asklink { color: #2c5a8f; cursor: pointer; text-decoration: underline dotted; }
+
   /* ---------------- toast / autocomplete ---------------- */
   #toast { position: fixed; bottom: 78px; left: 0; right: 0; text-align: center; z-index: 60;
            pointer-events: none; }
@@ -324,6 +430,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
           >Standard</button>
   <span class="spacer"></span>
   <span class="brand">rMath</span>
+  <button class="tb" data-action="showAgent" title="Ask the DeepSeek Harness (it can read and edit this project)">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="5" width="10" height="7.5" rx="1.6"/><path d="M6.2 8.2v1.2M9.8 8.2v1.2M8 5V3M4.6 3.4 3.6 2.2M11.4 3.4l1-1.2"/></svg></button>
   <button class="tb" id="reportbtn"
           title="Report a Bug (Shift+Cmd+B) — snapshot + diagnostics to the clipboard">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 7.5a3.5 3.5 0 1 1 7 0v3.2H4.5z"/><path d="M4.5 9H2.6M13.4 9H11.5M4.5 11.6 2.8 12.8M13.2 12.8l-1.7-1.2M6.6 3.6 6 2M9.4 3.6 10 2"/></svg></button>
@@ -354,6 +462,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <input id="fnfilter" placeholder="Filter functions…">
     <div id="fns"></div>
   </div>
+</div>
+<div id="agent">
+  <header>&#129302; Harness <span class="who" id="agentwho"></span>
+    <button id="agentclose">Close</button></header>
+  <div class="body">
+    <textarea id="agenttask" spellcheck="false"
+      placeholder="What should the harness do? (it runs with this project as its workspace root and can read, edit and run commands)"></textarea>
+    <div class="row">
+      <button id="agentsend">Send to harness</button>
+      <button id="agentcell" class="ghost">Ask about the last cell</button>
+      <button id="agentkey" class="ghost">Set API key…</button>
+      <span class="status" id="agentstatus"></span>
+    </div>
+    <div id="agentlog"></div>
+  </div>
+  <div id="agentanswer"></div>
 </div>
 <div id="ac"></div>
 <div id="toast"></div>
@@ -723,8 +847,103 @@ function showReport(path, summary) {
   outRow.querySelector('.content').innerHTML =
       '<div class="prints">Bug report written to ' + esc(path) +
       '\n(path and summary are on the clipboard — paste them into the chat)' +
-      (summary ? '\n' + esc(summary) : '') + '</div>';
+      (summary ? '\n' + esc(summary) : '') +
+      '\n<span class="asklink" data-fix="' + escAttr(path) + '">' +
+      'Ask the harness to fix this</span></div>';
+  const link = outRow.querySelector('.asklink');
+  if (link) link.addEventListener('click', function () { askFixReport(link.dataset.fix); });
   toast('Bug report saved — path copied to clipboard');
+}
+
+// ---------------- harness (agent) panel ----------------
+
+function agentLog(text) {
+  const box = document.getElementById("agentlog");
+  box.textContent += text + "\n";
+  box.scrollTop = box.scrollHeight;
+}
+function agentStatus(text) { document.getElementById("agentstatus").textContent = text; }
+function agentAnswer(text) {
+  const a = document.getElementById("agentanswer");
+  a.textContent = text;
+  a.classList.toggle("show", !!text);
+}
+function showAgent(task) {
+  const panel = document.getElementById("agent");
+  panel.classList.add("open");
+  if (typeof task === "string") document.getElementById("agenttask").value = task;
+  document.getElementById("agentwho").textContent = "DeepSeek Harness";
+  document.getElementById("agenttask").focus();
+  fetch("/api/agent/status").then(r => r.json()).then(s => {
+    document.getElementById("agentwho").textContent = s.available
+      ? ("dsh (" + s.profile + ", workspace " + s.workspace + ")" +
+         (s.key ? "" : "  — no API key yet: use “Set API key…” or export DEEPSEEK_API_KEY"))
+      : "dsh not found — set DSH_BIN";
+  }).catch(() => {});
+}
+function hideAgent() { document.getElementById("agent").classList.remove("open"); }
+
+/// Ask about the most recent cell: its input, output and messages.
+function askAboutCell() {
+  const cells = [...notebook.querySelectorAll(".cell")];
+  const cell = cells[cells.length - 1];
+  let input = inp.value, result = "", messages = "";
+  if (!input && cell) {
+    const inC = cell.querySelector(".inrow .content");
+    input = (inC && (inC.title || inC.textContent)) || "";
+    result = cell.dataset.result || "";
+    const m = cell.querySelector(".msgs");
+    messages = m ? m.textContent.trim().replace(/\s+/g, " ") : "";
+  }
+  showAgent("");
+  const body = {mode: "cell", input: input, result: result, messages: messages,
+                instruction: document.getElementById("agenttask").value.trim()};
+  runAgent(body);
+}
+
+/// Ask the harness to fix the bug a report describes.
+function askFixReport(path) {
+  showAgent("");
+  document.getElementById("agenttask").value =
+    "Fix the bug described in " + path + " (read the report first).";
+  runAgent({mode: "fix", report: path});
+}
+
+async function runAgent(body) {
+  const log = document.getElementById("agentlog");
+  log.textContent = "";
+  agentAnswer("");
+  const send = document.getElementById("agentsend");
+  send.disabled = true;
+  agentStatus("running…");
+  try {
+    const r = await fetch("/api/agent/stream", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    if (!r.ok || !r.body) { agentStatus("failed: HTTP " + r.status); return; }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
+        if (ev.line) agentLog(ev.line);
+        if (ev.done) {
+          agentStatus(ev.status === "ok" ? "done" : ("failed: " + (ev.error || ev.status)));
+          agentAnswer(ev.answer || "(no answer)");
+        }
+      }
+    }
+  } catch (e) {
+    agentStatus("failed: " + e);
+  } finally {
+    send.disabled = false;
+  }
 }
 
 function showHelp(open) {
@@ -780,6 +999,7 @@ function wireControls() {
     zoomOut: zoomOut,
     zoomIn: zoomIn,
     showHelp: function () { showHelp(true); },
+    showAgent: function () { showAgent(""); },
   };
   document.querySelectorAll('#ribbon .tb').forEach(b => {
     const name = b.dataset.action;
@@ -798,6 +1018,24 @@ function wireControls() {
   }
   const go = document.getElementById('go');
   if (go) go.addEventListener('click', evalInput);
+  const agentSend = document.getElementById('agentsend');
+  if (agentSend) agentSend.addEventListener('click', function () {
+    runAgent({task: document.getElementById('agenttask').value});
+  });
+  const agentCell = document.getElementById('agentcell');
+  if (agentCell) agentCell.addEventListener('click', askAboutCell);
+  const agentKey = document.getElementById('agentkey');
+  if (agentKey) agentKey.addEventListener('click', async function () {
+    const key = window.prompt(
+      'DeepSeek API key for the harness (stored outside the repository, mode 0600):', '');
+    if (!key) return;
+    const r = await fetch('/api/agent/key', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({key: key})});
+    const resp = await r.json();
+    agentStatus(resp.status === 'ok' ? ('key stored in ' + resp.path) : ('failed: ' + resp.error));
+  });
+  const agentClose = document.getElementById('agentclose');
+  if (agentClose) agentClose.addEventListener('click', hideAgent);
   const helpClose = document.getElementById('helpclose');
   if (helpClose) helpClose.addEventListener('click', function () { showHelp(false); });
   const filter = document.getElementById('fnfilter');
