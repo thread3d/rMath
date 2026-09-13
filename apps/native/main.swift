@@ -226,6 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     var webView: WKWebView!
     var server: Process?
     var ownsServer = false
+    var restarting = false
+    var watchTimer: Timer?
     var port = 8787
     var pollTimer: Timer?
     var pollStart = Date()
@@ -379,6 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let url = URL(string: "http://127.0.0.1:\(self.port)")!
                 self.webView.load(URLRequest(url: url))
                 self.window.title = "rMath — \(url.absoluteString)"
+                self.startServerWatchdog()
             } else {
                 self.showError()
             }
@@ -475,6 +478,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             generateBugReport()
         case "palette":
             if let name = body["name"] as? String { showPalette(named: name) }
+        case "restartServer":
+            restartServer()
         case "attention":
             // A long task finished while the window was in the background.
             NSApp.requestUserAttention(.informationalRequest)
@@ -1374,7 +1379,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return connect(fd, res.pointee.ai_addr, res.pointee.ai_addrlen) == 0
     }
 
+    /// Watch the server this app owns and bring it back if it dies.
+    ///
+    /// Without this, killing the helper (a crash, or reinstalling the app while
+    /// a window is open) left the page making requests to a dead port, where
+    /// every fetch fails with WebKit's bare "Load failed".
+    func startServerWatchdog() {
+        watchTimer?.invalidate()
+        var consecutiveFailures = 0
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.ownsServer else { return }
+            let died = self.server.map { !$0.isRunning } ?? true
+            if healthOK(self.port) {
+                consecutiveFailures = 0
+                return
+            }
+            consecutiveFailures += 1
+            guard died || consecutiveFailures >= 2 else { return }
+            self.appLog("rMath: notebook server is not responding — restarting it")
+            consecutiveFailures = 0
+            self.restartServer()
+        }
+    }
+
+    /// Stop the helper and start it again, then reload the page onto it.
+    func restartServer(completion: (() -> Void)? = nil) {
+        guard !restarting else { return }
+        restarting = true
+        stopServer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self else { return }
+            self.startServer { ok in
+                self.restarting = false
+                // Deliberately *no* page reload: the notebook lives in the page,
+                // so reloading would throw away the user's cells. The page's own
+                // health poll notices the recovery and says so.
+                if !ok {
+                    self.appLog("rMath: could not restart the notebook server")
+                }
+                completion?()
+            }
+        }
+    }
+
+    /// Append a line to the app log (the same file the notebook server writes).
+    func appLog(_ line: String) {
+        let url = logURL()
+        if let h = serverLog {
+            h.write(Data((line + "\n").utf8))
+            return
+        }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile()
+            h.write(Data((line + "\n").utf8))
+            try? h.close()
+        }
+    }
+
     func stopServer() {
+        watchTimer?.invalidate()
+        watchTimer = nil
         pollTimer?.invalidate()
         pollTimer = nil
         shotTimer?.invalidate()

@@ -498,6 +498,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #leandiag .info { background: #eef4fa; color: #2c4a6b; border-left: 3px solid #4a7fb5; }
   #leandiag .ok { background: #eaf6ec; color: #1e5b2a; border-left: 3px solid #2e8b57; font-weight: 600; }
 
+  /* ---------------- connection banner ---------------- */
+  #netbanner { position: fixed; left: 0; right: 0; top: 0; z-index: 90; display: none;
+               padding: 6px 12px; text-align: center; font-size: 12.5px;
+               background: #fdecec; color: #8c1c1c; border-bottom: 1px solid #e6b8b8; }
+  #netbanner.show { display: block; }
+
   /* ---------------- activity indicator ---------------- */
   #activity { display: flex; align-items: center; gap: 7px; margin-left: 10px;
               padding: 3px 9px; border-radius: 4px; font-size: 11.5px; color: #4b5563;
@@ -653,6 +659,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <header>Recent activity <button id="historyclose">Close</button></header>
   <div id="historylist"></div>
 </div>
+<div id="netbanner">&#9888; the notebook server is not reachable — restarting it&hellip;</div>
 <div id="ac"></div>
 <div id="toast"></div>
 
@@ -1268,6 +1275,46 @@ const Activity = (function () {
   };
 })();
 
+// ---------------- connection watchdog ----------------
+// The notebook server is a separate process; if it dies (a crash, or the app
+// being reinstalled underneath a running window) every request fails with
+// WebKit's bare "Load failed". Watch for that, say so plainly, and ask the app
+// to restart the server instead of leaving a silent dead window.
+
+let netFailures = 0;
+
+function netBanner(show) {
+  const b = document.getElementById("netbanner");
+  if (b) b.classList.toggle("show", !!show);
+}
+
+async function checkHealth() {
+  try {
+    const ctl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    const timer = ctl ? setTimeout(function () { ctl.abort(); }, 3000) : null;
+    const r = await fetch("/api/health", {cache: "no-store", signal: ctl ? ctl.signal : undefined});
+    if (timer) clearTimeout(timer);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (netFailures >= 2) {
+      netBanner(false);
+      toast("reconnected — the kernel restarted empty, so re-evaluate any definitions");
+      Activity.render();
+    }
+    netFailures = 0;
+  } catch (e) {
+    netFailures += 1;
+    if (netFailures === 2) {
+      netBanner(true);
+      postNative({action: "restartServer"});
+    }
+  }
+}
+
+function isNetworkError(e) {
+  const m = String((e && e.message) || e || "");
+  return (e && e.name === "TypeError") || /load failed|failed to fetch|network/i.test(m);
+}
+
 function nativeBridge() {
   return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.rmath) || null;
 }
@@ -1531,7 +1578,11 @@ function agentLog(text, kind) {
   box.appendChild(span);
   box.scrollTop = box.scrollHeight;
 }
-function agentStatus(text) { document.getElementById("agentstatus").textContent = text; }
+let agentStatusText = "";
+function agentStatus(text) {
+  agentStatusText = text;
+  document.getElementById("agentstatus").textContent = text;
+}
 function agentAnswer(text) {
   const a = document.getElementById("agentanswer");
   a.innerHTML = "";
@@ -1556,7 +1607,11 @@ function showAgent(task) {
          (s.ollama ? ", ollama has " + s.ollama_models.length + " model(s)" : "") +
          (s.key ? "" : "  — no API key: use “Set API key…” or export DEEPSEEK_API_KEY"))
       : "dsh not found — set DSH_BIN");
-  }).catch(() => {});
+  }).catch(function (e) {
+    document.getElementById("agentwho").textContent =
+      isNetworkError(e) ? "\u26a0 notebook server unreachable — restarting it\u2026"
+                        : ("\u26a0 could not read the harness status: " + e);
+  });
 }
 function hideAgent() { document.getElementById("agent").classList.remove("open"); }
 
@@ -1642,8 +1697,18 @@ async function runAgent(body) {
     }
   } catch (e) {
     const aborted = (e && e.name === "AbortError");
-    agentStatus(aborted ? "stopped" : ("failed: " + e));
-    act.end(false, aborted ? "stopped by you" : String(e).slice(0, 40));
+    if (aborted) {
+      agentStatus("stopped");
+      act.end(false, "stopped by you");
+    } else if (isNetworkError(e)) {
+      agentStatus("server unreachable — restarting it…");
+      netBanner(true);
+      postNative({action: "restartServer"});
+      act.end(false, "server unreachable");
+    } else {
+      agentStatus("failed: " + e);
+      act.end(false, String(e).slice(0, 40));
+    }
   } finally {
     send.disabled = false;
     agentAbort = null;
@@ -1776,6 +1841,8 @@ function wireControls() {
   const histClose = document.getElementById('historyclose');
   if (histClose) histClose.addEventListener('click', function () { showHistory(false); });
   Activity.render();
+  checkHealth();
+  setInterval(checkHealth, 5000);
   makeFloating(document.getElementById('agent'), 'agent');
   makeFloating(document.getElementById('lean'), 'lean');
   const helpClose = document.getElementById('helpclose');
