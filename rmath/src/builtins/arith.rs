@@ -416,6 +416,26 @@ pub fn b_sqrt(i: &mut Interp, args: &[Expr]) -> EvalRes {
     i.eval(&half)
 }
 
+/// Some(k) when `e` is `k Pi` (or `-k Pi`) with integer k.
+fn pi_multiple(i: &Interp, pi: usize, e: &Expr) -> Option<i64> {
+    if e.sym_id() == Some(pi) {
+        return Some(1);
+    }
+    let (h, args) = e.parts()?;
+    if h.is_symbol(i.t.sys.times) && args.len() == 2 {
+        let (c, rest) = if args[1].sym_id() == Some(pi) {
+            (&args[0], &args[1])
+        } else if args[0].sym_id() == Some(pi) {
+            (&args[1], &args[0])
+        } else {
+            return None;
+        };
+        let _ = rest;
+        return crate::builtins::core::expr_to_int(c);
+    }
+    None
+}
+
 // ============================ elementary ============================
 
 fn num1(i: &mut Interp, args: &[Expr], f: fn(f64) -> f64, name: &str) -> EvalRes {
@@ -423,7 +443,17 @@ fn num1(i: &mut Interp, args: &[Expr], f: fn(f64) -> f64, name: &str) -> EvalRes
         i.message(name, "argr");
         return Ok(unevaluated_call(i, name, args));
     }
-    // Exact special values.
+    // Exact special values, including integer multiples of Pi: Sin[Pi] = 0,
+    // Cos[Pi] = -1, which definite integrals over [0, Pi] rely on.
+    let pi_id = i.t.intern("Pi");
+    if let Some(k) = pi_multiple(i, pi_id, &args[0]) {
+        if name == "Sin" || name == "Tan" {
+            return Ok(Expr::int_i64(0));
+        }
+        if name == "Cos" {
+            return Ok(Expr::int_i64(if k % 2 == 0 { 1 } else { -1 }));
+        }
+    }
     match name {
         "Sin" | "Cos" | "Tan" | "Cot" | "Csc" | "Sec" => {
             if args[0].to_i64_pub() == Some(0) {

@@ -399,6 +399,22 @@ pub fn integrate_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
     integrate_rec(i, e, var, 0)
 }
 
+/// True when `e` still contains an unevaluated `Integrate[..., var]`, i.e. no
+/// antiderivative was found. The definite path must not substitute bounds into
+/// such an expression: doing so produced nonsense like
+/// `Integrate[Exp[-\[Infinity]^2] Cos[\[Infinity]]^2, \[Infinity]] - ...`.
+fn contains_integrate_of(integrate_id: usize, e: &Expr, var: &Expr) -> bool {
+    if let Some((h, args)) = e.parts() {
+        if h.sym_id() == Some(integrate_id)
+            && args.iter().any(|a| same_q(a, var) || contains_integrate_of(integrate_id, a, var))
+        {
+            return true;
+        }
+        return args.iter().any(|a| contains_integrate_of(integrate_id, a, var));
+    }
+    false
+}
+
 /// Depth-limited worker: no integrand rule here is recursive enough to need
 /// more than a few levels, so anything deeper is left unevaluated rather than
 /// risking a stack overflow.
@@ -525,6 +541,57 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
     Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]))
 }
 
+/// `[x^n Log[x] dx` in closed form, for integer n >= 0.
+fn log_power_antiderivative(
+    i: &mut Interp,
+    e: &Expr,
+    var: &Expr,
+) -> Result<Option<Expr>, Flow> {
+    let sys = i.t.sys;
+    let Some((h, args)) = e.parts() else { return Ok(None) };
+    if !h.is_symbol(sys.times) || args.len() != 2 {
+        return Ok(None);
+    }
+    let log_id = i.t.intern("Log");
+    let (p_part, log_part) = if args[1].sym_id() == Some(log_id) {
+        (&args[0], &args[1])
+    } else if args[0].sym_id() == Some(log_id) {
+        (&args[1], &args[0])
+    } else {
+        return Ok(None);
+    };
+    let n = if same_q(p_part, var) {
+        1i64
+    } else if let Some((hp, ap)) = p_part.parts() {
+        if hp.is_symbol(sys.power) && ap.len() == 2 && same_q(&ap[0], var) {
+            match crate::builtins::core::expr_to_int(&ap[1]) {
+                Some(k) if k >= 0 => k,
+                _ => return Ok(None),
+            }
+        } else {
+            return Ok(None);
+        }
+    } else {
+        return Ok(None);
+    };
+    let Some((hlog, alog)) = log_part.parts() else { return Ok(None) };
+    if hlog.sym_id() != Some(log_id) || alog.len() != 1 || !same_q(&alog[0], var) {
+        return Ok(None);
+    }
+    let np1 = n + 1;
+    let xp = pw(i, var, Expr::int_i64(np1));
+    let logx = app(i, "Log", var);
+    let inv = Expr::node(Expr::Sym(sys.power), vec![Expr::int_i64(np1), Expr::int_i64(-1)]);
+    let t1 = eval_call(i, Expr::Sym(sys.times), vec![inv, xp.clone(), logx])?;
+    let inv2 = Expr::node(
+        Expr::Sym(sys.power),
+        vec![Expr::int_i64(np1 * np1), Expr::int_i64(-1)],
+    );
+    let t2 = eval_call(i, Expr::Sym(sys.times), vec![inv2, xp])?;
+    let nt2 = neg1(i, t2);
+    Ok(Some(eval_call(i, Expr::Sym(sys.plus), vec![t1, nt2])?))
+}
+
 fn power_rule(i: &mut Interp, var: &Expr, n: i64) -> EvalRes {
     let sys = i.t.sys;
     if n == -1 {
@@ -588,6 +655,13 @@ pub fn b_integrate(i: &mut Interp, args: &[Expr]) -> EvalRes {
             let a = i.eval(&hargs[1])?;
             let b = i.eval(&hargs[2])?;
             let f = integrate_expr(i, &e, &v)?;
+            let integrate_id = i.t.intern("Integrate");
+            if contains_integrate_of(integrate_id, &f, &v) {
+                // No antiderivative: leave the definite integral alone (keeping
+                // extra arguments such as Assumptions) instead of substituting
+                // the bounds into an Integrate head.
+                return Ok(unevaluated_call(i, "Integrate", args));
+            }
             let at_b = subst_var(i, &f, &v, &b)?;
             let at_a = subst_var(i, &f, &v, &a)?;
             let neg_a = neg1(i, at_a);

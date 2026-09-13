@@ -71,3 +71,23 @@ Integrate[2 x, x]
 => x^2
 Integrate[3 x^2 + 2 x + 1, x]
 => x + x^2 + x^3
+
+# A definite integral with no antiderivative must stay unevaluated, not have its
+# bounds substituted into the integrand (that produced nonsense like
+# Integrate[Exp[-Infinity^2] Cos[Infinity]^2, Infinity] - ... and a misleading
+# "Infinite expression encountered").
+Integrate[Exp[-x^2] Cos[x]^2, {x, -Infinity, Infinity}]
+=> Integrate[Exp[-x^2] Cos[x]^2, {x, -Infinity, Infinity}]
+Integrate[1/(x^3 + x), x]
+=> Integrate[1/(x + x^3), x]
+# Exact values at integer multiples of Pi, which definite integrals rely on.
+Sin[Pi]
+=> 0
+Cos[Pi]
+=> -1
+Sin[2 Pi]
+=> 0
+Cos[3 Pi]
+=> -1
+Tan[Pi]
+=> 0
