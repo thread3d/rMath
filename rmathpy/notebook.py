@@ -481,13 +481,34 @@ INDEX_HTML = r"""<!DOCTYPE html>
   /* Scrollbars are shown permanently and styled: macOS overlay bars are
      invisible until you scroll, so the log gave no sign that earlier lines
      existed. */
-  #agentlog, #leandiag, #leanstmt, #agentanswer, #historylist { scrollbar-width: thin; }
+  /* The standard scrollbar properties are the ones WebKit honours once
+     `scrollbar-width` is set; leaving `scrollbar-color` unset gave a black thumb
+     on the near-black log, which is invisible. Dark containers get a light thumb,
+     light containers a mid one. */
+  /* Hide the platform bar and draw the thumb ourselves: WebKit reported support
+     for scrollbar-color yet still painted a black bar on the near-black log, so
+     the indicator must not depend on platform painting. Scrolling itself is
+     unchanged (wheel, keys, drag). */
+  #agentlog, #leandiag, #leanstmt, #agentanswer, #historylist { scrollbar-width: none; }
+  #agentlog::-webkit-scrollbar, #leandiag::-webkit-scrollbar, #leanstmt::-webkit-scrollbar,
+  #agentanswer::-webkit-scrollbar, #historylist::-webkit-scrollbar { width: 0; height: 0; }
+  .logwrap { position: relative; display: flex; flex-direction: column; min-height: 0;
+             flex: 0 1 auto; }
+  .vbar { position: absolute; top: 2px; right: 2px; bottom: 2px; width: 10px;
+          border-radius: 5px; background: rgba(127, 140, 153, .18); display: none; z-index: 4; }
+  .vbar.show { display: block; }
+  .vbar .vthumb { position: absolute; left: 0; right: 0; min-height: 22px; border-radius: 5px;
+                  background: #8b98a5; cursor: pointer; }
+  .vbar .vthumb:hover { background: #aab6c2; }
+  .vbar.light { background: rgba(0, 0, 0, .08); }
+  .vbar.light .vthumb { background: #a9a49a; }
+  .vbar.light .vthumb:hover { background: #8e8a80; }
   #agentlog::-webkit-scrollbar, #agentanswer::-webkit-scrollbar { width: 12px; height: 12px; }
   #agentlog::-webkit-scrollbar-track, #agentanswer::-webkit-scrollbar-track { background: #0e1217; }
   #agentlog::-webkit-scrollbar-thumb, #agentanswer::-webkit-scrollbar-thumb {
-      background: #5b6875; border: 2px solid #0e1217; border-radius: 6px; }
+      background: #8b98a5; border: 2px solid #0e1217; border-radius: 6px; }
   #agentlog::-webkit-scrollbar-thumb:hover, #agentanswer::-webkit-scrollbar-thumb:hover {
-      background: #7a8896; }
+      background: #aab6c2; }
   #leandiag::-webkit-scrollbar, #leanstmt::-webkit-scrollbar, #historylist::-webkit-scrollbar {
       width: 12px; height: 12px; }
   #leandiag::-webkit-scrollbar-track, #leanstmt::-webkit-scrollbar-track,
@@ -677,7 +698,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <button id="agentkey" class="ghost">Set API key…</button>
       <span class="status" id="agentstatus"></span>
     </div>
-    <div id="agentlog"></div>
+    <div class="logwrap"><div id="agentlog"></div></div>
     <button id="agentjump" class="jump" title="Jump to the newest line">&#9660; newest</button>
   </div>
   <div id="agentanswer"></div>
@@ -695,7 +716,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <span class="status" id="leanstatus"></span>
     </div>
     <div id="leanstmt" class="md"></div>
-    <div id="leandiag"></div>
+    <div class="logwrap"><div id="leandiag"></div></div>
   </div>
 </div>
 <div id="history">
@@ -1524,6 +1545,7 @@ function leanStatus(text) { document.getElementById("leanstatus").textContent = 
 
 function leanShowDiagnostics(res) {
   const box = document.getElementById("leandiag");
+  if (window.__leanBarSync) setTimeout(window.__leanBarSync, 0);
   box.innerHTML = "";
   (res.diagnostics || []).forEach(function (d) {
     const div = document.createElement("div");
@@ -1613,6 +1635,53 @@ async function leanVerifyLastCell() {
 
 // ---------------- harness (agent) panel ----------------
 
+// A drawn scroll indicator (see the CSS note): the platform bar stays hidden and
+// this thumb is ours, so its colour is guaranteed to be visible.
+function attachScrollbar(el, light) {
+  if (!el || !el.parentNode) return function () {};
+  const bar = document.createElement("div");
+  bar.className = "vbar" + (light ? " light" : "");
+  const thumb = document.createElement("div");
+  thumb.className = "vthumb";
+  bar.appendChild(thumb);
+  el.parentNode.appendChild(bar);
+
+  function sync() {
+    const overflow = el.scrollHeight - el.clientHeight;
+    const show = overflow > 4;
+    bar.classList.toggle("show", show);
+    if (!show) return;
+    const h = Math.max(22, Math.round(el.clientHeight * (el.clientHeight / el.scrollHeight)));
+    thumb.style.height = h + "px";
+    thumb.style.top = Math.round((el.scrollTop / overflow) * (el.clientHeight - h)) + "px";
+  }
+  el.addEventListener("scroll", sync);
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(sync).observe(el);
+  thumb.addEventListener("pointerdown", function (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const startY = ev.clientY, startTop = el.scrollTop;
+    const overflow = el.scrollHeight - el.clientHeight;
+    const max = el.clientHeight - thumb.offsetHeight;
+    const move = function (e) {
+      el.scrollTop = startTop + (e.clientY - startY) / (max || 1) * overflow;
+    };
+    const up = function () {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+  bar.addEventListener("pointerdown", function (ev) {
+    if (ev.target === thumb) return;
+    const r = bar.getBoundingClientRect();
+    el.scrollTop = ((ev.clientY - r.top) / r.height) * (el.scrollHeight - el.clientHeight);
+  });
+  sync();
+  return sync;
+}
+
 // The log follows the tail while you are at the bottom; scroll up and it stops
 // pulling you back (and offers a jump button) so earlier lines can be read while
 // a run is still going.
@@ -1638,6 +1707,7 @@ function agentLog(text, kind) {
   box.appendChild(span);
   if (followLog) box.scrollTop = box.scrollHeight;
   else updateJumpButton();
+  window.__agentBarSync && window.__agentBarSync();
 }
 let agentStatusText = "";
 function agentStatus(text) {
@@ -1865,6 +1935,8 @@ function wireControls() {
     runAgent({task: document.getElementById('agenttask').value});
   });
   const agentLogEl = document.getElementById('agentlog');
+  window.__agentBarSync = attachScrollbar(agentLogEl, false);
+  window.__leanBarSync = attachScrollbar(document.getElementById('leandiag'), true);
   if (agentLogEl) agentLogEl.addEventListener('scroll', function () {
     followLog = logAtBottom();
     updateJumpButton();
