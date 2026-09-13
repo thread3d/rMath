@@ -83,7 +83,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/agent/status":
             from . import harness
             url, source = harness.endpoint()
-            self._json({"available": harness.available(),
+            self._json({"running": harness.current(),
+                        "available": harness.available(),
                         "dsh": harness.find_dsh(),
                         "workspace": harness.workspace_root(),
                         "profile": harness.profile(),
@@ -147,6 +148,9 @@ class Handler(BaseHTTPRequestHandler):
             self.api_agent(body)
         elif path == "/api/agent/stream":
             self.api_agent_stream(body)
+        elif path == "/api/agent/cancel":
+            from . import harness
+            self._json(harness.cancel_current())
         elif path == "/api/lean/check":
             from . import lean
             self._json(lean.run_lean(body.get("code", "")))
@@ -220,7 +224,8 @@ class Handler(BaseHTTPRequestHandler):
 
         r = harness.run_task(task, on_line=on_line)
         emit({"done": True, "status": r.get("status"), "answer": r.get("answer", ""),
-              "error": r.get("error", ""), "exit": r.get("exit")})
+              "error": r.get("error", ""), "exit": r.get("exit"),
+              "cancelled": r.get("cancelled", False)})
 
     # ---- notebook file operations (relative paths use the kernel work dir) ----
 
@@ -491,6 +496,42 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #leandiag .info { background: #eef4fa; color: #2c4a6b; border-left: 3px solid #4a7fb5; }
   #leandiag .ok { background: #eaf6ec; color: #1e5b2a; border-left: 3px solid #2e8b57; font-weight: 600; }
 
+  /* ---------------- activity indicator ---------------- */
+  #activity { display: flex; align-items: center; gap: 7px; margin-left: 10px;
+              padding: 3px 9px; border-radius: 4px; font-size: 11.5px; color: #4b5563;
+              background: #f4f3ef; border: 1px solid #e0ded4; cursor: pointer;
+              max-width: 46ch; }
+  #activity.busy { background: #eef4fa; border-color: #cfe0f0; color: #23486b; }
+  #activity .what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #activity .elapsed { color: #6b7280; font-variant-numeric: tabular-nums; }
+  #activity .spin { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 auto;
+                    border: 2px solid #c7c7c7; border-top-color: #2c5a8f;
+                    animation: none; }
+  #activity.busy .spin { animation: rmath-spin .9s linear infinite; }
+  @keyframes rmath-spin { to { transform: rotate(360deg); } }
+  #activity progress.bar { width: 90px; height: 6px; display: none; }
+  #activity.busy.counted progress.bar { display: block; }
+  #activity button.stop { display: none; font-size: 11px; padding: 1px 7px;
+                          border: 1px solid #b9c9d8; border-radius: 3px;
+                          background: #fff; color: #23486b; cursor: pointer; }
+  #activity.stoppable button.stop { display: inline-block; }
+  #history { position: fixed; left: 14px; top: 52px; width: min(520px, 92vw);
+             max-height: 60vh; background: #fff; border: 1px solid #b9b9b9;
+             border-radius: 6px; box-shadow: 0 12px 34px rgba(0,0,0,.28); z-index: 60;
+             display: none; flex-direction: column; }
+  #history.open { display: flex; }
+  #history header { padding: 8px 12px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
+                    font-size: 13px; display: flex; align-items: center; }
+  #history header button { margin-left: auto; background: #eee; border: 1px solid #ccc;
+                           border-radius: 4px; cursor: pointer; padding: 2px 8px; font-size: 12px; }
+  #historylist { overflow: auto; font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; }
+  #historylist .h { display: flex; gap: 8px; padding: 4px 10px; border-bottom: 1px solid #f2f1ec; }
+  #historylist .h .t { color: #6b7280; flex: 0 0 62px; text-align: right; }
+  #historylist .h .l { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #historylist .h .o { flex: 0 0 auto; }
+  #historylist .h.ok .o { color: #1e5b2a; } #historylist .h.bad .o { color: #8c1c1c; }
+  #historylist .h.run .o { color: #23486b; }
+
   /* ---------------- toast / autocomplete ---------------- */
   #toast { position: fixed; bottom: 78px; left: 0; right: 0; text-align: center; z-index: 60;
            pointer-events: none; }
@@ -529,6 +570,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button class="tb wide" id="formbtn" title="Typesetting form (StandardForm / TraditionalForm)"
           >Standard</button>
   <span class="spacer"></span>
+  <div id="activity" title="What rMath is doing (click for recent activity)">
+    <span class="spin"></span>
+    <span class="what">idle</span>
+    <span class="elapsed"></span>
+    <progress class="bar" max="1" value="0"></progress>
+    <button id="activitystop" class="stop" title="Stop the running task">Stop</button>
+  </div>
   <span class="brand">rMath</span>
   <button class="tb" data-action="showLean" title="Check Lean 4 code, or verify the last cell in Lean">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5h6M5 9h3.5"/><path d="M10.5 9.5l1 1 2-2.4"/></svg></button>
@@ -574,6 +622,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       placeholder="What should the harness do? (it runs with this project as its workspace root and can read, edit and run commands)"></textarea>
     <div class="row">
       <button id="agentsend">Send to harness</button>
+      <button id="agentstop" class="ghost" title="Stop the running task">Stop</button>
       <button id="agentcell" class="ghost">Ask about the last cell</button>
       <button id="agentkey" class="ghost">Set API key…</button>
       <span class="status" id="agentstatus"></span>
@@ -597,6 +646,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div id="leanstmt" class="md"></div>
     <div id="leandiag"></div>
   </div>
+</div>
+<div id="history">
+  <header>Recent activity <button id="historyclose">Close</button></header>
+  <div id="historylist"></div>
 </div>
 <div id="ac"></div>
 <div id="toast"></div>
@@ -757,12 +810,18 @@ async function evalInput() {
   inp.value = '';
   autoGrow();
   ac.style.display = 'none';
+  const act = Activity.begin(lines.length > 1 ? "evaluating " + lines.length + " inputs"
+                                               : "evaluating " + lines[0].slice(0, 40),
+                             {total: lines.length > 1 ? lines.length : 0});
+  let n = 0;
   for (const line of lines) {
     history.push(line);
     const cell = addCell();
     lastCell = cell;
     await evaluateLine(line, cell);
+    act.set(++n);
   }
+  act.end(true, lines.length + (lines.length === 1 ? " input" : " inputs"));
   localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
   histPos = history.length;
   if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
@@ -773,11 +832,16 @@ async function evalInput() {
 async function evaluateAll() {
   const inputs = evaluated.slice();
   if (!inputs.length) return;
+  const act = Activity.begin("evaluating all " + inputs.length + " cells",
+                             {total: inputs.length});
+  let n = 0;
   for (const line of inputs) {
     const cell = addCell();
     lastCell = cell;
     await evaluateLine(line, cell);
+    act.set(++n);
   }
+  act.end(true, inputs.length + " cells");
   if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
 }
 
@@ -867,14 +931,19 @@ async function openNotebook(intoInput, givenPath) {
   }
 
   newNotebook();
-  document.title = resp.path.split('/').pop() + ' — rMath';
+  Activity.setTitle(resp.path.split('/').pop() + ' — rMath');
   toast('Opened ' + resp.path + ' — ' + statements.length + ' cells');
+  const act = Activity.begin("opening " + resp.path.split('/').pop(),
+                             {total: statements.length});
+  let n = 0;
   for (const stmt of statements) {
     history.push(stmt);
     const cell = addCell();
     lastCell = cell;
+    act.set(++n, "opening " + resp.path.split('/').pop() + " — " + n + "/" + statements.length);
     await evaluateLine(stmt, cell);
   }
+  act.end(true, statements.length + " cells");
   localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
   histPos = history.length;
   if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
@@ -1063,6 +1132,136 @@ function mdRenderInto(el, text) {
   mdTypeset(el);
 }
 
+// ---------------- activity indicator ----------------
+// One place that answers "what is rMath doing right now?": a label with elapsed
+// time, a real progress bar for countable work (opening a file, evaluating all),
+// a Stop button for cancellable work (the harness), and a history you can open
+// by clicking. Long operations also bounce the Dock icon when they finish while
+// the window is in the background.
+
+const Activity = (function () {
+  const el = () => document.getElementById("activity");
+  const what = () => el().querySelector(".what");
+  const elapsed = () => el().querySelector(".elapsed");
+  const bar = () => el().querySelector("progress.bar");
+  const stop = () => document.getElementById("activitystop");
+  let runs = [];           // active operations, newest last
+  let history = [];        // finished ones, newest first
+  let timer = null;
+  let titleBase = document.title;
+
+  function fmt(ms) {
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60), r = s % 60;
+    return m + "m " + (r < 10 ? "0" : "") + r + "s";
+  }
+
+  function paint() {
+    const el0 = el();
+    if (!runs.length) {
+      el0.classList.remove("busy", "counted", "stoppable");
+      what().textContent = "idle";
+      elapsed().textContent = "";
+      bar().max = 1; bar().value = 0;      // don't leave a stale progress bar
+      document.title = titleBase;
+      if (timer) { clearInterval(timer); timer = null; }
+      return;
+    }
+    const run = runs[runs.length - 1];
+    el0.classList.add("busy");
+    el0.classList.toggle("counted", !!run.total);
+    el0.classList.toggle("stoppable", !!run.cancellable);
+    what().textContent = run.label;
+    elapsed().textContent = fmt(Date.now() - run.started);
+    if (run.total) {
+      bar().max = run.total;
+      bar().value = run.done || 0;
+    }
+    if (!timer) timer = setInterval(paint, 1000);
+    const t = "\u23f3 " + run.label + " \u2014 rMath";
+    if (document.title !== t) document.title = t;
+    notifyTitle(t);
+  }
+
+  /// Let the app mirror the title (its window title does not follow the page).
+  let lastTitle = "";
+  function notifyTitle(t) {
+    if (t === lastTitle) return;
+    lastTitle = t;
+    const b = nativeBridge();
+    if (b) b.postMessage({action: "title", title: t});
+  }
+
+  function finish(entry) {
+    history.unshift(entry);
+    history = history.slice(0, 25);
+    renderHistory();
+    // comfort: a long task that ended while you were elsewhere asks for attention
+    if (entry.ms > 8000 && document.hidden) {
+      const b = nativeBridge();
+      if (b) b.postMessage({action: "attention"});
+    }
+  }
+
+  function renderHistory() {
+    const list = document.getElementById("historylist");
+    if (!list) return;
+    list.innerHTML = history.map(function (h) {
+      const cls = h.ok === true ? "ok" : h.ok === false ? "bad" : "run";
+      const mark = h.ok === true ? "\u2713" : h.ok === false ? "\u2717" : "\u22ef";
+      return '<div class="h ' + cls + '"><span class="t">' + fmt(h.ms) +
+             '</span><span class="l">' + esc(h.label) + '</span><span class="o">' + mark + "</span></div>";
+    }).join("") || '<div class="h"><span class="l">nothing yet</span></div>';
+  }
+
+  return {
+    /// The page sets the document title through here, so the busy marker is
+    /// added to the *current* title instead of a stale one.
+    setTitle: function (text) { titleBase = text; paint(); },
+    title: function () { return titleBase; },
+    /// begin(label, {total, cancellable}) -> {set, label, end}
+    begin: function (label, opts) {
+      opts = opts || {};
+      const run = {label: label, started: Date.now(), total: opts.total || 0,
+                   done: opts.done || 0, cancellable: !!opts.cancellable, id: Math.random()};
+      runs.push(run);
+      paint();
+      const api = {
+        id: run.id,
+        set: function (done, text) {
+          run.done = done;
+          if (text) run.label = text;
+          paint();
+        },
+        label: function (text) { run.label = text; paint(); },
+        total: function (n) { run.total = n; paint(); },
+        end: function (ok, text) {
+          runs = runs.filter(function (r) { return r.id !== run.id; });
+          finish({label: text ? run.label + " \u2014 " + text : run.label,
+                  ms: Date.now() - run.started, ok: ok});
+          paint();
+        },
+      };
+      return api;
+    },
+    history: function () { return history; },
+    render: function () { renderHistory(); },
+    fmt: fmt,
+  };
+})();
+
+function nativeBridge() {
+  return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.rmath) || null;
+}
+
+function showHistory(open) {
+  const h = document.getElementById("history");
+  const willOpen = open === undefined ? !h.classList.contains("open") : !!open;
+  h.classList.toggle("open", willOpen);
+  if (willOpen) Activity.render();     // always fresh when you look at it
+}
+
 // ---------------- floating panels ----------------
 // Drag by the header, resize from the corner (CSS), collapse with the chevron,
 // and remember the geometry per panel. Clicking a panel brings it to the front,
@@ -1242,6 +1441,7 @@ function hideLean() { document.getElementById("lean").classList.remove("open"); 
 
 async function leanCheck(code) {
   leanStatus("checking…");
+  const act = Activity.begin("Lean: checking a snippet");
   const stmt = document.getElementById("leanstmt");
   stmt.innerHTML = "";
   try {
@@ -1250,7 +1450,8 @@ async function leanCheck(code) {
     const res = await r.json();
     leanShowDiagnostics(res);
     leanStatus(res.status === "ok" ? "checked" : "errors");
-  } catch (e) { leanStatus("failed: " + e); }
+    act.end(res.status === "ok", res.status === "ok" ? "no errors" : "errors");
+  } catch (e) { leanStatus("failed: " + e); act.end(false, String(e).slice(0, 40)); }
 }
 
 async function leanVerifyLastCell() {
@@ -1264,6 +1465,7 @@ async function leanVerifyLastCell() {
   }
   if (!input) { leanStatus("nothing to verify — evaluate a cell first"); return; }
   leanStatus("translating…");
+  const act = Activity.begin("Lean: verifying " + input.slice(0, 34));
   try {
     const r = await fetch("/api/lean/verify", {method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -1279,6 +1481,7 @@ async function leanVerifyLastCell() {
     const badge = res.outcome === "verified" ? "VERIFIED by Lean"
                 : res.outcome === "unproved" ? "NOT PROVED" : "cannot verify";
     leanStatus(badge + (res.type ? "  (" + res.type + ")" : ""));
+    act.end(res.outcome === "verified", badge);
     if (res.outcome === "verified") {
       const box = document.getElementById("leandiag");
       const div = document.createElement("div");
@@ -1287,7 +1490,7 @@ async function leanVerifyLastCell() {
                         (res.variables && res.variables.length ? " with " + res.variables.join(", ") : "");
       box.insertBefore(div, box.firstChild);
     }
-  } catch (e) { leanStatus("failed: " + e); }
+  } catch (e) { leanStatus("failed: " + e); act.end(false, String(e).slice(0, 40)); }
 }
 
 // ---------------- harness (agent) panel ----------------
@@ -1354,6 +1557,8 @@ function askFixReport(path) {
   runAgent({mode: "fix", report: path});
 }
 
+let agentAbort = null;
+
 async function runAgent(body) {
   const log = document.getElementById("agentlog");
   log.textContent = "";
@@ -1361,10 +1566,20 @@ async function runAgent(body) {
   const send = document.getElementById("agentsend");
   send.disabled = true;
   agentStatus("running…");
+  const act = Activity.begin("harness: working (this can take minutes)",
+                             {cancellable: true});
+  const startedAt = Date.now();
+  agentAbort = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  let lines = 0;
   try {
     const r = await fetch("/api/agent/stream", {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-    if (!r.ok || !r.body) { agentStatus("failed: HTTP " + r.status); return; }
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+      signal: agentAbort ? agentAbort.signal : undefined});
+    if (!r.ok || !r.body) {
+      agentStatus("failed: HTTP " + r.status);
+      act.end(false, "HTTP " + r.status);
+      return;
+    }
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -1377,18 +1592,40 @@ async function runAgent(body) {
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
-        if (ev.line) agentLog(ev.line, ev.kind);
+        if (ev.line) {
+          lines += 1;
+          agentLog(ev.line, ev.kind);
+          const t = ev.line.trim().replace(/\s+/g, " ");
+          if (t) act.label("harness: " + t.slice(0, 48));
+        }
         if (ev.done) {
-          agentStatus(ev.status === "ok" ? "done" : ("failed: " + (ev.error || ev.status)));
-          agentAnswer(ev.answer || "(no answer)");
+          const mins = Activity.fmt(Date.now() - startedAt);
+          if (ev.cancelled) {
+            agentStatus("stopped after " + mins);
+            act.end(false, "stopped after " + mins);
+          } else {
+            agentStatus(ev.status === "ok" ? ("done in " + mins) : ("failed: " + (ev.error || ev.status)));
+            agentAnswer(ev.answer || "(no answer)");
+            act.end(ev.status === "ok", (ev.status === "ok" ? "done in " : "failed after ") + mins);
+          }
         }
       }
     }
   } catch (e) {
-    agentStatus("failed: " + e);
+    const aborted = (e && e.name === "AbortError");
+    agentStatus(aborted ? "stopped" : ("failed: " + e));
+    act.end(false, aborted ? "stopped by you" : String(e).slice(0, 40));
   } finally {
     send.disabled = false;
+    agentAbort = null;
   }
+}
+
+/// Stop the running harness task (kills the child process on the server too).
+async function stopAgent() {
+  if (agentAbort) { try { agentAbort.abort(); } catch (e) {} }
+  try { await fetch("/api/agent/cancel", {method: "POST"}); } catch (e) {}
+  agentStatus("stopped");
 }
 
 function showHelp(open) {
@@ -1469,6 +1706,8 @@ function wireControls() {
   if (agentSend) agentSend.addEventListener('click', function () {
     runAgent({task: document.getElementById('agenttask').value});
   });
+  const agentStopBtn = document.getElementById('agentstop');
+  if (agentStopBtn) agentStopBtn.addEventListener('click', stopAgent);
   const agentCell = document.getElementById('agentcell');
   if (agentCell) agentCell.addEventListener('click', askAboutCell);
   const agentKey = document.getElementById('agentkey');
@@ -1495,6 +1734,19 @@ function wireControls() {
   if (leanCellBtn) leanCellBtn.addEventListener('click', leanVerifyLastCell);
   const leanClose = document.getElementById('leanclose');
   if (leanClose) leanClose.addEventListener('click', hideLean);
+  const actEl = document.getElementById('activity');
+  if (actEl) actEl.addEventListener('click', function (ev) {
+    if (ev.target && ev.target.id === 'activitystop') return;
+    showHistory();
+  });
+  const actStop = document.getElementById('activitystop');
+  if (actStop) actStop.addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    stopAgent();
+  });
+  const histClose = document.getElementById('historyclose');
+  if (histClose) histClose.addEventListener('click', function () { showHistory(false); });
+  Activity.render();
   makeFloating(document.getElementById('agent'), 'agent');
   makeFloating(document.getElementById('lean'), 'lean');
   const helpClose = document.getElementById('helpclose');

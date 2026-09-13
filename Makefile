@@ -141,21 +141,25 @@ app-install: app-stop app
 	@# actually look: /Applications when it is writable, otherwise ~/Applications.
 	@# (Two copies would go stale against each other and make `open -a rMath`
 	@# ambiguous.)
-	@if [ -w /Applications ]; then \
-	  mkdir -p /Applications && rm -rf /Applications/rMath.app && \
-	  cp -R $(APP) /Applications/rMath.app && \
+	@INSTALLED=""; \
+	if mkdir -p /Applications 2>/dev/null && [ -w /Applications ]; then \
+	  rm -rf /Applications/rMath.app && cp -R $(APP) /Applications/rMath.app && \
 	  rm -rf $(APPDIR)/rMath.app && INSTALLED=/Applications/rMath.app; \
-	else \
-	  mkdir -p $(APPDIR) && rm -rf $(APPDIR)/rMath.app && \
-	  cp -R $(APP) $(APPDIR)/rMath.app && INSTALLED=$(APPDIR)/rMath.app; \
+	elif mkdir -p $(APPDIR) 2>/dev/null && [ -w $(APPDIR) ]; then \
+	  rm -rf $(APPDIR)/rMath.app && cp -R $(APP) $(APPDIR)/rMath.app && \
+	  INSTALLED=$(APPDIR)/rMath.app; \
+	fi; \
+	if [ -z "$$INSTALLED" ]; then \
+	  echo "app-install: neither /Applications nor $(APPDIR) is writable here" >&2; \
+	  echo "             (run it outside a restricted sandbox, or copy $(APP) yourself)" >&2; \
+	  exit 1; \
 	fi; \
 	LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister; \
 	$$LSREG -f "$$INSTALLED" >/dev/null 2>&1 || true; \
 	mdimport "$$INSTALLED" >/dev/null 2>&1 || true; \
-	mkdir -p "$(HOME)/Library/Application Support/rMath"; \
-	printf '%s\n' "$(ROOT)" > "$(HOME)/Library/Application Support/rMath/workspace"; \
+	mkdir -p "$(HOME)/Library/Application Support/rMath" 2>/dev/null || true; \
+	printf '%s\n' "$(ROOT)" > "$(HOME)/Library/Application Support/rMath/workspace" 2>/dev/null || true; \
 	echo "    installed: $$INSTALLED"; \
-	echo "    reports will be written to $(ROOT)/.shots/reports"; \
 	echo "    launch with: open -a rMath   (or Spotlight: Cmd-Space, type rMath)"
 
 app-uninstall: app-stop

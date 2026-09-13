@@ -475,6 +475,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             generateBugReport()
         case "palette":
             if let name = body["name"] as? String { showPalette(named: name) }
+        case "attention":
+            // A long task finished while the window was in the background.
+            NSApp.requestUserAttention(.informationalRequest)
+        case "title":
+            if let t = body["title"] as? String { window?.title = t }
         case "screenshot":
             let dest = body["path"] as? String ?? ""
             saveScreenshot(to: dest.isEmpty ? defaultShotPath() : dest)

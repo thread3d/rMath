@@ -13,8 +13,10 @@ repository, edit files and run the build.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import threading
+import time
 import urllib.request
 
 
@@ -196,6 +198,48 @@ def available():
     return find_dsh() is not None
 
 
+_CURRENT = {"proc": None, "started": None, "task": "", "cancelled": False}
+
+
+def current():
+    """The run in flight, if any: its task, start time and whether it can stop."""
+    proc = _CURRENT.get("proc")
+    if proc is None or proc.poll() is not None:
+        return None
+    return {"task": _CURRENT["task"][:200], "started": _CURRENT["started"],
+            "pid": proc.pid}
+
+
+def cancel_current():
+    """Terminate the running harness task (the Stop button).
+
+    A headless run can take minutes and cannot be interrupted through the stream,
+    so the child process is tracked here and killed on request."""
+    proc = _CURRENT.get("proc")
+    if proc is None or proc.poll() is not None:
+        return {"status": "ok", "cancelled": False,
+                "note": "no harness task is running"}
+    _CURRENT["cancelled"] = True
+    try:
+        # Signal the whole group: `dsh` is a node process that may have children.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except Exception:
+            proc.terminate()
+        for _ in range(30):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                proc.kill()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    return {"status": "ok", "cancelled": True, "pid": proc.pid}
+
+
 def run_task(task, timeout=1800, on_line=None, cwd=None):
     """Run one headless task.
 
@@ -225,10 +269,18 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            start_new_session=True,     # its own process group, so Stop stops all of it
         )
     except OSError as e:
         return {"status": "error", "error": str(e), "answer": "", "reasoning": "", "exit": None}
 
+    try:                                  # bookkeeping must never break a run
+        _CURRENT["proc"] = proc
+        _CURRENT["started"] = time.time()
+        _CURRENT["task"] = task
+        _CURRENT["cancelled"] = False
+    except Exception:
+        pass
     out_lines, err_lines = [], []
 
     def pump(stream, sink, kind):
@@ -256,10 +308,14 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
             on_line("[rMath] harness run timed out after %ds" % timeout)
     t_out.join(timeout=3)
     t_err.join(timeout=3)
+    cancelled = bool(_CURRENT.get("cancelled"))
+    _CURRENT["proc"] = None
+    _CURRENT["cancelled"] = False
 
     url, source = endpoint()
     return {
         "status": "ok" if code == 0 else "error",
+        "cancelled": bool(cancelled),
         "answer": "".join(out_lines).strip(),
         "reasoning": "".join(err_lines).strip(),
         "exit": code,
