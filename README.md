@@ -257,7 +257,7 @@ incremental snapshots (the save step needs `supportInterpreter`). Both are
 recorded in `lean/RMathServer.lean`, which is marked experimental and is not
 wired into any code path.
 
-**In the app**: the Lean ribbon button (or **Help ▸ Lean… ⇧⌘L**) opens a panel
+**In the app**: the Lean ribbon button (or **Help ▸ Lean… ⇧⌘L**) opens a floating panel
 with a snippet box (Mathlib is imported automatically), a **Check** button, and
 severity-coloured diagnostics with line/column; **Verify the last cell**
 (⌥⌘V) takes the cell's input and result, shows the generated Lean statement and
@@ -271,7 +271,9 @@ running as an agent with **this project as its workspace root** — it can read 
 repository, edit files and run commands, including the build and the tests.
 
 - **Open the panel**: the robot button in the ribbon, or **Help ▸ Ask the
-  Harness… (⇧⌘H)**.
+  Harness… (⇧⌘H)**. It floats: drag the title bar, resize from the corner,
+  collapse with the chevron, and the geometry is remembered — so the notebook,
+  the Lean panel and the harness can be read side by side.
 - **Ask about a cell**: "Ask about the last cell" sends that cell's input, output
   and messages, and the agent explains — or fixes — what it finds.
 - **Fix a reported bug**: after **Report a Bug**, the report cell offers

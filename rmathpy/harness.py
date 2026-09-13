@@ -38,12 +38,11 @@ def find_dsh():
 
 
 def workspace_root():
-    """The directory the harness runs in (its workspace root)."""
-    env = os.environ.get("RMATH_HARNESS_ROOT")
-    if env and os.path.isdir(env):
-        return env
-    # rmathpy/ lives in the project root.
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    """The directory the harness runs in (its workspace root): the same
+    repository the front end came from, even when running inside the app
+    bundle."""
+    from .paths import workspace_root as resolve
+    return resolve()
 
 
 def profile():

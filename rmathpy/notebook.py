@@ -381,11 +381,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #help .tips code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
 
   /* ---------------- harness (agent) panel ---------------- */
-  #agent { position: fixed; top: 52px; bottom: 84px; left: 0; right: 0; margin: 0 auto;
-           width: min(760px, 94vw); background: #fff; border: 1px solid #b9b9b9;
-           border-radius: 6px; z-index: 45; box-shadow: 0 14px 44px rgba(0,0,0,.3);
-           display: none; flex-direction: column; }
+  /* Floating panels: movable by the header, resizable, collapsible, and placed
+     so the notebook stays readable while both are open. Geometry is remembered
+     per panel in localStorage. */
+  #agent { position: fixed; left: 18px; bottom: 96px; width: min(520px, 44vw);
+           height: min(58vh, 460px); background: #fff; border: 1px solid #b9b9b9;
+           border-radius: 6px; z-index: 45; box-shadow: 0 10px 34px rgba(0,0,0,.28);
+           display: none; flex-direction: column; resize: both; overflow: hidden; }
   #agent.open { display: flex; }
+  #agent.collapsed, #lean.collapsed { height: auto !important; }
+  #agent.collapsed .body, #agent.collapsed #agentanswer,
+  #lean.collapsed .body { display: none; }
+  #agent header, #lean header { cursor: move; user-select: none; -webkit-user-select: none; }
+  #agent header button, #lean header button { cursor: pointer; }
+  #agent header .grip, #lean header .grip { margin-left: auto; display: flex; gap: 6px; }
   #agent header { padding: 9px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
                   font-size: 13.5px; display: flex; align-items: center; gap: 9px; }
   #agent header .who { color: #6b7280; font-weight: 400; font-size: 12px; }
@@ -435,10 +444,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .asklink { color: #2c5a8f; cursor: pointer; text-decoration: underline dotted; }
 
   /* ---------------- Lean panel ---------------- */
-  #lean { position: fixed; top: 52px; bottom: 84px; left: 0; right: 0; margin: 0 auto;
-          width: min(780px, 94vw); background: #fff; border: 1px solid #b9b9b9;
-          border-radius: 6px; z-index: 46; box-shadow: 0 14px 44px rgba(0,0,0,.3);
-          display: none; flex-direction: column; }
+  #lean { position: fixed; right: 18px; top: 62px; width: min(520px, 44vw);
+          height: min(58vh, 460px); background: #fff; border: 1px solid #b9b9b9;
+          border-radius: 6px; z-index: 46; box-shadow: 0 10px 34px rgba(0,0,0,.28);
+          display: none; flex-direction: column; resize: both; overflow: hidden; }
   #lean.open { display: flex; }
   #lean header { padding: 9px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
                  font-size: 13.5px; display: flex; align-items: center; gap: 9px; }
@@ -542,7 +551,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div id="agent">
   <header>&#129302; Harness <span class="who" id="agentwho"></span>
-    <button id="agentclose">Close</button></header>
+    <span class="grip"><button class="collapse" data-for="agent" title="Collapse">&#9660;</button>
+    <button id="agentclose">Close</button></span></header>
   <div class="body">
     <textarea id="agenttask" spellcheck="false"
       placeholder="What should the harness do? (it runs with this project as its workspace root and can read, edit and run commands)"></textarea>
@@ -558,7 +568,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div id="lean">
   <header>&#129518; Lean <span class="who" id="leanwho"></span>
-    <button id="leanclose">Close</button></header>
+    <span class="grip"><button class="collapse" data-for="lean" title="Collapse">&#9660;</button>
+    <button id="leanclose">Close</button></span></header>
   <div class="body">
     <textarea id="leancode" spellcheck="false"
       placeholder="Lean 4 (Mathlib is imported automatically), e.g.&#10;example (x : ℝ) : x^2 + 2*x + 1 = (x + 1)^2 := by ring"></textarea>
@@ -1036,6 +1047,86 @@ function mdRenderInto(el, text) {
   mdTypeset(el);
 }
 
+// ---------------- floating panels ----------------
+// Drag by the header, resize from the corner (CSS), collapse with the chevron,
+// and remember the geometry per panel. Clicking a panel brings it to the front,
+// so the notebook, Lean and Harness can all be read at once.
+
+let __zTop = 44;
+
+function panelGeometry(el) {
+  const r = el.getBoundingClientRect();
+  return {left: Math.round(r.left), top: Math.round(r.top),
+          width: Math.round(r.width), height: Math.round(r.height), z: el.style.zIndex};
+}
+
+function savePanel(el, key) {
+  try { localStorage.setItem("rmath.panel." + key, JSON.stringify(panelGeometry(el))); } catch (e) {}
+}
+
+function restorePanel(el, key) {
+  let g = null;
+  try { g = JSON.parse(localStorage.getItem("rmath.panel." + key) || "null"); } catch (e) {}
+  if (!g) return;
+  // keep it on screen even if the window shrank
+  const w = Math.min(g.width, window.innerWidth - 40);
+  const h = Math.min(g.height, window.innerHeight - 120);
+  el.style.width = w + "px";
+  el.style.height = h + "px";
+  el.style.left = Math.max(8, Math.min(g.left, window.innerWidth - w - 8)) + "px";
+  el.style.top = Math.max(8, Math.min(g.top, window.innerHeight - h - 90)) + "px";
+  el.style.right = "auto";
+  el.style.bottom = "auto";
+}
+
+function bringToFront(el) {
+  __zTop += 1;
+  el.style.zIndex = String(__zTop);
+}
+
+/// Make a fixed-position panel draggable and remembered.
+function makeFloating(el, key) {
+  if (!el) return;
+  restorePanel(el, key);
+  const header = el.querySelector("header");
+  el.addEventListener("pointerdown", function () { bringToFront(el); });
+  if (header) {
+    header.addEventListener("pointerdown", function (ev) {
+      if (ev.target.closest("button")) return;      // let the buttons work
+      bringToFront(el);
+      const r = el.getBoundingClientRect();
+      const offX = ev.clientX - r.left, offY = ev.clientY - r.top;
+      el.style.right = "auto"; el.style.bottom = "auto";
+      el.style.left = r.left + "px"; el.style.top = r.top + "px";
+      const move = function (e) {
+        const x = Math.max(4, Math.min(e.clientX - offX, window.innerWidth - 60));
+        const y = Math.max(4, Math.min(e.clientY - offY, window.innerHeight - 40));
+        el.style.left = x + "px"; el.style.top = y + "px";
+      };
+      const up = function () {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        savePanel(el, key);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      ev.preventDefault();
+    });
+    header.addEventListener("dblclick", function (ev) {
+      if (!ev.target.closest("button")) el.classList.toggle("collapsed");
+    });
+  }
+  const grip = el.querySelector("button.collapse");
+  if (grip) grip.addEventListener("click", function () {
+    el.classList.toggle("collapsed");
+    grip.innerHTML = el.classList.contains("collapsed") ? "&#9650;" : "&#9660;";
+    savePanel(el, key);
+  });
+  // remember the size when the corner is dragged (CSS resize has no event)
+  el.addEventListener("pointerup", function () { savePanel(el, key); });
+  bringToFront(el);
+}
+
 // ---------------- Lean panel ----------------
 
 function leanStatus(text) { document.getElementById("leanstatus").textContent = text; }
@@ -1328,6 +1419,8 @@ function wireControls() {
   if (leanCellBtn) leanCellBtn.addEventListener('click', leanVerifyLastCell);
   const leanClose = document.getElementById('leanclose');
   if (leanClose) leanClose.addEventListener('click', hideLean);
+  makeFloating(document.getElementById('agent'), 'agent');
+  makeFloating(document.getElementById('lean'), 'lean');
   const helpClose = document.getElementById('helpclose');
   if (helpClose) helpClose.addEventListener('click', function () { showHelp(false); });
   const filter = document.getElementById('fnfilter');

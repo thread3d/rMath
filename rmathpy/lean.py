@@ -61,10 +61,8 @@ TACTICS = ("norm_num | ring | ring_nf | positivity | linarith | nlinarith | "
 
 def project_dir():
     """Directory of the Lean project (holds lakefile.* and lean-toolchain)."""
-    env = os.environ.get("RMATH_LEAN_PROJECT")
-    if env and os.path.isdir(env):
-        return env
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lean")
+    from .paths import lean_project
+    return lean_project()
 
 
 def elan_bin():
