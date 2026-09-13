@@ -451,14 +451,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
                        font-size: 12px; font-weight: 600; }
   #agent .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
   #agent .row .status { font-size: 11.5px; color: #6b7280; }
-  #agentlog .l-reasoning { color: #8fa6b8; font-style: italic; }
-  #agentlog .l-tool { color: #f0c674; }                 /* tool calls and results */
-  #agentlog .l-meta { color: #7f8c99; }                 /* context usage, notices */
-  #agentjump { display: none; position: absolute; right: 26px; bottom: 12px;
+  /* The log is a pale blue rather than black: it suits the rest of the palette,
+     keeps the reasoning/tool/answer distinction, and lets the platform's own
+     scrollbar read against it. Deliberately NO scrollbar styling: any
+     ::-webkit-scrollbar rule switches WebKit to classic bars, which paint a
+     full-height dark track — that was the "black bar" that could not be seen. */
+  #agentlog { flex: 0 1 auto; max-height: 30vh; min-height: 74px; overflow-y: auto;
+              background: #eaf1f8; color: #2f3a45; border: 1px solid #d3e0ec;
+              font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.45;
+              padding: 8px 10px; border-radius: 4px; white-space: pre-wrap; }
+  #agentlog .l-reasoning { color: #5c6b7a; font-style: italic; }
+  #agentlog .l-tool { color: #8a5a10; }                 /* tool calls and results */
+  #agentlog .l-meta { color: #6f7d8b; }                 /* context usage, notices */
+  #agentlog .l-answer { color: #1f2937; }
+  #agentjump { display: none; position: absolute; right: 16px; bottom: 14px;
               font-size: 11px; padding: 2px 8px; border-radius: 10px; cursor: pointer;
-              background: #2c5a8f; color: #fff; border: 1px solid #24486f; }
+              background: #2c5a8f; color: #fff; border: 1px solid #24486f; z-index: 3; }
   #agentjump.show { display: inline-block; }
-  #agentlog .l-answer { color: #eaf3ec; }
+  .logwrap { position: relative; display: flex; flex-direction: column; min-height: 0;
+             flex: 0 1 auto; }
+  #agentanswer.md { background: #fdfdfb; }
   #agentanswer.md p { margin: 0 0 7px; }
   #agentanswer.md h1, #agentanswer.md h2, #agentanswer.md h3 { margin: 9px 0 5px; line-height: 1.25; }
   #agentanswer.md h1 { font-size: 16px; } #agentanswer.md h2 { font-size: 14.5px; }
@@ -478,90 +490,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agentanswer.md hr { border: 0; border-top: 1px solid #e2ded2; margin: 9px 0; }
   #agentanswer.md a { color: #2c5a8f; }
   #agentanswer.md strong { font-weight: 700; }
-  /* Scrollbars are shown permanently and styled: macOS overlay bars are
-     invisible until you scroll, so the log gave no sign that earlier lines
-     existed. */
-  /* The standard scrollbar properties are the ones WebKit honours once
-     `scrollbar-width` is set; leaving `scrollbar-color` unset gave a black thumb
-     on the near-black log, which is invisible. Dark containers get a light thumb,
-     light containers a mid one. */
-  /* Hide the platform bar and draw the thumb ourselves: WebKit reported support
-     for scrollbar-color yet still painted a black bar on the near-black log, so
-     the indicator must not depend on platform painting. Scrolling itself is
-     unchanged (wheel, keys, drag). */
-  #agentlog, #leandiag, #leanstmt, #agentanswer, #historylist { scrollbar-width: none; }
-  #agentlog::-webkit-scrollbar, #leandiag::-webkit-scrollbar, #leanstmt::-webkit-scrollbar,
-  #agentanswer::-webkit-scrollbar, #historylist::-webkit-scrollbar { width: 0; height: 0; }
-  .logwrap { position: relative; display: flex; flex-direction: column; min-height: 0;
-             flex: 0 1 auto; }
-  .vbar { position: absolute; top: 2px; right: 2px; bottom: 2px; width: 10px;
-          border-radius: 5px; background: rgba(127, 140, 153, .18); display: none; z-index: 4; }
-  .vbar.show { display: block; }
-  .vbar .vthumb { position: absolute; left: 0; right: 0; min-height: 22px; border-radius: 5px;
-                  background: #8b98a5; cursor: pointer; }
-  .vbar .vthumb:hover { background: #aab6c2; }
-  .vbar.light { background: rgba(0, 0, 0, .08); }
-  .vbar.light .vthumb { background: #a9a49a; }
-  .vbar.light .vthumb:hover { background: #8e8a80; }
-  #agentlog::-webkit-scrollbar, #agentanswer::-webkit-scrollbar { width: 12px; height: 12px; }
-  #agentlog::-webkit-scrollbar-track, #agentanswer::-webkit-scrollbar-track { background: #0e1217; }
-  #agentlog::-webkit-scrollbar-thumb, #agentanswer::-webkit-scrollbar-thumb {
-      background: #8b98a5; border: 2px solid #0e1217; border-radius: 6px; }
-  #agentlog::-webkit-scrollbar-thumb:hover, #agentanswer::-webkit-scrollbar-thumb:hover {
-      background: #aab6c2; }
-  #leandiag::-webkit-scrollbar, #leanstmt::-webkit-scrollbar, #historylist::-webkit-scrollbar {
-      width: 12px; height: 12px; }
-  #leandiag::-webkit-scrollbar-track, #leanstmt::-webkit-scrollbar-track,
-  #historylist::-webkit-scrollbar-track { background: #f2f1ec; }
-  #leandiag::-webkit-scrollbar-thumb, #leanstmt::-webkit-scrollbar-thumb,
-  #historylist::-webkit-scrollbar-thumb { background: #c3c0b6; border: 2px solid #f2f1ec;
-      border-radius: 6px; }
-  #leandiag::-webkit-scrollbar-thumb:hover, #leanstmt::-webkit-scrollbar-thumb:hover,
-  #historylist::-webkit-scrollbar-thumb:hover { background: #a8a49a; }
-  #agentlog { flex: 0 1 auto; max-height: 30vh; min-height: 74px; overflow-y: scroll; background: #14181d; color: #cfe3d4;
-              font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.45;
-              padding: 8px 10px; border-radius: 4px; white-space: pre-wrap; }
-  #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; flex: 0 1 auto;
-                 max-height: 46vh; overflow: auto; font-size: 12.5px; display: none;
-                 font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-                 color: #1f2937; background: #fdfdfb; }
-  #agentanswer:not(.md) { white-space: pre-wrap; font-family: "SF Mono", Menlo, monospace; }
-  #agentanswer.show { display: block; }
-  .asklink { color: #2c5a8f; cursor: pointer; text-decoration: underline dotted; }
-
-  /* ---------------- Lean panel ---------------- */
-  #lean { position: fixed; right: 18px; top: 62px; width: min(520px, 44vw);
-          height: min(58vh, 460px); background: #fff; border: 1px solid #b9b9b9;
-          border-radius: 6px; z-index: 46; box-shadow: 0 10px 34px rgba(0,0,0,.28);
-          display: none; flex-direction: column; overflow: hidden; }
-  #lean.open { display: flex; }
-  #lean header { padding: 9px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
-                 font-size: 13.5px; display: flex; align-items: center; gap: 9px; }
-  #lean header .who { color: #6b7280; font-weight: 400; font-size: 12px; }
-  #lean header button { margin-left: auto; background: #eee; border: 1px solid #ccc;
-                        border-radius: 4px; cursor: pointer; padding: 3px 9px; font-size: 12px; }
-  #lean .body { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px;
-                min-height: 0; flex: 1; overflow: auto; }
-  #lean textarea { width: 100%; height: 104px; font-family: "SF Mono", Menlo, monospace;
-                   font-size: 12px; padding: 7px 8px; border: 1px solid #c5c5c5;
-                   border-radius: 4px; outline: 0; resize: vertical; }
-  #lean .row { display: flex; align-items: center; gap: 8px; }
-  #lean .row button { background: linear-gradient(#4a7fb5, #2c5a8f); border: 1px solid #24486f;
-                      color: #fff; padding: 6px 14px; border-radius: 4px; cursor: pointer;
-                      font-size: 12px; font-weight: 600; }
-  #lean .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
-  #lean .row .status { font-size: 11.5px; color: #6b7280; }
-  #leanstmt:empty { display: none; }
-  #leanstmt { border: 1px solid #e6e2d6; border-radius: 4px; padding: 8px 10px; background: #fbfaf6; }
-  #leandiag { flex: 0 1 auto; min-height: 42px; max-height: 46vh; overflow-y: scroll; font-family: "SF Mono", Menlo, monospace;
-              font-size: 11.5px; line-height: 1.5; }
-  #leandiag .d { padding: 3px 7px; border-radius: 3px; margin-bottom: 4px; white-space: pre-wrap; }
-  #leandiag .error { background: #fdecec; color: #8c1c1c; border-left: 3px solid #c0392b; }
-  #leandiag .warning { background: #fdf6e3; color: #7a5d10; border-left: 3px solid #d4a017; }
-  #leandiag .info { background: #eef4fa; color: #2c4a6b; border-left: 3px solid #4a7fb5; }
-  #leandiag .ok { background: #eaf6ec; color: #1e5b2a; border-left: 3px solid #2e8b57; font-weight: 600; }
-
-  /* ---------------- connection banner ---------------- */
   #netbanner { position: fixed; left: 0; right: 0; top: 0; z-index: 90; display: none;
                padding: 6px 12px; text-align: center; font-size: 12.5px;
                background: #fdecec; color: #8c1c1c; border-bottom: 1px solid #e6b8b8; }
@@ -1545,7 +1473,6 @@ function leanStatus(text) { document.getElementById("leanstatus").textContent = 
 
 function leanShowDiagnostics(res) {
   const box = document.getElementById("leandiag");
-  if (window.__leanBarSync) setTimeout(window.__leanBarSync, 0);
   box.innerHTML = "";
   (res.diagnostics || []).forEach(function (d) {
     const div = document.createElement("div");
@@ -1635,53 +1562,6 @@ async function leanVerifyLastCell() {
 
 // ---------------- harness (agent) panel ----------------
 
-// A drawn scroll indicator (see the CSS note): the platform bar stays hidden and
-// this thumb is ours, so its colour is guaranteed to be visible.
-function attachScrollbar(el, light) {
-  if (!el || !el.parentNode) return function () {};
-  const bar = document.createElement("div");
-  bar.className = "vbar" + (light ? " light" : "");
-  const thumb = document.createElement("div");
-  thumb.className = "vthumb";
-  bar.appendChild(thumb);
-  el.parentNode.appendChild(bar);
-
-  function sync() {
-    const overflow = el.scrollHeight - el.clientHeight;
-    const show = overflow > 4;
-    bar.classList.toggle("show", show);
-    if (!show) return;
-    const h = Math.max(22, Math.round(el.clientHeight * (el.clientHeight / el.scrollHeight)));
-    thumb.style.height = h + "px";
-    thumb.style.top = Math.round((el.scrollTop / overflow) * (el.clientHeight - h)) + "px";
-  }
-  el.addEventListener("scroll", sync);
-  if (typeof ResizeObserver !== "undefined") new ResizeObserver(sync).observe(el);
-  thumb.addEventListener("pointerdown", function (ev) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const startY = ev.clientY, startTop = el.scrollTop;
-    const overflow = el.scrollHeight - el.clientHeight;
-    const max = el.clientHeight - thumb.offsetHeight;
-    const move = function (e) {
-      el.scrollTop = startTop + (e.clientY - startY) / (max || 1) * overflow;
-    };
-    const up = function () {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  });
-  bar.addEventListener("pointerdown", function (ev) {
-    if (ev.target === thumb) return;
-    const r = bar.getBoundingClientRect();
-    el.scrollTop = ((ev.clientY - r.top) / r.height) * (el.scrollHeight - el.clientHeight);
-  });
-  sync();
-  return sync;
-}
-
 // The log follows the tail while you are at the bottom; scroll up and it stops
 // pulling you back (and offers a jump button) so earlier lines can be read while
 // a run is still going.
@@ -1707,7 +1587,6 @@ function agentLog(text, kind) {
   box.appendChild(span);
   if (followLog) box.scrollTop = box.scrollHeight;
   else updateJumpButton();
-  window.__agentBarSync && window.__agentBarSync();
 }
 let agentStatusText = "";
 function agentStatus(text) {
@@ -1935,8 +1814,6 @@ function wireControls() {
     runAgent({task: document.getElementById('agenttask').value});
   });
   const agentLogEl = document.getElementById('agentlog');
-  window.__agentBarSync = attachScrollbar(agentLogEl, false);
-  window.__leanBarSync = attachScrollbar(document.getElementById('leandiag'), true);
   if (agentLogEl) agentLogEl.addEventListener('scroll', function () {
     followLog = logAtBottom();
     updateJumpButton();
