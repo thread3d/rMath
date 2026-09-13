@@ -344,8 +344,23 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
     t_err = threading.Thread(target=pump, args=(proc.stderr, err_lines, "reasoning"), daemon=True)
     t_out.start()
     t_err.start()
+    # While the child runs, forward tool activity the proxy saw on the wire, so
+    # the panel shows what the agent is doing rather than a silent wait.
+    from . import ollama_proxy
     try:
-        code = proc.wait(timeout=timeout)
+        waited = 0.0
+        while waited < timeout:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.4)
+            waited += 0.4
+            if on_line is not None:
+                events = ollama_proxy.drain_events()
+                if not events:
+                    events = ollama_proxy.drain_events_remote()
+                for event in events:
+                    on_line(event, "tool")
+        code = proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
         code = -1

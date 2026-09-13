@@ -437,6 +437,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agent .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
   #agent .row .status { font-size: 11.5px; color: #6b7280; }
   #agentlog .l-reasoning { color: #8fa6b8; font-style: italic; }
+  #agentlog .l-tool { color: #f0c674; }                 /* tool calls and results */
   #agentlog .l-answer { color: #eaf3ec; }
   #agentanswer.md p { margin: 0 0 7px; }
   #agentanswer.md h1, #agentanswer.md h2, #agentanswer.md h3 { margin: 9px 0 5px; line-height: 1.25; }
@@ -1575,7 +1576,8 @@ async function leanVerifyLastCell() {
 function agentLog(text, kind) {
   const box = document.getElementById("agentlog");
   const span = document.createElement("span");
-  span.className = kind === "answer" ? "l-answer" : "l-reasoning";
+  span.className = kind === "answer" ? "l-answer"
+                 : kind === "tool" ? "l-tool" : "l-reasoning";
   span.textContent = text + "\n";
   box.appendChild(span);
   box.scrollTop = box.scrollHeight;
