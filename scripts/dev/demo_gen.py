@@ -20,8 +20,10 @@ Layout understood:
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEMO = os.path.join(ROOT, "demo/demo.mt")
@@ -40,10 +42,10 @@ MESSAGES_OK = {"1/0", "0/0"}
 
 
 class Kernel:
-    def __init__(self):
+    def __init__(self, workdir):
         self.proc = subprocess.Popen([KERNEL, "--server"], stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     text=True, cwd=os.environ.get("RMATH_WORKDIR", ROOT))
+                                     text=True, cwd=workdir)
         self.n = 0
 
     def eval(self, text):
@@ -66,7 +68,14 @@ class Kernel:
 def main():
     text = open(DEMO).read()
     lines = text.splitlines()
-    k = Kernel()
+    # Run in a private copy of demo/: the file-I/O section writes files, and
+    # doing that in the repository races a running app doing the same thing.
+    workdir = tempfile.mkdtemp(prefix="rmath-demo-")
+    try:
+        shutil.copytree(os.path.join(ROOT, "demo"), os.path.join(workdir, "demo"))
+    except OSError:
+        os.makedirs(os.path.join(workdir, "demo"), exist_ok=True)
+    k = Kernel(workdir)
     problems = []
     examples = 0
     statements = 0
@@ -105,6 +114,7 @@ def main():
             if r.get("status") != "ok":
                 problems.append((line_no, line[:60], "statement error: %s" % r.get("error", "")))
     k.close()
+    shutil.rmtree(workdir, ignore_errors=True)
 
     print("checked %d examples and %d statements in demo/demo.mt" % (examples, statements))
     for line_no, expr, why in problems:
