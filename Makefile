@@ -137,15 +137,26 @@ app-stop:
 	@echo "rMath app stopped"
 
 app-install: app-stop app
-	mkdir -p $(APPDIR)
-	rm -rf $(APPDIR)/rMath.app
-	cp -R $(APP) $(APPDIR)/rMath.app
-	@mkdir -p "$(HOME)/Library/Application Support/rMath"
-	@printf '%s\n' "$(ROOT)" > "$(HOME)/Library/Application Support/rMath/workspace"
-	@echo "    reports will be written to $(ROOT)/.shots/reports"
-	@/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-	  -f $(APPDIR)/rMath.app >/dev/null 2>&1 || true
-	@echo "installed: $(APPDIR)/rMath.app  (open it from Finder or Spotlight)"
+	@# Exactly one installation, in the place the Finder, Launchpad and Spotlight
+	@# actually look: /Applications when it is writable, otherwise ~/Applications.
+	@# (Two copies would go stale against each other and make `open -a rMath`
+	@# ambiguous.)
+	@if [ -w /Applications ]; then \
+	  mkdir -p /Applications && rm -rf /Applications/rMath.app && \
+	  cp -R $(APP) /Applications/rMath.app && \
+	  rm -rf $(APPDIR)/rMath.app && INSTALLED=/Applications/rMath.app; \
+	else \
+	  mkdir -p $(APPDIR) && rm -rf $(APPDIR)/rMath.app && \
+	  cp -R $(APP) $(APPDIR)/rMath.app && INSTALLED=$(APPDIR)/rMath.app; \
+	fi; \
+	LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister; \
+	$$LSREG -f "$$INSTALLED" >/dev/null 2>&1 || true; \
+	mdimport "$$INSTALLED" >/dev/null 2>&1 || true; \
+	mkdir -p "$(HOME)/Library/Application Support/rMath"; \
+	printf '%s\n' "$(ROOT)" > "$(HOME)/Library/Application Support/rMath/workspace"; \
+	echo "    installed: $$INSTALLED"; \
+	echo "    reports will be written to $(ROOT)/.shots/reports"; \
+	echo "    launch with: open -a rMath   (or Spotlight: Cmd-Space, type rMath)"
 
 app-uninstall: app-stop
 	rm -rf $(APPDIR)/rMath.app
