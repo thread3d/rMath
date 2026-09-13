@@ -84,7 +84,9 @@ class Handler(BaseHTTPRequestHandler):
             from . import harness
             url, source = harness.endpoint()
             from .paths import preflight
+            from . import ollama_proxy
             self._json({"preflight": preflight(),
+                        "thinking_proxy": ollama_proxy.stats() if ollama_proxy.running() else None,
                         "running": harness.current(),
                         "available": harness.available(),
                         "dsh": harness.find_dsh(),
@@ -1948,6 +1950,18 @@ def main():
 
     # Warm the kernel so the first cell evaluates quickly.
     get_kernel()
+    # Put the thinking proxy in front of a local Ollama: the harness's adapter
+    # reads `reasoning_content`, Ollama sends `reasoning`, and without the rename
+    # the panel shows nothing until the final answer.
+    try:
+        from . import harness, ollama_proxy
+        if harness.ollama_available() and os.environ.get("RMATH_NO_THINKING_PROXY", "") not in ("1", "true"):
+            url = ollama_proxy.start()
+            if url:
+                print("rMath thinking proxy: %s -> %s" % (url, ollama_proxy.UPSTREAM), flush=True)
+    except Exception as e:
+        print("rMath: thinking proxy not started: %s" % e, flush=True)
+
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print("rMath notebook: http://127.0.0.1:%d" % args.port, flush=True)
     try:

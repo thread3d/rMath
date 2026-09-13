@@ -15,6 +15,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -72,6 +73,15 @@ def endpoint():
     env = os.environ.get("DEEPSEEK_BASE_URL", "").strip()
     if env:
         return env, "environment"
+    # A local Ollama streams the model's thinking as `reasoning`, which the
+    # harness's adapter does not read; the proxy renames it so the panel can show
+    # the thinking as it happens.
+    if os.environ.get("RMATH_NO_THINKING_PROXY", "") in ("1", "true"):
+        pass
+    else:
+        from . import ollama_proxy
+        if ollama_proxy.running():
+            return ollama_proxy.start() or OLLAMA_DEFAULT, "local ollama (thinking proxy)"
     for line in _keyfile_lines():
         if line.startswith("DEEPSEEK_BASE_URL="):
             return line.split("=", 1)[1].strip(), "keyfile"
@@ -230,6 +240,43 @@ def cancel_current():
     return {"status": "ok", "cancelled": True, "pid": proc.pid}
 
 
+def proxy_patch():
+    """A per-run overlay that routes the model through the thinking proxy.
+
+    The adapter resolves its endpoint as `config.baseURL ?? $DEEPSEEK_BASE_URL`,
+    so the user settings document wins over the environment; disabling that row
+    for this invocation lets the overlay supply the endpoint instead. Nothing
+    global is modified, so a terminal `dsh` run is unaffected.
+    """
+    from . import ollama_proxy
+    if not ollama_proxy.running():
+        return None
+    url = ollama_proxy.start()
+    if not url:
+        return None
+    model = harness_model() or "deepseek-flash"
+    body = ("# written by rMath: show the model's thinking while it works\n"
+            "- id: settings\n"
+            "  disabled: true\n"
+            "- id: llm-deepseek\n"
+            "  config:\n"
+            "    baseURL: %s\n"
+            "- id: agent-default-model\n"
+            "  config:\n"
+            "    provider: deepseek-official\n"
+            "    model: %s\n" % (url, model))
+    for path in (os.path.join(os.path.dirname(keyfile()), "thinking.patch.yml"),
+                 os.path.join(tempfile.gettempdir(), "rmath-thinking.patch.yml")):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(body)
+            return path
+        except OSError:
+            continue
+    return None
+
+
 def run_task(task, timeout=1800, on_line=None, cwd=None):
     """Run one headless task.
 
@@ -246,7 +293,11 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
             "exit": None,
         }
     root = cwd or workspace_root()
-    cmd = [dsh, "--profile", profile(), task]
+    patch = proxy_patch()
+    cmd = [dsh, "--profile", profile()]
+    if patch:
+        cmd += ["--patch", patch]
+    cmd.append(task)
     # A minimal PATH cannot run a node script: `dsh` would die with
     # "env: node: No such file or directory", which is exactly what a bundled
     # app showed.
@@ -317,6 +368,7 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
         "workspace": root,
         "endpoint": url,
         "endpoint_source": source,
+        "thinking_patch": patch,
     }
 
 
