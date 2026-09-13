@@ -387,8 +387,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agent { position: fixed; left: 18px; bottom: 96px; width: min(520px, 44vw);
            height: min(58vh, 460px); background: #fff; border: 1px solid #b9b9b9;
            border-radius: 6px; z-index: 45; box-shadow: 0 10px 34px rgba(0,0,0,.28);
-           display: none; flex-direction: column; resize: both; overflow: hidden; }
+           display: none; flex-direction: column; overflow: hidden; }
   #agent.open { display: flex; }
+  /* Resize affordances: a visible corner grip plus edge hot zones. The CSS
+     `resize` property alone was unusable here — its handle sits underneath the
+     panel's own scrollers, so a drag landed on a scrollbar instead. */
+  .rz { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+        cursor: nwse-resize; z-index: 6;
+        background:
+          linear-gradient(135deg, transparent 0 52%, #b6b6b6 52% 62%, transparent 62%),
+          linear-gradient(135deg, transparent 0 70%, #b6b6b6 70% 80%, transparent 80%); }
+  .rz:hover { background:
+          linear-gradient(135deg, transparent 0 52%, #4a7fb5 52% 62%, transparent 62%),
+          linear-gradient(135deg, transparent 0 70%, #4a7fb5 70% 80%, transparent 80%); }
+  .rz-edge { position: absolute; z-index: 5; }
+  .rz-right { top: 0; right: 0; width: 6px; height: 100%; cursor: ew-resize; }
+  .rz-bottom { left: 0; bottom: 0; height: 6px; width: 100%; cursor: ns-resize; }
+  #agent.collapsed .rz-right, #lean.collapsed .rz-right,
+  #agent.collapsed .rz-bottom, #lean.collapsed .rz-bottom { display: none; }
   #agent.collapsed, #lean.collapsed { height: auto !important; }
   #agent.collapsed .body, #agent.collapsed #agentanswer,
   #lean.collapsed .body { display: none; }
@@ -432,11 +448,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agentanswer.md hr { border: 0; border-top: 1px solid #e2ded2; margin: 9px 0; }
   #agentanswer.md a { color: #2c5a8f; }
   #agentanswer.md strong { font-weight: 700; }
-  #agentlog { flex: 0 1 auto; max-height: 34%; min-height: 74px; overflow: auto; background: #14181d; color: #cfe3d4;
+  #agentlog { flex: 0 1 auto; max-height: 30vh; min-height: 74px; overflow: auto; background: #14181d; color: #cfe3d4;
               font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.45;
               padding: 8px 10px; border-radius: 4px; white-space: pre-wrap; }
-  #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; flex: 1 1 auto;
-                 overflow: auto; font-size: 12.5px; display: none;
+  #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; flex: 0 1 auto;
+                 max-height: 46vh; overflow: auto; font-size: 12.5px; display: none;
                  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
                  color: #1f2937; background: #fdfdfb; }
   #agentanswer:not(.md) { white-space: pre-wrap; font-family: "SF Mono", Menlo, monospace; }
@@ -447,7 +463,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #lean { position: fixed; right: 18px; top: 62px; width: min(520px, 44vw);
           height: min(58vh, 460px); background: #fff; border: 1px solid #b9b9b9;
           border-radius: 6px; z-index: 46; box-shadow: 0 10px 34px rgba(0,0,0,.28);
-          display: none; flex-direction: column; resize: both; overflow: hidden; }
+          display: none; flex-direction: column; overflow: hidden; }
   #lean.open { display: flex; }
   #lean header { padding: 9px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
                  font-size: 13.5px; display: flex; align-items: center; gap: 9px; }
@@ -467,7 +483,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #lean .row .status { font-size: 11.5px; color: #6b7280; }
   #leanstmt:empty { display: none; }
   #leanstmt { border: 1px solid #e6e2d6; border-radius: 4px; padding: 8px 10px; background: #fbfaf6; }
-  #leandiag { flex: 1; min-height: 80px; overflow: auto; font-family: "SF Mono", Menlo, monospace;
+  #leandiag { flex: 0 1 auto; min-height: 42px; max-height: 46vh; overflow: auto; font-family: "SF Mono", Menlo, monospace;
               font-size: 11.5px; line-height: 1.5; }
   #leandiag .d { padding: 3px 7px; border-radius: 3px; margin-bottom: 4px; white-space: pre-wrap; }
   #leandiag .error { background: #fdecec; color: #8c1c1c; border-left: 3px solid #c0392b; }
@@ -1079,9 +1095,67 @@ function restorePanel(el, key) {
   el.style.bottom = "auto";
 }
 
+/// Forget the remembered geometry and put the panels back to their defaults.
+function resetPanelLayout() {
+  try {
+    localStorage.removeItem("rmath.panel.lean");
+    localStorage.removeItem("rmath.panel.agent");
+  } catch (e) {}
+  [["lean", "right", "top"], ["agent", "left", "bottom"]].forEach(function (spec) {
+    const el = document.getElementById(spec[0]);
+    if (!el) return;
+    el.style.width = "";
+    el.style.height = "";
+    el.style.left = spec[1] === "left" ? "18px" : "auto";
+    el.style.right = spec[1] === "right" ? "18px" : "auto";
+    el.style.top = spec[2] === "top" ? "62px" : "auto";
+    el.style.bottom = spec[2] === "bottom" ? "96px" : "auto";
+  });
+}
+
 function bringToFront(el) {
   __zTop += 1;
   el.style.zIndex = String(__zTop);
+}
+
+/// Add the corner grip and edge hot zones that resize a panel.
+function makeResizable(el, key) {
+  const grip = document.createElement("div");
+  grip.className = "rz";
+  grip.title = "Resize";
+  el.appendChild(grip);
+  const right = document.createElement("div");
+  right.className = "rz-edge rz-right";
+  const bottom = document.createElement("div");
+  bottom.className = "rz-edge rz-bottom";
+  el.appendChild(right);
+  el.appendChild(bottom);
+
+  const startResize = function (ev, dirs) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    bringToFront(el);
+    const r = el.getBoundingClientRect();
+    const sx = ev.clientX, sy = ev.clientY, sw = r.width, sh = r.height;
+    const move = function (e) {
+      let w = dirs.indexOf("e") >= 0 ? sw + (e.clientX - sx) : sw;
+      let h = dirs.indexOf("s") >= 0 ? sh + (e.clientY - sy) : sh;
+      w = Math.max(300, Math.min(w, window.innerWidth - 16));
+      h = Math.max(150, Math.min(h, window.innerHeight - 16));
+      el.style.width = w + "px";
+      el.style.height = h + "px";
+    };
+    const up = function () {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      savePanel(el, key);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  grip.addEventListener("pointerdown", function (e) { startResize(e, "se"); });
+  right.addEventListener("pointerdown", function (e) { startResize(e, "e"); });
+  bottom.addEventListener("pointerdown", function (e) { startResize(e, "s"); });
 }
 
 /// Make a fixed-position panel draggable and remembered.
@@ -1124,6 +1198,7 @@ function makeFloating(el, key) {
   });
   // remember the size when the corner is dragged (CSS resize has no event)
   el.addEventListener("pointerup", function () { savePanel(el, key); });
+  makeResizable(el, key);
   bringToFront(el);
 }
 
@@ -1371,6 +1446,7 @@ function wireControls() {
     showHelp: function () { showHelp(true); },
     showAgent: function () { showAgent(""); },
     showLean: function () { showLean(); },
+    resetPanelLayout: function () { resetPanelLayout(); },
   };
   document.querySelectorAll('#ribbon .tb').forEach(b => {
     const name = b.dataset.action;

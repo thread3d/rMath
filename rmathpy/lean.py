@@ -47,6 +47,10 @@ CONSTS = {
     "E": "Real.exp 1",
     "Infinity": "(0 : ℝ)",  # not translated faithfully; refused below
 }
+# Silence the linters that flag the tactic alternatives that did not run: the
+# chain is deliberately a set of fallbacks.
+QUIET = "set_option linter.unreachableTactic false\nset_option linter.unusedTactic false\n\n"
+
 # Functions that are real-valued, forcing the ℝ interpretation.
 REAL_FUNCS = {v for k, v in FUNCS.items() if v.startswith("Real.")}
 
@@ -751,7 +755,7 @@ def derivative_statement(lhs_text, rhs_text, var):
     # `simpa using h.deriv` closes the easy cases; otherwise rewrite with the
     # lemma's derivative and finish algebraically, with a `simp` step to reduce
     # `id x` and `* 1` that `ring_nf` leaves alone.
-    code = ("example %s : %s := by\n" % (binders, prop) +
+    code = (QUIET + "example %s : %s := by\n" % (binders, prop) +
             "  have h := (%s)\n"
             "  solve\n"
             "    | simpa using h.deriv\n"
@@ -821,7 +825,8 @@ def calculus_statement(lhs_text, rhs_text):
             Translator(ascribe=True, ty="ℝ").expr(a),
             Translator(ascribe=True, ty="ℝ").expr(b),
             f, rhs)
-        return ("example : %s := by\n  solve | %s\n" % (prop, INTEGRAL_TACTICS), prop, "ℝ", [])
+        return (QUIET + "example : %s := by\n  solve | %s\n" % (prop, INTEGRAL_TACTICS),
+                prop, "ℝ", [])
     if kind == "indefinite":
         raise ValueError("antiderivatives need a derivative proof, which is not "
                          "wired up yet (this Mathlib has no `deriv` tactic)")
@@ -867,7 +872,8 @@ def statement(lhs_text, rhs_text=None, relation="="):
         vs = sorted(set(probe_l.vars) | set(probe_r.vars))
         prop = "%s %s %s" % (typed(lhs_text, ty, vs), relation, typed(rhs_text, ty, vs))
     binders = ("(" + " ".join(vs) + " : %s) " % ty) if vs else ""
-    return "example %s: %s := by\n  solve | %s\n" % (binders, prop, TACTICS), prop, ty, vs
+    return (QUIET + "example %s: %s := by\n  solve | %s\n" % (binders, prop, TACTICS),
+            prop, ty, vs)
 
 
 _VERIFY_CACHE = {}
