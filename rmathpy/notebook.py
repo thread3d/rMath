@@ -74,6 +74,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"names": names})
         elif path == "/api/health":
             self._json({"ok": True})
+        elif path == "/api/lean/status":
+            from . import lean
+            self._json({"available": lean.available(),
+                        "lake": lean.lake(),
+                        "project": lean.project_dir(),
+                        "toolchain": lean.toolchain()})
         elif path == "/api/agent/status":
             from . import harness
             url, source = harness.endpoint()
@@ -141,6 +147,13 @@ class Handler(BaseHTTPRequestHandler):
             self.api_agent(body)
         elif path == "/api/agent/stream":
             self.api_agent_stream(body)
+        elif path == "/api/lean/check":
+            from . import lean
+            self._json(lean.run_lean(body.get("code", "")))
+        elif path == "/api/lean/verify":
+            from . import lean
+            self._json(lean.verify(body.get("input", ""), body.get("result") or None,
+                                   body.get("relation", "=")))
         elif path == "/api/agent/key":
             from . import harness
             key = (body.get("key") or "").strip()
@@ -421,6 +434,38 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #agentanswer.show { display: block; }
   .asklink { color: #2c5a8f; cursor: pointer; text-decoration: underline dotted; }
 
+  /* ---------------- Lean panel ---------------- */
+  #lean { position: fixed; top: 52px; bottom: 84px; left: 0; right: 0; margin: 0 auto;
+          width: min(780px, 94vw); background: #fff; border: 1px solid #b9b9b9;
+          border-radius: 6px; z-index: 46; box-shadow: 0 14px 44px rgba(0,0,0,.3);
+          display: none; flex-direction: column; }
+  #lean.open { display: flex; }
+  #lean header { padding: 9px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
+                 font-size: 13.5px; display: flex; align-items: center; gap: 9px; }
+  #lean header .who { color: #6b7280; font-weight: 400; font-size: 12px; }
+  #lean header button { margin-left: auto; background: #eee; border: 1px solid #ccc;
+                        border-radius: 4px; cursor: pointer; padding: 3px 9px; font-size: 12px; }
+  #lean .body { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px;
+                min-height: 0; flex: 1; overflow: auto; }
+  #lean textarea { width: 100%; height: 104px; font-family: "SF Mono", Menlo, monospace;
+                   font-size: 12px; padding: 7px 8px; border: 1px solid #c5c5c5;
+                   border-radius: 4px; outline: 0; resize: vertical; }
+  #lean .row { display: flex; align-items: center; gap: 8px; }
+  #lean .row button { background: linear-gradient(#4a7fb5, #2c5a8f); border: 1px solid #24486f;
+                      color: #fff; padding: 6px 14px; border-radius: 4px; cursor: pointer;
+                      font-size: 12px; font-weight: 600; }
+  #lean .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
+  #lean .row .status { font-size: 11.5px; color: #6b7280; }
+  #leanstmt:empty { display: none; }
+  #leanstmt { border: 1px solid #e6e2d6; border-radius: 4px; padding: 8px 10px; background: #fbfaf6; }
+  #leandiag { flex: 1; min-height: 80px; overflow: auto; font-family: "SF Mono", Menlo, monospace;
+              font-size: 11.5px; line-height: 1.5; }
+  #leandiag .d { padding: 3px 7px; border-radius: 3px; margin-bottom: 4px; white-space: pre-wrap; }
+  #leandiag .error { background: #fdecec; color: #8c1c1c; border-left: 3px solid #c0392b; }
+  #leandiag .warning { background: #fdf6e3; color: #7a5d10; border-left: 3px solid #d4a017; }
+  #leandiag .info { background: #eef4fa; color: #2c4a6b; border-left: 3px solid #4a7fb5; }
+  #leandiag .ok { background: #eaf6ec; color: #1e5b2a; border-left: 3px solid #2e8b57; font-weight: 600; }
+
   /* ---------------- toast / autocomplete ---------------- */
   #toast { position: fixed; bottom: 78px; left: 0; right: 0; text-align: center; z-index: 60;
            pointer-events: none; }
@@ -460,6 +505,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
           >Standard</button>
   <span class="spacer"></span>
   <span class="brand">rMath</span>
+  <button class="tb" data-action="showLean" title="Check Lean 4 code, or verify the last cell in Lean">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5h6M5 9h3.5"/><path d="M10.5 9.5l1 1 2-2.4"/></svg></button>
   <button class="tb" data-action="showAgent" title="Ask the DeepSeek Harness (it can read and edit this project)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="5" width="10" height="7.5" rx="1.6"/><path d="M6.2 8.2v1.2M9.8 8.2v1.2M8 5V3M4.6 3.4 3.6 2.2M11.4 3.4l1-1.2"/></svg></button>
   <button class="tb" id="reportbtn"
@@ -508,6 +555,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div id="agentlog"></div>
   </div>
   <div id="agentanswer"></div>
+</div>
+<div id="lean">
+  <header>&#129518; Lean <span class="who" id="leanwho"></span>
+    <button id="leanclose">Close</button></header>
+  <div class="body">
+    <textarea id="leancode" spellcheck="false"
+      placeholder="Lean 4 (Mathlib is imported automatically), e.g.&#10;example (x : ℝ) : x^2 + 2*x + 1 = (x + 1)^2 := by ring"></textarea>
+    <div class="row">
+      <button id="leancheck">Check</button>
+      <button id="leancell" class="ghost">Verify the last cell</button>
+      <span class="status" id="leanstatus"></span>
+    </div>
+    <div id="leanstmt" class="md"></div>
+    <div id="leandiag"></div>
+  </div>
 </div>
 <div id="ac"></div>
 <div id="toast"></div>
@@ -974,6 +1036,94 @@ function mdRenderInto(el, text) {
   mdTypeset(el);
 }
 
+// ---------------- Lean panel ----------------
+
+function leanStatus(text) { document.getElementById("leanstatus").textContent = text; }
+
+function leanShowDiagnostics(res) {
+  const box = document.getElementById("leandiag");
+  box.innerHTML = "";
+  (res.diagnostics || []).forEach(function (d) {
+    const div = document.createElement("div");
+    div.className = "d " + d.severity;
+    div.textContent = d.severity + " (line " + d.line + ", col " + d.col + "): " + d.message;
+    box.appendChild(div);
+  });
+  if (res.error) {
+    const div = document.createElement("div");
+    div.className = "d error";
+    div.textContent = res.error;
+    box.appendChild(div);
+  }
+  if (!(res.diagnostics || []).length && !res.error) {
+    const div = document.createElement("div");
+    div.className = "d ok";
+    div.textContent = "Lean accepted the code with no errors or warnings.";
+    box.appendChild(div);
+  }
+}
+
+function showLean(task) {
+  document.getElementById("lean").classList.add("open");
+  document.getElementById("leancode").focus();
+  fetch("/api/lean/status").then(r => r.json()).then(s => {
+    document.getElementById("leanwho").textContent = s.available
+      ? ((s.toolchain || "Lean") + "  ·  " + s.project)
+      : "Lean not found — install elan/lake";
+  }).catch(() => {});
+}
+function hideLean() { document.getElementById("lean").classList.remove("open"); }
+
+async function leanCheck(code) {
+  leanStatus("checking…");
+  const stmt = document.getElementById("leanstmt");
+  stmt.innerHTML = "";
+  try {
+    const r = await fetch("/api/lean/check", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({code: code})});
+    const res = await r.json();
+    leanShowDiagnostics(res);
+    leanStatus(res.status === "ok" ? "checked" : "errors");
+  } catch (e) { leanStatus("failed: " + e); }
+}
+
+async function leanVerifyLastCell() {
+  const cells = [...notebook.querySelectorAll(".cell")];
+  let input = inp.value, result = "";
+  const cell = cells[cells.length - 1];
+  if (cell && !input) {
+    const inC = cell.querySelector(".inrow .content");
+    input = (inC && inC.title) || "";
+    result = cell.dataset.result || "";
+  }
+  if (!input) { leanStatus("nothing to verify — evaluate a cell first"); return; }
+  leanStatus("translating…");
+  try {
+    const r = await fetch("/api/lean/verify", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({input: input, result: result})});
+    const res = await r.json();
+    const stmt = document.getElementById("leanstmt");
+    if (res.lean) {
+      mdRenderInto(stmt, "```lean\n" + res.lean.trim() + "\n```");
+    } else {
+      stmt.innerHTML = "";
+    }
+    leanShowDiagnostics(res);
+    const badge = res.outcome === "verified" ? "VERIFIED by Lean"
+                : res.outcome === "unproved" ? "NOT PROVED" : "cannot verify";
+    leanStatus(badge + (res.type ? "  (" + res.type + ")" : ""));
+    if (res.outcome === "verified") {
+      const box = document.getElementById("leandiag");
+      const div = document.createElement("div");
+      div.className = "d ok";
+      div.textContent = "✓ " + (res.proposition || "") + "   — proved in " + (res.type || "") +
+                        (res.variables && res.variables.length ? " with " + res.variables.join(", ") : "");
+      box.insertBefore(div, box.firstChild);
+    }
+  } catch (e) { leanStatus("failed: " + e); }
+}
+
 // ---------------- harness (agent) panel ----------------
 
 function agentLog(text, kind) {
@@ -1129,6 +1279,7 @@ function wireControls() {
     zoomIn: zoomIn,
     showHelp: function () { showHelp(true); },
     showAgent: function () { showAgent(""); },
+    showLean: function () { showLean(); },
   };
   document.querySelectorAll('#ribbon .tb').forEach(b => {
     const name = b.dataset.action;
@@ -1169,6 +1320,14 @@ function wireControls() {
   });
   const agentClose = document.getElementById('agentclose');
   if (agentClose) agentClose.addEventListener('click', hideAgent);
+  const leanCheckBtn = document.getElementById('leancheck');
+  if (leanCheckBtn) leanCheckBtn.addEventListener('click', function () {
+    leanCheck(document.getElementById('leancode').value);
+  });
+  const leanCellBtn = document.getElementById('leancell');
+  if (leanCellBtn) leanCellBtn.addEventListener('click', leanVerifyLastCell);
+  const leanClose = document.getElementById('leanclose');
+  if (leanClose) leanClose.addEventListener('click', hideLean);
   const helpClose = document.getElementById('helpclose');
   if (helpClose) helpClose.addEventListener('click', function () { showHelp(false); });
   const filter = document.getElementById('fnfilter');

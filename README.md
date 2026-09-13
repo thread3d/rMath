@@ -184,6 +184,53 @@ because it renders its own view rather than capturing the display.
   <out.png>` renders a palette standalone. `rMath --dump-menus` prints the
   menu tree.
 
+### Lean integration (Lean 4 + Mathlib)
+
+rMath can hand a claim to **Lean 4** and let the kernel-checked proof decide it.
+The project lives in `lean/` (Mathlib; its ~8 GB `.lake/` build tree is
+gitignored):
+
+| | |
+|---|---|
+| install | `elan` at `~/.elan`, toolchain `leanprover/lean4:v4.34.0-rc2` (pinned by `lean/lean-toolchain`, matching Mathlib), Mathlib via `lake exe cache get` |
+| project | `RMATH_LEAN_PROJECT` overrides `lean/` |
+| tests | `make lean-test` — translation tests that need no Lean |
+
+**What gets verified.** `Lean.verify` translates the claim to a Lean statement
+and runs `solve | norm_num | ring | ring_nf | positivity | linarith | nlinarith |
+omega | simp | decide | rfl`, so only a tactic that *closes* the goal counts:
+
+| claim | outcome |
+|---|---|
+| `1/2 + 1/3 = 5/6`, `2^10 = 1024`, `20! = 2432902008176640000` | verified |
+| `Factor[x^2 - 1] = (-1 + x)(1 + x)`, `Expand[(x+1)^3] = 1 + 3x + 3x^2 + x^3` | verified (`ring`) |
+| `Sqrt[2]^2 = 2`, `Sin[Pi/6] = 1/2` | verified (over ℝ) |
+| `x^2 >= 0` | verified (`positivity`) |
+| `Integrate[x^2, {x, 0, 1}] = 1/3` | verified (`integral_pow`) — kernel calculus cross-checked |
+| `1/2 + 1/3 = 2/3` (false) | **not proved** |
+
+Two subtleties worth knowing, both found by testing rather than reasoning:
+
+- **Every numeral carries its type.** Without ascription Lean defaults `1/2` to
+  ℕ, where `1/2 + 1/3 = 2/3` is `0 = 0` — a *false positive*. Numerals are now
+  ascribed (ℚ, or ℝ when `Real.*`/`Pi` appears) and `^`/`Nat.factorial`
+  arguments as ℕ.
+- **`solve`, not `first`.** `first | norm_num | ring` stops at `norm_num` when it
+  merely simplifies the goal, leaving it unsolved; `solve` requires a tactic that
+  closes it.
+
+**Refused on purpose** (with the reason shown in the panel): `N[...]` machine
+approximations, complex numbers, `GCD`/`LCM`, bare expressions that are not
+claims, and derivatives — this Mathlib has no `deriv` tactic, so `D[...]`
+cross-checking still needs explicit `deriv_*` lemma wiring.
+
+**In the app**: the Lean ribbon button (or **Help ▸ Lean… ⇧⌘L**) opens a panel
+with a snippet box (Mathlib is imported automatically), a **Check** button, and
+severity-coloured diagnostics with line/column; **Verify the last cell**
+(⌥⌘V) takes the cell's input and result, shows the generated Lean statement and
+the outcome. Endpoints: `GET /api/lean/status`, `POST /api/lean/check`,
+`POST /api/lean/verify`.
+
 ### Harness integration (DeepSeek Harness)
 
 The notebook can hand work to the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)

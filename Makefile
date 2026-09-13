@@ -20,7 +20,7 @@ BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
 .PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
-        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck
+        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test
 
 help:
 	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -93,6 +93,10 @@ report:
 #   make uitest          # against http://127.0.0.1:8787
 uitest:
 	@bash $(ROOT)/scripts/dev/uitest.sh "$(URL)"
+
+# Translation tests for the Lean bridge (no Lean needed).
+lean-test:
+	@python3 $(ROOT)/scripts/dev/lean_translation_test.py
 
 # Check that every TeX string the demo produces parses in KaTeX.
 #   make texcheck            # loads demo/demo.mt

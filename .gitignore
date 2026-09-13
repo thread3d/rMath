@@ -31,3 +31,10 @@ scripts/dev/screenshot
 
 # verification screenshots
 .shots/
+
+# Lean/Mathlib project: keep the project files, never the multi-GB build tree
+lean/.lake/
+lean/*.olean
+lean/Debug*.lean
+lean/RMathVerify.lean
+lean/RMathCheck.lean

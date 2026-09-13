@@ -573,6 +573,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc func menuResetKernel() { runJS("resetKernel()") }
     @objc func menuHelp() { runJS("showHelp(true)") }
     @objc func menuAskHarness() { runJS("showAgent('')") }
+    @objc func menuLean() { runJS("showLean()") }
+    @objc func menuLeanVerify() { runJS("showLean(); setTimeout(leanVerifyLastCell, 300)") }
     @objc func menuFixBug() { runJS("askAboutCell()") }
     @objc func menuStandardForm() { runJS("setForm('standard')") }
     @objc func menuTraditionalForm() { runJS("setForm('traditional')") }
@@ -853,6 +855,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         addItem(help, "rMath Help", #selector(menuHelp), "?", target: self)
         addItem(help, "Ask the Harness…", #selector(menuAskHarness), "H",
                 [.command, .shift], target: self)
+        addItem(help, "Lean…", #selector(menuLean), "L",
+                [.command, .shift], target: self)
+        addItem(help, "Verify in Lean", #selector(menuLeanVerify), "V",
+                [.command, .option], target: self)
         addItem(help, "Report a Bug…", #selector(menuReportBug), "B",
                 [.command, .shift], target: self)
         addItem(help, "Function List", #selector(menuFunctionList), "", target: self)
