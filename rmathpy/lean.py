@@ -13,10 +13,13 @@ which avoids writing yet another parser.
 """
 
 import ast
+import atexit
+import json
 import os
 import re
 import subprocess
-import tempfile
+import threading
+import time
 
 # Functions whose rMath name maps to a Lean name. Names not listed are treated
 # as free variables (or, for known constants, as Lean constants).
@@ -100,6 +103,246 @@ def toolchain():
         return ""
 
 
+
+# ------------------------------------------------------- persistent LSP server
+#
+# One `lean --server` per project, spoken to over LSP. Mathlib is loaded once,
+# so each later check costs elaboration only instead of a full import.
+
+class LeanServer:
+    """A long-lived `lake env lean --server` conversation."""
+
+    def __init__(self, project, timeout=600):
+        self.project = project
+        self.uri = "file://" + os.path.join(project, "RMathSession.lean")
+        self.path = os.path.join(project, "RMathSession.lean")
+        self.timeout = timeout
+        self.proc = None
+        self.version = 0
+        self.opened = False
+        self.seq = 0
+        self.lock = threading.RLock()
+        self.msgs = []
+        self.cond = threading.Condition(self.lock)
+        self.next_id = 1
+        self.replies = {}
+        self.diag_seq = 0
+        self.done_seq = 0     # $/lean/fileProgress with no work left
+        self.trace = []       # (method, summary) for debugging
+        self.stderr = ""
+
+    # ---- plumbing
+    def _env(self):
+        env = dict(os.environ)
+        env["PATH"] = elan_bin() + ":" + env.get("PATH", "")
+        return env
+
+    def start(self):
+        lk = lake()
+        if lk is None:
+            raise RuntimeError("lake not found")
+        self.proc = subprocess.Popen([lk, "env", "lean", "--server"], cwd=self.project,
+                                     env=self._env(), stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        threading.Thread(target=self._read_loop, daemon=True).start()
+        threading.Thread(target=self._err_loop, daemon=True).start()
+        self._request("initialize", {"processId": None,
+                                     "rootUri": "file://" + self.project,
+                                     "capabilities": {}}, timeout=300)
+        self._notify("initialized", {})
+        return self
+
+    def _read_loop(self):
+        stream = self.proc.stdout
+        while True:
+            headers = b""
+            while not headers.endswith(b"\r\n\r\n"):
+                ch = stream.read(1)
+                if not ch:
+                    return
+                headers += ch
+            length = 0
+            for line in headers.decode(errors="replace").split("\r\n"):
+                if line.lower().startswith("content-length"):
+                    length = int(line.split(":")[1])
+            body = b""
+            while len(body) < length:
+                chunk = stream.read(length - len(body))
+                if not chunk:
+                    return
+                body += chunk
+            try:
+                msg = json.loads(body)
+            except Exception:
+                continue
+            method = msg.get("method")
+            with self.cond:
+                if "id" in msg and ("result" in msg or "error" in msg):
+                    self.replies[msg["id"]] = msg
+                if method == "textDocument/publishDiagnostics":
+                    self.msgs.append(msg)
+                    self.diag_seq += 1
+                elif method == "$/lean/fileProgress":
+                    if not (msg.get("params") or {}).get("processing"):
+                        self.done_seq += 1
+                if method:
+                    self.trace.append((method, json.dumps(msg.get("params", {}))[:120]))
+                    del self.trace[:-40]
+                self.cond.notify_all()
+
+    def _err_loop(self):
+        try:
+            for line in self.proc.stderr:
+                self.stderr += line.decode(errors="replace")
+                if len(self.stderr) > 8000:
+                    self.stderr = self.stderr[-8000:]
+        except Exception:
+            pass
+
+    def _send(self, obj):
+        data = json.dumps(obj).encode()
+        with self.lock:
+            self.proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
+            self.proc.stdin.flush()
+
+    def _request(self, method, params, timeout=None):
+        with self.cond:
+            rid = self.next_id
+            self.next_id += 1
+        self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        deadline = time.time() + (timeout or self.timeout)
+        with self.cond:
+            while rid not in self.replies:
+                if self.proc.poll() is not None:
+                    raise RuntimeError("lean --server exited: %s" % self.stderr[-300:])
+                if not self.cond.wait(max(0.05, deadline - time.time())):
+                    if time.time() > deadline:
+                        raise TimeoutError("%s timed out" % method)
+        return self.replies.pop(rid)
+
+    def _notify(self, method, params):
+        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    # ---- checking
+    def check(self, code, timeout=None, settle=3.0):
+        """Check `code`, waiting for this file's *elaborated* diagnostics.
+
+        Each check gets a fresh URI and an explicit `didChange`: a plain
+        `didOpen` makes the server publish an empty batch and the real
+        diagnostics only afterwards, which is how a false claim once came back
+        "verified". Matching on the fresh URI *and* version removes both the
+        staleness and the too-early read.
+        """
+        with self.lock:
+            self.seq += 1
+            name = "RMathCheck_%d.lean" % self.seq
+        path = os.path.join(self.project, name)
+        uri = "file://" + path
+        with open(path, "w") as f:
+            f.write(code)
+        self._notify("textDocument/didOpen", {"textDocument": {
+            "uri": uri, "languageId": "lean4", "version": 1, "text": code}})
+
+        limit = timeout or self.timeout
+        deadline = time.time() + limit
+        batch = None
+        try:
+            # The server answers `didOpen` with a pre-elaboration (empty) batch;
+            # wait for that round to finish before asking for the change, or the
+            # two collapse and the elaborated diagnostics never arrive.
+            with self.cond:
+                while not any(m["params"].get("uri") == uri for m in self.msgs):
+                    if not self.cond.wait(max(0.05, min(5.0, deadline - time.time()))):
+                        break
+            time.sleep(0.3)
+            self._notify("textDocument/didChange", {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": code}]})
+            with self.cond:
+                while True:
+                    batch = next((m for m in reversed(self.msgs)
+                                  if m["params"].get("uri") == uri
+                                  and m["params"].get("version") == 2), None)
+                    if batch is not None:
+                        break
+                    if self.proc.poll() is not None:
+                        raise RuntimeError("lean --server exited: %s" % self.stderr[-300:])
+                    if not self.cond.wait(max(0.05, deadline - time.time())):
+                        if time.time() > deadline:
+                            raise TimeoutError("no diagnostics for %s within %ss" % (name, limit))
+                # let any follow-up batch for the same file/version land
+                last = time.monotonic()
+                while time.monotonic() - last < settle and time.monotonic() < deadline:
+                    self.cond.wait(0.1)
+                    newer = next((m for m in reversed(self.msgs)
+                                  if m["params"].get("uri") == uri
+                                  and m["params"].get("version") == 2), None)
+                    if newer is not batch:
+                        batch = newer
+                        last = time.monotonic()
+        finally:
+            try:
+                self._notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+            except Exception:
+                pass
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        diags = []
+        for d in (batch or {}).get("params", {}).get("diagnostics", []):
+            sev = d.get("severity")
+            diags.append({
+                "severity": {1: "error", 2: "warning"}.get(sev, "info"),
+                "line": d.get("range", {}).get("start", {}).get("line", 0) + 1,
+                "col": d.get("range", {}).get("start", {}).get("character", 0) + 1,
+                "message": d.get("message", "").strip(),
+            })
+        return diags, "\n".join(d["message"] for d in diags)
+
+    def stop(self):
+        try:
+            self._request("shutdown", None, timeout=5)
+            self._notify("exit", None)
+        except Exception:
+            pass
+        try:
+            if self.proc:
+                self.proc.terminate()
+        except Exception:
+            pass
+        self.proc = None
+
+
+_SERVER = None
+_SERVER_LOCK = threading.Lock()
+
+
+def server():
+    """The shared server for this project, started on first use."""
+    global _SERVER
+    with _SERVER_LOCK:
+        if _SERVER is not None and _SERVER.alive():
+            return _SERVER
+        if _SERVER is not None:
+            _SERVER.stop()
+        _SERVER = LeanServer(project_dir()).start()
+        atexit.register(lambda: _SERVER and _SERVER.stop())
+        return _SERVER
+
+
+def stop_server():
+    global _SERVER
+    with _SERVER_LOCK:
+        if _SERVER is not None:
+            _SERVER.stop()
+            _SERVER = None
+
+
 def parse_diagnostics(output):
     """Lean prints `file:line:col: severity: message`; fold continuation lines
     into the message they belong to."""
@@ -120,8 +363,47 @@ def parse_diagnostics(output):
     return diags
 
 
-def run_lean(code, timeout=600, filename=None):
-    """Run Lean on `code` inside the project. Returns a result dict."""
+def persistent_enabled():
+    """The LSP server is opt-in.
+
+    It is much faster (Mathlib loads once: ~0.8s per check instead of ~10s), but
+    in testing it published *empty* diagnostic batches for files with genuine
+    errors — for example `example : (1 : ℚ) = 2 := by norm_num` came back with
+    no diagnostics, which would report a false claim as verified. Verdicts
+    therefore use the one-shot run, whose exit status is authoritative. Set
+    RMATH_LEAN_SERVER=1 to use the server for interactive checking only.
+    """
+    return os.environ.get("RMATH_LEAN_SERVER", "") not in ("", "0", "false")
+
+
+def run_lean(code, timeout=600, filename=None, persistent=None):
+    """Run Lean on `code` inside the project. Returns a result dict.
+
+    `persistent=True` uses the LSP server (fast, opt-in, not trusted for
+    verdicts); otherwise a one-shot `lake env lean` run decides."""
+    if persistent is None:
+        persistent = persistent_enabled()
+    header = "" if code.lstrip().startswith("import") else "import Mathlib\n\n"
+    body = header + code
+    if persistent and available():
+        try:
+            t0 = time.time()
+            diags, _ = server().check(body, timeout=timeout)
+            errors = [d for d in diags if d["severity"] == "error"]
+            return {"status": "ok" if not errors else "error", "output": "",
+                    "diagnostics": diags, "exit": 0 if not errors else 1,
+                    "errors": errors, "warnings": [d for d in diags if d["severity"] == "warning"],
+                    "via": "server", "seconds": round(time.time() - t0, 2)}
+        except Exception as e:
+            # fall through to the one-shot path, remembering why
+            one = run_lean(code, timeout=timeout, filename=filename, persistent=False)
+            one["server_error"] = str(e)
+            return one
+    return _run_lean_once(body, code, timeout, filename)
+
+
+def _run_lean_once(body, code, timeout=600, filename=None):
+    """One `lake env lean` process (slow: reloads Mathlib)."""
     lk = lake()
     if lk is None:
         return {"status": "error", "error": "Lean is not installed (no lake on PATH or in ~/.elan/bin)",
@@ -132,8 +414,6 @@ def run_lean(code, timeout=600, filename=None):
                 "output": "", "diagnostics": []}
     name = filename or "RMathCheck.lean"
     path = os.path.join(project, name)
-    header = "" if code.lstrip().startswith("import") else "import Mathlib\n\n"
-    body = header + code
     try:
         with open(path, "w") as f:
             f.write(body)
@@ -334,6 +614,116 @@ class Translator:
         return lean, ty, sorted(v for v in self.vars)
 
 
+class DerivGen:
+    """Build a `HasDerivAt` proof term (and the matching function form) for an
+    rMath expression in one variable.
+
+    Mathlib has no `deriv` tactic here, so the proof is wired explicitly:
+    hasDerivAt_pow / hasDerivAt_id / hasDerivAt_const for the leaves, then
+    HasDerivAt.add / .sub / .mul / .const_mul / .neg and .sin / .cos / .exp.
+    """
+
+    def __init__(self, var, ty="ℝ"):
+        self.var = var
+        self.ty = ty
+
+    def has_var(self, node):
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and n.id == self.var:
+                return True
+        return False
+
+    def const_text(self, node):
+        t = Translator(ascribe=True, ty=self.ty)
+        return t.expr(node)
+
+    def gen(self, node):
+        """Returns (proof term, function form).
+
+        The function form is written exactly as the lemma states it, because
+        `rw [h.deriv]` matches syntactically: `hasDerivAt_id` is about `id`,
+        `const_mul` about `fun y => c * d y`, `sin` about `fun x => Real.sin (f x)`.
+        """
+        if isinstance(node, ast.Name) and node.id == self.var:
+            return ("hasDerivAt_id %s" % self.var, "id")
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) \
+                and not isinstance(node.value, bool):
+            c = self.const_text(node)
+            return ("hasDerivAt_const (%s) %s" % (c, self.var), "(fun _ : ℝ => %s)" % c)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            if isinstance(node.right, ast.Constant) and isinstance(node.right.value, int) \
+                    and not isinstance(node.right.value, bool) and node.right.value >= 0:
+                n = node.right.value
+                (t, f) = self.gen(node.left)
+                if isinstance(node.left, ast.Name) and node.left.id == self.var:
+                    return ("hasDerivAt_pow %d %s" % (n, self.var),
+                            "(fun %s : ℝ => %s ^ (%d : ℕ))" % (self.var, self.var, n))
+                # u^n through HasDerivAt.pow
+                return ("((%s).pow %d)" % (t, n), "(%s ^ (%d : ℕ))" % (f, n))
+            raise ValueError("only natural-number powers are supported")
+        if isinstance(node, ast.BinOp):
+            (tl, fl) = self.gen(node.left)
+            (tr, fr) = self.gen(node.right)
+            if isinstance(node.op, ast.Add):
+                return ("((%s).add (%s))" % (tl, tr), "(%s + %s)" % (fl, fr))
+            if isinstance(node.op, ast.Sub):
+                return ("((%s).sub (%s))" % (tl, tr), "(%s - %s)" % (fl, fr))
+            if isinstance(node.op, ast.Mult):
+                if not self.has_var(node.left):
+                    c = self.const_text(node.left)
+                    return ("((%s).const_mul (%s))" % (tr, c),
+                            "(fun %s : ℝ => %s * (%s %s))" % (self.var, c, fr, self.var))
+                if not self.has_var(node.right):
+                    c = self.const_text(node.right)
+                    return ("((%s).const_mul (%s))" % (tl, c),
+                            "(fun %s : ℝ => %s * (%s %s))" % (self.var, c, fl, self.var))
+                return ("((%s).mul (%s))" % (tl, tr), "(%s * %s)" % (fl, fr))
+            raise ValueError("no derivative rule for this operation")
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            (t, f) = self.gen(node.operand)
+            return ("((%s).neg)" % t, "(-%s)" % f)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            name = node.func.id
+            (t, f) = self.gen(node.args[0])
+            forms = {"Sin": "Real.sin", "Cos": "Real.cos", "Exp": "Real.exp"}
+            methods = {"Sin": "sin", "Cos": "cos", "Exp": "exp"}
+            if name in forms:
+                return ("((%s).%s)" % (t, methods[name]),
+                        "(fun %s : ℝ => %s (%s %s))" % (self.var, forms[name], f, self.var))
+            raise ValueError("no derivative rule for %s (only Sin, Cos, Exp)" % name)
+        raise ValueError("no derivative rule for this construct")
+
+
+def derivative_statement(lhs_text, rhs_text, var):
+    """Build a Lean statement proving D[f, x] = g via HasDerivAt."""
+    try:
+        body = ast.parse(_rmath_to_python(lhs_text), mode="eval").body
+    except SyntaxError as e:
+        raise ValueError("cannot parse %r: %s" % (lhs_text, e.msg))
+    if not (isinstance(body, ast.Call) and isinstance(body.func, ast.Name)
+            and body.func.id == "D" and len(body.args) == 2):
+        raise ValueError("not a derivative")
+    f = body.args[0]
+    gen = DerivGen(var)
+    term, fun = gen.gen(f)
+    g = Translator(ascribe=True, ty="ℝ").expr(ast.parse(_rmath_to_python(rhs_text), mode="eval"))
+    prop = "deriv %s %s = %s" % (fun, var, g)
+    # `simpa using h.deriv` closes the easy cases; otherwise rewrite with the
+    # lemma's derivative and finish algebraically, with a `simp` step to reduce
+    # `id x` and `* 1` that `ring_nf` leaves alone.
+    code = ("example : %s := by\n"
+            "  have h := (%s)\n"
+            "  solve\n"
+            "    | simpa using h.deriv\n"
+            "    | (rw [h.deriv]; simp)\n"
+            "    | (rw [h.deriv]; ring_nf; simp)\n"
+            "    | (rw [h.deriv]; simp; ring_nf)\n"
+            "    | (rw [h.deriv]; ring_nf)\n"
+            "    | (rw [h.deriv]; ring)\n"
+            "    | (rw [h.deriv]; norm_num)\n" % (prop, term))
+    return (code, prop, "ℝ", [])
+
+
 def _calculus(lhs_text):
     """Recognise D[...] / Integrate[...] on the left-hand side."""
     try:
@@ -386,8 +776,10 @@ def calculus_statement(lhs_text, rhs_text):
     if kind == "indefinite":
         raise ValueError("antiderivatives need a derivative proof, which is not "
                          "wired up yet (this Mathlib has no `deriv` tactic)")
-    raise ValueError("derivative verification is not wired up yet (this Mathlib "
-                     "has no `deriv` tactic; it needs explicit deriv lemmas)")
+    try:
+        return derivative_statement(lhs_text, rhs_text, var)
+    except ValueError as e:
+        raise ValueError("cannot check this derivative: %s" % e)
 
 
 def _to_text(node):
@@ -429,9 +821,22 @@ def statement(lhs_text, rhs_text=None, relation="="):
     return "example %s: %s := by\n  solve | %s\n" % (binders, prop, TACTICS), prop, ty, vs
 
 
-def verify(lhs_text, rhs_text=None, relation="=", timeout=600):
-    """Verify an rMath claim in Lean. Returns a result dict with `status`:
-    verified | refuted | unproved | error."""
+_VERIFY_CACHE = {}
+
+
+def verify(lhs_text, rhs_text=None, relation="=", timeout=600, use_cache=True):
+    """Verify an rMath claim in Lean. Returns a result dict with `outcome`:
+    verified | unproved | cannot verify | error.
+
+    The authoritative one-shot `lake env lean` run decides: its exit status and
+    diagnostics come from the elaborator itself, with no notification-timing
+    assumptions. Results are cached per claim, so re-checking a cell is free.
+    """
+    ck = (lhs_text, rhs_text, relation)
+    if use_cache and ck in _VERIFY_CACHE:
+        cached = dict(_VERIFY_CACHE[ck])
+        cached["cached"] = True
+        return cached
     try:
         built = calculus_statement(lhs_text, rhs_text) if rhs_text is not None else None
         if built is None and _calculus(lhs_text) is not None and rhs_text is not None:
@@ -439,7 +844,7 @@ def verify(lhs_text, rhs_text=None, relation="=", timeout=600):
         code, prop, ty, vs = built if built else statement(lhs_text, rhs_text, relation)
     except ValueError as e:
         return {"status": "error", "error": str(e), "lean": None, "outcome": "cannot verify"}
-    res = run_lean(code, timeout=timeout, filename="RMathVerify.lean")
+    res = run_lean(code, timeout=timeout, filename="RMathVerify.lean", persistent=False)
     res["lean"] = code
     res["proposition"] = prop
     res["type"] = ty
@@ -450,4 +855,6 @@ def verify(lhs_text, rhs_text=None, relation="=", timeout=600):
         res["outcome"] = "unproved"
     else:
         res["outcome"] = res.get("status", "error")
+    if use_cache and res.get("outcome") in ("verified", "unproved"):
+        _VERIFY_CACHE[ck] = dict(res)
     return res

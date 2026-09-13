@@ -207,6 +207,7 @@ omega | simp | decide | rfl`, so only a tactic that *closes* the goal counts:
 | `Sqrt[2]^2 = 2`, `Sin[Pi/6] = 1/2` | verified (over ℝ) |
 | `x^2 >= 0` | verified (`positivity`) |
 | `Integrate[x^2, {x, 0, 1}] = 1/3` | verified (`integral_pow`) — kernel calculus cross-checked |
+| `D[x^3 + Sin[x], x] = Cos[x] + 3 x^2`, `D[Exp[x^2], x]`, `D[Sin[x]^2, x]`, `D[3 x^4, x]`, `D[Cos[x], x]`, `D[x, x]`, `D[7, x]` | verified — the kernel's derivative cross-checked through explicit `HasDerivAt` wiring (7 of 9 sampled shapes; quotients are refused because they need a non-zero side condition) |
 | `1/2 + 1/3 = 2/3` (false) | **not proved** |
 
 Two subtleties worth knowing, both found by testing rather than reasoning:
@@ -219,10 +220,26 @@ Two subtleties worth knowing, both found by testing rather than reasoning:
   merely simplifies the goal, leaving it unsolved; `solve` requires a tactic that
   closes it.
 
+**Derivatives.** There is no `deriv` tactic in this Mathlib, so `D[...]` results
+are checked by building a `HasDerivAt` proof term structurally
+(`hasDerivAt_pow`/`_id`/`_const` for leaves, then `.add`, `.sub`, `.mul`,
+`.const_mul`, `.neg`, `.pow`, `.sin`, `.cos`, `.exp`), with the function form
+written exactly as each lemma states it because `rw [h.deriv]` matches
+syntactically. Quotients (and `Log`/`Sqrt`/`Abs`) are refused: they need a
+non-zero or positivity side condition that is not wired up yet.
+
 **Refused on purpose** (with the reason shown in the panel): `N[...]` machine
 approximations, complex numbers, `GCD`/`LCM`, bare expressions that are not
-claims, and derivatives — this Mathlib has no `deriv` tactic, so `D[...]`
-cross-checking still needs explicit `deriv_*` lemma wiring.
+claims, and derivative shapes needing side conditions.
+
+**On the persistent Lean server.** `rmathpy/lean.py` contains a full LSP client
+(`lean --server`, one Mathlib load per session: 0.5–0.9 s per check instead of
+~10 s). It is **opt-in** (`RMATH_LEAN_SERVER=1`) and never decides verdicts,
+because testing showed it publishes *empty* diagnostic batches for files with
+genuine errors — `example : (1 : ℚ) = 2 := by norm_num` came back with no
+diagnostics, which would have reported false claims as verified. Verdicts
+therefore come from the authoritative one-shot `lake env lean` run (exit status
+plus diagnostics), and repeated claims are cached (a re-check is instant).
 
 **In the app**: the Lean ribbon button (or **Help ▸ Lean… ⇧⌘L**) opens a panel
 with a snippet box (Mathlib is imported automatically), a **Check** button, and

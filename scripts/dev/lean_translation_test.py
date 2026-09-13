@@ -44,6 +44,18 @@ REFUSALS = [
 ]
 
 
+# Derivative proof-term shapes (generated without running Lean).
+DERIV_CASES = [
+    ("D[x, x]", "1", "hasDerivAt_id x", "deriv id x"),
+    ("D[7, x]", "0", "hasDerivAt_const", "deriv (fun _"),
+    ("D[Cos[x], x]", "-Sin[x]", ".cos", "Real.cos"),
+    ("D[Exp[x^2], x]", "2 x Exp[x^2]", ".exp", "Real.exp"),
+    ("D[Sin[x]^2, x]", "2 Cos[x] Sin[x]", ".pow", "Real.sin"),
+    ("D[x^3 + Sin[x], x]", "Cos[x] + 3 x^2", ".add", "Real.cos"),
+    ("D[3 x^4, x]", "12 x^3", ".const_mul", "deriv (fun x"),
+]
+
+
 def main():
     failures = []
     for lhs, rhs, want_prop, want_ty in CASES:
@@ -62,13 +74,29 @@ def main():
         except ValueError:
             pass
 
+    for lhs, rhs, term_part, prop_part in DERIV_CASES:
+        try:
+            code, prop, ty, _ = lean.calculus_statement(lhs, rhs)
+        except ValueError as e:
+            failures.append("%s: %s" % (lhs, e))
+            continue
+        if code is None or term_part not in code or prop_part not in prop:
+            failures.append("%s: unexpected proof term/proposition\n     %s\n     %s"
+                            % (lhs, code, prop))
+    # quotients must be refused, not guessed
+    try:
+        lean.calculus_statement("D[Sin[x]/x, x]", "Cos[x]/x - 1/x^2 Sin[x]")
+        failures.append("D[Sin[x]/x, x]: expected a refusal (needs a non-zero side condition)")
+    except ValueError:
+        pass
+
     if failures:
         print("LEAN TRANSLATION: FAIL")
         for f in failures:
             print("  " + f)
         return 1
-    print("LEAN TRANSLATION: PASS (%d cases, %d deliberate refusals)"
-          % (len(CASES) - 1, len(REFUSALS)))
+    print("LEAN TRANSLATION: PASS (%d claims, %d derivative shapes, %d deliberate refusals)"
+          % (len(CASES), len(DERIV_CASES), len(REFUSALS) + 1))
     return 0
 
 

@@ -1,0 +1,11 @@
+import Mathlib
+#check @hasDerivAt_pow
+#check @hasDerivAt_id
+#check @hasDerivAt_const
+#check @HasDerivAt.add
+#check @HasDerivAt.sub
+#check @HasDerivAt.mul
+#check @HasDerivAt.const_mul
+#check @HasDerivAt.sin
+#check @HasDerivAt.cos
+#check @HasDerivAt.exp
