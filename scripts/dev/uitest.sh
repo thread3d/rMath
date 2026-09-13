@@ -12,7 +12,24 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 URL="${1:-http://127.0.0.1:8787}"
 SHOT="$ROOT/scripts/dev/screenshot"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+
+# Make the check self-sufficient: if nothing is serving the URL, start a
+# temporary notebook (and stop it again), instead of stalling on a dead port.
+PORT="${URL##*:}"
+STARTED=""
+if ! curl -fsS --max-time 3 "$URL/api/health" >/dev/null 2>&1; then
+  ( cd "$ROOT" && nohup python3 -m rmathpy.notebook --port "$PORT" >"$TMP/server.log" 2>&1 & )
+  STARTED="1"
+  for _ in $(seq 1 40); do
+    curl -fsS --max-time 2 "$URL/api/health" >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+fi
+stop_temp_server() {
+  if [ -n "$STARTED" ]; then pkill -f "rmathpy.notebook --port $PORT" 2>/dev/null || true; fi
+  rm -rf "$TMP"
+}
+trap stop_temp_server EXIT
 
 [ -x "$SHOT" ] || make -C "$ROOT" scripts/dev/screenshot >/dev/null
 
