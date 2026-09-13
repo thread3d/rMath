@@ -43,12 +43,31 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 errs = d.get("errs") or []
 cells = d.get("cells", 0)
+st = d.get("styles") or {}
 print("JS errors:", errs or "none")
 print("cells after clicking Evaluate:", cells)
 print("form after toggling and restoring:", d.get("form"),
       "(unchanged: %s)" % d.get("formUnchanged"))
 print("first results:", d.get("results"))
-ok = (not errs) and cells > 0 and d.get("formUnchanged")
+style_problems = []
+if not st.get("leanFixed") or st.get("leanWidth", 0) < 200:
+    style_problems.append("Lean panel is not a floating panel: position/width %r/%r"
+                          % (st.get("leanDisplay"), st.get("leanWidth")))
+if not st.get("leanHeaderPadding") or st.get("leanHeaderPadding") == "0px":
+    style_problems.append("Lean header has no padding (its rules are missing?)")
+if not st.get("agentFixed") or st.get("agentWidth", 0) < 200:
+    style_problems.append("Harness panel is not a floating panel: width %r" % st.get("agentWidth"))
+if st.get("logBackground") not in ("rgb(234, 241, 248)", "rgba(0, 0, 0, 0)"):
+    style_problems.append("log background changed: %r" % st.get("logBackground"))
+if st.get("texFontSize") in (None, "16px") or not st.get("inLabelColor"):
+    style_problems.append("notebook typography/labels lost their styling")
+if st.get("ribbonButtons", 0) < 8:
+    style_problems.append("ribbon lost buttons: %r" % st.get("ribbonButtons"))
+for pb in style_problems:
+    print("STYLE PROBLEM:", pb)
+print("styles:", {k: st.get(k) for k in ("leanFixed", "leanWidth", "agentFixed", "agentWidth",
+                                         "logBackground", "texFontSize", "ribbonButtons")})
+ok = (not errs) and cells > 0 and d.get("formUnchanged") and not style_problems
 print("UITEST: %s" % ("PASS" if ok else "FAIL"))
 sys.exit(0 if ok else 1)
 PY

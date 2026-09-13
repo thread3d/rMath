@@ -20,5 +20,8 @@ setTimeout(function () {
   if (form) form.click();                       // toggle the form
   var helpClose = document.getElementById("helpclose");
   if (helpClose) helpClose.click();
+  // Open both floating panels so the style assertions below can see them.
+  if (window.showLean) showLean();
+  if (window.showAgent) showAgent("");
   setForm(window.__form0);                      // restore the original form
 }, 2500);

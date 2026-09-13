@@ -451,6 +451,46 @@ INDEX_HTML = r"""<!DOCTYPE html>
                        font-size: 12px; font-weight: 600; }
   #agent .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
   #agent .row .status { font-size: 11.5px; color: #6b7280; }
+  #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; flex: 0 1 auto;
+                 max-height: 46vh; overflow: auto; font-size: 12.5px; display: none;
+                 font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+                 color: #1f2937; background: #fdfdfb; }
+  #agentanswer:not(.md) { white-space: pre-wrap; font-family: "SF Mono", Menlo, monospace; }
+  #agentanswer.show { display: block; }
+
+  /* ---------------- Lean panel (floating, like the harness) ---------------- */
+  #lean { position: fixed; right: 18px; top: 62px; width: min(520px, 44vw);
+          height: min(58vh, 460px); background: #fff; border: 1px solid #b9b9b9;
+          border-radius: 6px; z-index: 46; box-shadow: 0 10px 34px rgba(0,0,0,.28);
+          display: none; flex-direction: column; overflow: hidden; }
+  #lean.open { display: flex; }
+  #lean header { padding: 9px 14px; border-bottom: 1px solid #e2e2e2; font-weight: 700;
+                 font-size: 13.5px; display: flex; align-items: center; gap: 9px; }
+  #lean header .who { color: #6b7280; font-weight: 400; font-size: 12px; }
+  #lean header button { background: #eee; border: 1px solid #ccc; border-radius: 4px;
+                        cursor: pointer; padding: 3px 9px; font-size: 12px; }
+  #lean .body { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px;
+                min-height: 0; flex: 1; overflow: auto; }
+  #lean textarea { width: 100%; height: 104px; font-family: "SF Mono", Menlo, monospace;
+                   font-size: 12px; padding: 7px 8px; border: 1px solid #c5c5c5;
+                   border-radius: 4px; outline: 0; resize: vertical; }
+  #lean .row { display: flex; align-items: center; gap: 8px; }
+  #lean .row button { background: linear-gradient(#4a7fb5, #2c5a8f); border: 1px solid #24486f;
+                      color: #fff; padding: 6px 14px; border-radius: 4px; cursor: pointer;
+                      font-size: 12px; font-weight: 600; }
+  #lean .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
+  #lean .row .status { font-size: 11.5px; color: #6b7280; }
+  #leanstmt:empty { display: none; }
+  #leanstmt { border: 1px solid #e6e2d6; border-radius: 4px; padding: 8px 10px; background: #fbfaf6; }
+  #leandiag { flex: 0 1 auto; min-height: 42px; max-height: 46vh; overflow-y: auto;
+              font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.5; }
+  #leandiag .d { padding: 3px 7px; border-radius: 3px; margin-bottom: 4px; white-space: pre-wrap; }
+  #leandiag .error { background: #fdecec; color: #8c1c1c; border-left: 3px solid #c0392b; }
+  #leandiag .warning { background: #fdf6e3; color: #7a5d10; border-left: 3px solid #d4a017; }
+  #leandiag .info { background: #eef4fa; color: #2c4a6b; border-left: 3px solid #4a7fb5; }
+  #leandiag .ok { background: #eaf6ec; color: #1e5b2a; border-left: 3px solid #2e8b57;
+                  font-weight: 600; }
+
   /* The log is a pale blue rather than black: it suits the rest of the palette,
      keeps the reasoning/tool/answer distinction, and lets the platform's own
      scrollbar read against it. Deliberately NO scrollbar styling: any
