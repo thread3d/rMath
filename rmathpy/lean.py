@@ -443,8 +443,10 @@ def _run_lean_once(body, code, timeout=600, filename=None):
 
 _NUM = re.compile(r"(?<![\w.])(\d+)")
 # Juxtaposition is multiplication in OutputForm: `1/2 Sqrt[2]`, `2 x`, `x y`.
+# Juxtaposition is multiplication in OutputForm — including a numeral after
+# another factor, as in `1/2 1/Sqrt[x]` (which parses as (1/2)*(1/Sqrt[x])).
 _IMPLICIT = re.compile(
-    r"(?<=[0-9A-Za-z_\)])\s+(?=(?:[A-Za-z_][A-Za-z_0-9]*|\()(?!\s*\.))")
+    r"(?<=[0-9A-Za-z_\)])\s+(?=(?:[A-Za-z_][A-Za-z_0-9]*|\d|\()(?!\s*\.))")
 
 
 # Operations that preserve the value of the expression they wrap, so a result
@@ -626,6 +628,19 @@ class DerivGen:
     def __init__(self, var, ty="ℝ"):
         self.var = var
         self.ty = ty
+        # Side conditions the lemmas require (a non-zero denominator, log or
+        # root argument), collected while walking and emitted as hypotheses.
+        self.hyps = []
+
+    def side_condition(self, value_text):
+        """Record `value ≠ 0` and return the hypothesis name.
+
+        The *reduced* value is used on purpose: `x ≠ 0` is what `field_simp`
+        recognises, while `id x ≠ 0` (defeq) is not.
+        """
+        name = "h%d" % (len(self.hyps) + 1)
+        self.hyps.append((name, "(%s ≠ 0)" % value_text))
+        return name
 
     def has_var(self, node):
         for n in ast.walk(node):
@@ -638,59 +653,83 @@ class DerivGen:
         return t.expr(node)
 
     def gen(self, node):
-        """Returns (proof term, function form).
+        """Returns (proof term, function form, value form).
+
+        The value form is the expression the function takes at the point, used
+        for side conditions (see `side_condition`).
 
         The function form is written exactly as the lemma states it, because
         `rw [h.deriv]` matches syntactically: `hasDerivAt_id` is about `id`,
         `const_mul` about `fun y => c * d y`, `sin` about `fun x => Real.sin (f x)`.
         """
         if isinstance(node, ast.Name) and node.id == self.var:
-            return ("hasDerivAt_id %s" % self.var, "id")
+            return ("hasDerivAt_id %s" % self.var, "id", self.var)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) \
                 and not isinstance(node.value, bool):
             c = self.const_text(node)
-            return ("hasDerivAt_const (%s) %s" % (c, self.var), "(fun _ : ℝ => %s)" % c)
+            # hasDerivAt_const takes the point first, then the constant.
+            return ("hasDerivAt_const %s (%s)" % (self.var, c), "(fun _ : ℝ => %s)" % c, c)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
             if isinstance(node.right, ast.Constant) and isinstance(node.right.value, int) \
                     and not isinstance(node.right.value, bool) and node.right.value >= 0:
                 n = node.right.value
-                (t, f) = self.gen(node.left)
+                (t, f, v) = self.gen(node.left)
                 if isinstance(node.left, ast.Name) and node.left.id == self.var:
                     return ("hasDerivAt_pow %d %s" % (n, self.var),
-                            "(fun %s : ℝ => %s ^ (%d : ℕ))" % (self.var, self.var, n))
+                            "(fun %s : ℝ => %s ^ (%d : ℕ))" % (self.var, self.var, n),
+                            "(%s ^ (%d : ℕ))" % (v, n))
                 # u^n through HasDerivAt.pow
-                return ("((%s).pow %d)" % (t, n), "(%s ^ (%d : ℕ))" % (f, n))
+                return ("((%s).pow %d)" % (t, n), "(%s ^ (%d : ℕ))" % (f, n), "(%s ^ (%d : ℕ))" % (v, n))
+            if isinstance(node.right, ast.UnaryOp) and isinstance(node.right.op, ast.USub) \
+                    and isinstance(node.right.operand, ast.Constant) and node.right.operand.value == 1:
+                # u⁻¹ through HasDerivAt.inv
+                (t, f, v) = self.gen(node.left)
+                h = self.side_condition(v)
+                return ("((%s).inv %s)" % (t, h), "%s⁻¹" % f, "%s⁻¹" % v)
             raise ValueError("only natural-number powers are supported")
         if isinstance(node, ast.BinOp):
-            (tl, fl) = self.gen(node.left)
-            (tr, fr) = self.gen(node.right)
+            (tl, fl, vl) = self.gen(node.left)
+            (tr, fr, vr) = self.gen(node.right)
             if isinstance(node.op, ast.Add):
-                return ("((%s).add (%s))" % (tl, tr), "(%s + %s)" % (fl, fr))
+                return ("((%s).add (%s))" % (tl, tr), "(%s + %s)" % (fl, fr), "(%s + %s)" % (vl, vr))
             if isinstance(node.op, ast.Sub):
-                return ("((%s).sub (%s))" % (tl, tr), "(%s - %s)" % (fl, fr))
+                return ("((%s).sub (%s))" % (tl, tr), "(%s - %s)" % (fl, fr), "(%s - %s)" % (vl, vr))
             if isinstance(node.op, ast.Mult):
                 if not self.has_var(node.left):
                     c = self.const_text(node.left)
                     return ("((%s).const_mul (%s))" % (tr, c),
-                            "(fun %s : ℝ => %s * (%s %s))" % (self.var, c, fr, self.var))
+                            "(fun %s : ℝ => %s * (%s %s))" % (self.var, c, fr, self.var),
+                            "(%s * %s)" % (c, vr))
                 if not self.has_var(node.right):
                     c = self.const_text(node.right)
                     return ("((%s).const_mul (%s))" % (tl, c),
-                            "(fun %s : ℝ => %s * (%s %s))" % (self.var, c, fl, self.var))
-                return ("((%s).mul (%s))" % (tl, tr), "(%s * %s)" % (fl, fr))
+                            "(fun %s : ℝ => %s * (%s %s))" % (self.var, c, fl, self.var),
+                            "(%s * %s)" % (c, vl))
+                return ("((%s).mul (%s))" % (tl, tr), "(%s * %s)" % (fl, fr), "(%s * %s)" % (vl, vr))
+            if isinstance(node.op, ast.Div):
+                h = self.side_condition(vr)
+                return ("((%s).div (%s) %s)" % (tl, tr, h), "(%s / %s)" % (fl, fr), "(%s / %s)" % (vl, vr))
             raise ValueError("no derivative rule for this operation")
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            (t, f) = self.gen(node.operand)
-            return ("((%s).neg)" % t, "(-%s)" % f)
+            (t, f, v) = self.gen(node.operand)
+            return ("((%s).neg)" % t, "(-%s)" % f, "(-%s)" % v)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             name = node.func.id
-            (t, f) = self.gen(node.args[0])
-            forms = {"Sin": "Real.sin", "Cos": "Real.cos", "Exp": "Real.exp"}
+            (t, f, v) = self.gen(node.args[0])
+            forms = {"Sin": "Real.sin", "Cos": "Real.cos", "Exp": "Real.exp",
+                     "Log": "Real.log", "Sqrt": "Real.sqrt"}
             methods = {"Sin": "sin", "Cos": "cos", "Exp": "exp"}
             if name in forms:
+                if name in ("Log", "Sqrt"):
+                    # both need the argument to be non-zero
+                    h = self.side_condition(v)
+                    return ("((%s).%s %s)" % (t, methods.get(name, name.lower()), h),
+                            "(fun %s : ℝ => %s (%s %s))" % (self.var, forms[name], f, self.var),
+                            "%s (%s)" % (forms[name], v))
                 return ("((%s).%s)" % (t, methods[name]),
-                        "(fun %s : ℝ => %s (%s %s))" % (self.var, forms[name], f, self.var))
-            raise ValueError("no derivative rule for %s (only Sin, Cos, Exp)" % name)
+                        "(fun %s : ℝ => %s (%s %s))" % (self.var, forms[name], f, self.var),
+                        "%s (%s)" % (forms[name], v))
+            raise ValueError("no derivative rule for %s (Sin, Cos, Exp, Log, Sqrt)" % name)
         raise ValueError("no derivative rule for this construct")
 
 
@@ -705,13 +744,16 @@ def derivative_statement(lhs_text, rhs_text, var):
         raise ValueError("not a derivative")
     f = body.args[0]
     gen = DerivGen(var)
-    term, fun = gen.gen(f)
+    term, fun, _ = gen.gen(f)
     g = Translator(ascribe=True, ty="ℝ").expr(ast.parse(_rmath_to_python(rhs_text), mode="eval"))
     prop = "deriv %s %s = %s" % (fun, var, g)
+    binders = "(x : ℝ)"
+    for name, stmt in gen.hyps:
+        binders += " (%s : %s)" % (name, stmt)
     # `simpa using h.deriv` closes the easy cases; otherwise rewrite with the
     # lemma's derivative and finish algebraically, with a `simp` step to reduce
     # `id x` and `* 1` that `ring_nf` leaves alone.
-    code = ("example : %s := by\n"
+    code = ("example %s : %s := by\n" % (binders, prop) +
             "  have h := (%s)\n"
             "  solve\n"
             "    | simpa using h.deriv\n"
@@ -720,7 +762,16 @@ def derivative_statement(lhs_text, rhs_text, var):
             "    | (rw [h.deriv]; simp; ring_nf)\n"
             "    | (rw [h.deriv]; ring_nf)\n"
             "    | (rw [h.deriv]; ring)\n"
-            "    | (rw [h.deriv]; norm_num)\n" % (prop, term))
+            "    | (rw [h.deriv]; norm_num)\n"
+            "    | (rw [h.deriv]; field_simp; ring)\n"
+            "    | (rw [h.deriv]; field_simp; ring_nf)\n"
+            "    | (rw [h.deriv]; field_simp [*]; ring)\n"
+            "    | (rw [h.deriv]; field_simp; simp; ring)\n"
+            "    | (rw [h.deriv]; field_simp; simp; ring_nf)\n"
+            "    | (rw [h.deriv]; simp; field_simp; ring)\n"
+            "    | (rw [h.deriv]; field_simp; simp [id_eq]; ring)\n"
+            "    | (rw [h.deriv]; simp only [id_eq]; field_simp)\n"
+            "    | (rw [h.deriv]; simp only [id_eq]; field_simp; ring)\n" % (term,))
     return (code, prop, "ℝ", [])
 
 

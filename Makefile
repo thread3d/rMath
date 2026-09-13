@@ -20,7 +20,7 @@ BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
 .PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
-        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test
+        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-verify demo-gen
 
 help:
 	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -93,6 +93,16 @@ report:
 #   make uitest          # against http://127.0.0.1:8787
 uitest:
 	@bash $(ROOT)/scripts/dev/uitest.sh "$(URL)"
+
+# Verify a battery of claims in Lean, including ones that must be rejected.
+# Slow (Mathlib loads per claim, ~10s each): run it deliberately, not on every build.
+lean-verify:
+	@python3 $(ROOT)/scripts/dev/lean_verify_test.py
+
+# Regenerate demo/demo.mt: every candidate example is executed against the
+# kernel first, and only examples that really evaluate are written out.
+demo-gen:
+	@python3 $(ROOT)/scripts/dev/demo_gen.py
 
 # Translation tests for the Lean bridge (no Lean needed).
 lean-test:

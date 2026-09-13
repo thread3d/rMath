@@ -53,6 +53,11 @@ DERIV_CASES = [
     ("D[Sin[x]^2, x]", "2 Cos[x] Sin[x]", ".pow", "Real.sin"),
     ("D[x^3 + Sin[x], x]", "Cos[x] + 3 x^2", ".add", "Real.cos"),
     ("D[3 x^4, x]", "12 x^3", ".const_mul", "deriv (fun x"),
+    ("D[1/x, x]", "-1/x^2", ".div", "deriv", "(x ≠ 0)"),
+    ("D[x^-1, x]", "-1/x^2", ".inv", "deriv", "(x ≠ 0)"),
+    ("D[Sin[x]/x, x]", "Cos[x]/x - 1/x^2 Sin[x]", ".div", "deriv", "(x ≠ 0)"),
+    ("D[Log[x], x]", "1/x", ".log", "Real.log", "(x ≠ 0)"),
+    ("D[Sqrt[x], x]", "1/2 1/Sqrt[x]", ".sqrt", "Real.sqrt", "(x ≠ 0)"),
 ]
 
 
@@ -74,19 +79,22 @@ def main():
         except ValueError:
             pass
 
-    for lhs, rhs, term_part, prop_part in DERIV_CASES:
+    for case in DERIV_CASES:
+        lhs, rhs, term_part, prop_part = case[:4]
+        binder_part = case[4] if len(case) > 4 else ""
         try:
             code, prop, ty, _ = lean.calculus_statement(lhs, rhs)
         except ValueError as e:
             failures.append("%s: %s" % (lhs, e))
             continue
-        if code is None or term_part not in code or prop_part not in prop:
+        if (code is None or term_part not in code or prop_part not in prop
+                or (binder_part and binder_part not in code)):
             failures.append("%s: unexpected proof term/proposition\n     %s\n     %s"
                             % (lhs, code, prop))
-    # quotients must be refused, not guessed
+    # a quotient-shaped claim with no side condition available must still refuse
     try:
-        lean.calculus_statement("D[Sin[x]/x, x]", "Cos[x]/x - 1/x^2 Sin[x]")
-        failures.append("D[Sin[x]/x, x]: expected a refusal (needs a non-zero side condition)")
+        lean.calculus_statement("D[Abs[x], x]", "1")
+        failures.append("D[Abs[x], x]: expected a refusal (no HasDerivAt lemma for abs)")
     except ValueError:
         pass
 

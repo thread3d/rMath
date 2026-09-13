@@ -83,15 +83,19 @@ instead of the native app).
 
 ### Demonstration file
 
-`demo/demo.mt` is a tour of the kernel: **335 verified examples in 21 sections**
+`demo/demo.mt` is a tour of the kernel: **339 verified examples and 75 statements
+in 25 sections**
 (arithmetic, complex numbers, elementary and special functions, Unicode input,
 patterns, rules, scoping, lists, functional programming, algebra, polynomials,
 calculus, equations, linear algebra, strings, logic, control flow, information
-utilities, random numbers, file I/O) plus a function inventory taken from
-`Names[]`, ending with a plot.
+utilities, random numbers, file I/O), then calculus cross-checked in Lean, how
+to verify a cell, and the notebook's own features, plus a function inventory
+taken from `Names[]`, ending with a plot.
 
-Every example was executed against the kernel when the file was generated, so
-nothing in it is aspirational. Load it with `Get["demo/demo.mt"]` (in the app:
+Every example is re-executed against the kernel, **in context** (statement by
+statement in one session, exactly as the notebook's Open does), by
+`make demo-gen` — so an example that stops evaluating is reported rather than
+left in the file as a lie. Load it with `Get["demo/demo.mt"]` (in the app:
 **File ▸ Open…**, which loads each statement as its own cell).
 
 ### Notebook interface
@@ -194,7 +198,7 @@ gitignored):
 |---|---|
 | install | `elan` at `~/.elan`, toolchain `leanprover/lean4:v4.34.0-rc2` (pinned by `lean/lean-toolchain`, matching Mathlib), Mathlib via `lake exe cache get` |
 | project | `RMATH_LEAN_PROJECT` overrides `lean/` |
-| tests | `make lean-test` — translation tests that need no Lean |
+| tests | `make lean-test` — translation and proof-shape tests, no Lean needed; `make lean-verify` — the real battery (proved *and* rejected claims), slow since Mathlib loads per claim |
 
 **What gets verified.** `Lean.verify` translates the claim to a Lean statement
 and runs `solve | norm_num | ring | ring_nf | positivity | linarith | nlinarith |
@@ -207,7 +211,7 @@ omega | simp | decide | rfl`, so only a tactic that *closes* the goal counts:
 | `Sqrt[2]^2 = 2`, `Sin[Pi/6] = 1/2` | verified (over ℝ) |
 | `x^2 >= 0` | verified (`positivity`) |
 | `Integrate[x^2, {x, 0, 1}] = 1/3` | verified (`integral_pow`) — kernel calculus cross-checked |
-| `D[x^3 + Sin[x], x] = Cos[x] + 3 x^2`, `D[Exp[x^2], x]`, `D[Sin[x]^2, x]`, `D[3 x^4, x]`, `D[Cos[x], x]`, `D[x, x]`, `D[7, x]` | verified — the kernel's derivative cross-checked through explicit `HasDerivAt` wiring (7 of 9 sampled shapes; quotients are refused because they need a non-zero side condition) |
+| `D[x^3 + Sin[x], x]`, `D[Exp[x^2], x]`, `D[Sin[x]^2, x]`, `D[3 x^4, x]`, `D[Cos[x], x]`, `D[x, x]`, `D[7, x]`, `D[x^2 + 2 x + 1, x]`, `D[1/x, x]`, `D[Sin[x]/x, x]`, `D[Log[x], x]`, `D[Sqrt[x], x]`, `D[Exp[x] Log[x], x]`, `D[Log[x^2 + 1], x]` | verified — the kernel's derivative cross-checked through explicit `HasDerivAt` wiring (**14 of 14** sampled shapes) |
 | `1/2 + 1/3 = 2/3` (false) | **not proved** |
 
 Two subtleties worth knowing, both found by testing rather than reasoning:
@@ -223,10 +227,13 @@ Two subtleties worth knowing, both found by testing rather than reasoning:
 **Derivatives.** There is no `deriv` tactic in this Mathlib, so `D[...]` results
 are checked by building a `HasDerivAt` proof term structurally
 (`hasDerivAt_pow`/`_id`/`_const` for leaves, then `.add`, `.sub`, `.mul`,
-`.const_mul`, `.neg`, `.pow`, `.sin`, `.cos`, `.exp`), with the function form
-written exactly as each lemma states it because `rw [h.deriv]` matches
-syntactically. Quotients (and `Log`/`Sqrt`/`Abs`) are refused: they need a
-non-zero or positivity side condition that is not wired up yet.
+`.const_mul`, `.neg`, `.pow`, `.inv`, `.div`, `.sin`, `.cos`, `.exp`, `.log`,
+`.sqrt`), with the function form written exactly as each lemma states it because
+`rw [h.deriv]` matches syntactically. Where a lemma needs a non-zero argument
+(quotients, `Log`, `Sqrt`) the side condition is **emitted as a hypothesis** —
+`example (x : ℝ) (h1 : x ≠ 0) : deriv (fun x => Real.sin x / x) x = …` — stated in
+reduced form (`x ≠ 0`, not `id x ≠ 0`) because that is what `field_simp`
+recognises. `Abs` is still refused: this Mathlib has no `HasDerivAt` lemma for it.
 
 **Refused on purpose** (with the reason shown in the panel): `N[...]` machine
 approximations, complex numbers, `GCD`/`LCM`, bare expressions that are not
