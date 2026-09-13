@@ -49,7 +49,9 @@ CONSTS = {
 }
 # Silence the linters that flag the tactic alternatives that did not run: the
 # chain is deliberately a set of fallbacks.
-QUIET = "set_option linter.unreachableTactic false\nset_option linter.unusedTactic false\n\n"
+QUIET = ("set_option linter.unreachableTactic false\n"
+         "set_option linter.unusedTactic false\n"
+         "set_option linter.unnecessarySimpa false\n\n")
 
 # Functions that are real-valued, forcing the ℝ interpretation.
 REAL_FUNCS = {v for k, v in FUNCS.items() if v.startswith("Real.")}
