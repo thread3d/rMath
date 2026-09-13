@@ -953,8 +953,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             saveScreenshot(to: target)
             return
         }
-        web.evaluateJavaScript(js) { _, err in
+        web.evaluateJavaScript(js) { value, err in
             if let err = err { print("js error: \(err.localizedDescription)") }
+            // Hand the script's string result back on disk: without it a --js
+            // phase can only be observed through the pixels it paints.
+            if let text = value as? String {
+                let out = URL(fileURLWithPath: NSTemporaryDirectory())
+                    .appendingPathComponent("rMath-shot.result")
+                try? text.write(to: out, atomically: true, encoding: .utf8)
+                print("js result: \(out.path)")
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 self.saveScreenshot(to: target)
             }

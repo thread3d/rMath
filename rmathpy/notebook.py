@@ -814,14 +814,19 @@ async function evalInput() {
                                                : "evaluating " + lines[0].slice(0, 40),
                              {total: lines.length > 1 ? lines.length : 0});
   let n = 0;
-  for (const line of lines) {
-    history.push(line);
-    const cell = addCell();
-    lastCell = cell;
-    await evaluateLine(line, cell);
-    act.set(++n);
+  try {
+    for (const line of lines) {
+      history.push(line);
+      const cell = addCell();
+      lastCell = cell;
+      await evaluateLine(line, cell);
+      act.set(++n);
+    }
+    act.end(true, lines.length + (lines.length === 1 ? " input" : " inputs"));
+  } catch (e) {
+    act.end(false, "failed: " + String(e).slice(0, 60));
+    throw e;
   }
-  act.end(true, lines.length + (lines.length === 1 ? " input" : " inputs"));
   localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
   histPos = history.length;
   if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
@@ -835,13 +840,18 @@ async function evaluateAll() {
   const act = Activity.begin("evaluating all " + inputs.length + " cells",
                              {total: inputs.length});
   let n = 0;
-  for (const line of inputs) {
-    const cell = addCell();
-    lastCell = cell;
-    await evaluateLine(line, cell);
-    act.set(++n);
+  try {
+    for (const line of inputs) {
+      const cell = addCell();
+      lastCell = cell;
+      await evaluateLine(line, cell);
+      act.set(++n);
+    }
+    act.end(true, inputs.length + " cells");
+  } catch (e) {
+    act.end(false, "failed: " + String(e).slice(0, 60));
+    throw e;
   }
-  act.end(true, inputs.length + " cells");
   if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
 }
 
@@ -936,14 +946,19 @@ async function openNotebook(intoInput, givenPath) {
   const act = Activity.begin("opening " + resp.path.split('/').pop(),
                              {total: statements.length});
   let n = 0;
-  for (const stmt of statements) {
-    history.push(stmt);
-    const cell = addCell();
-    lastCell = cell;
-    act.set(++n, "opening " + resp.path.split('/').pop() + " — " + n + "/" + statements.length);
-    await evaluateLine(stmt, cell);
+  try {
+    for (const stmt of statements) {
+      history.push(stmt);
+      const cell = addCell();
+      lastCell = cell;
+      act.set(++n, "opening " + resp.path.split('/').pop() + " — " + n + "/" + statements.length);
+      await evaluateLine(stmt, cell);
+    }
+    act.end(true, statements.length + " cells");
+  } catch (e) {
+    act.end(false, "failed after " + n + "/" + statements.length + ": " + String(e).slice(0, 50));
+    throw e;
   }
-  act.end(true, statements.length + " cells");
   localStorage.setItem('rmath-history', JSON.stringify(history.slice(-200)));
   histPos = history.length;
   if (lastCell) lastCell.scrollIntoView({block: 'end', behavior: 'smooth'});
@@ -1158,6 +1173,10 @@ const Activity = (function () {
   }
 
   function paint() {
+    try { paintInner(); } catch (e) { /* never let reporting break the work */ }
+  }
+
+  function paintInner() {
     const el0 = el();
     if (!runs.length) {
       el0.classList.remove("busy", "counted", "stoppable");
@@ -1189,8 +1208,7 @@ const Activity = (function () {
   function notifyTitle(t) {
     if (t === lastTitle) return;
     lastTitle = t;
-    const b = nativeBridge();
-    if (b) b.postMessage({action: "title", title: t});
+    postNative({action: "title", title: t});
   }
 
   function finish(entry) {
@@ -1198,10 +1216,7 @@ const Activity = (function () {
     history = history.slice(0, 25);
     renderHistory();
     // comfort: a long task that ended while you were elsewhere asks for attention
-    if (entry.ms > 8000 && document.hidden) {
-      const b = nativeBridge();
-      if (b) b.postMessage({action: "attention"});
-    }
+    if (entry.ms > 8000 && document.hidden) postNative({action: "attention"});
   }
 
   function renderHistory() {
@@ -1253,6 +1268,16 @@ const Activity = (function () {
 
 function nativeBridge() {
   return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.rmath) || null;
+}
+
+/// Post to the app if the bridge is really there. This is best-effort: a bridge
+/// that is missing or shaped differently must never reject the caller (that once
+/// aborted an evaluation and left the activity spinner running forever).
+function postNative(msg) {
+  try {
+    const b = nativeBridge();
+    if (b && typeof b.postMessage === "function") b.postMessage(msg);
+  } catch (e) { /* optional */ }
 }
 
 function showHistory(open) {
