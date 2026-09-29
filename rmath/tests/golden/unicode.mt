@@ -13,3 +13,8 @@ N[2 π]
 => Alpha + Beta
 x ≤ 2
 => LessEqual[x, 2]
+# U+2212 MINUS SIGN (\[Minus]), the minus pasted from documents/chat answers
+3 − 1
+=> 2
+x − y
+=> x - y

@@ -13,6 +13,12 @@ JSON.stringify((function () {
     cells: document.querySelectorAll(".cell").length,
     form: currentForm,
     formUnchanged: currentForm === window.__form0,
+    steps: window.__stepsFound || 0,
+    stepsRestored: localStorage.getItem("rmath-steps") === window.__steps0,
+    multiLineInput: window.__multiLineInput || "",
+    agentModels: document.querySelectorAll("#agentmodel option").length,
+    copyText: window.__copyText || "",
+    sessionInputs: window.__sessionInputs || [],
     results: [...document.querySelectorAll(".outrow .content")]
                .map(function (e) { return e.textContent.trim(); }).slice(0, 3),
     styles: {

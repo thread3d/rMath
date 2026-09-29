@@ -30,11 +30,104 @@ def work_dir() -> str:
     return os.environ.get("RMATH_WORKDIR") or os.getcwd()
 
 
+def session_path() -> str:
+    """Where the notebook's autosaved session lives (next to the scripts)."""
+    return os.path.join(work_dir(), ".rmath-session.json")
+
+
+def _balanced(text: str) -> bool:
+    """True when brackets/braces/parens are balanced (strings respected)."""
+    depth = 0
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            if i >= len(text):
+                return False
+        elif c in "[{(":
+            depth += 1
+        elif c in "]})":
+            depth -= 1
+            if depth < 0:
+                return False
+        i += 1
+    return depth == 0
+
+
+def fuzz_claim(kernel, lhs, rhs, variables, samples=5):
+    """Numeric sanity check for a verified claim (backlog item 7).
+
+    Substitutes random values for the free variables in both sides and compares
+    the kernel's numeric results. A disagreement means the *translation* — not
+    the mathematics — is suspect, so the caller downgrades the verdict. Returns
+    "" when the samples agree (or cannot be evaluated)."""
+    import random
+    vals = [v for v in (variables or []) if v not in ("Pi", "E", "I")]
+    if not vals or not rhs:
+        return ""
+    for _ in range(samples):
+        env = {v: random.choice([-3, -2, -1, 1, 2, 3]) for v in vals}
+        rules = ", ".join("%s -> %d" % (v, n) for v, n in env.items())
+        try:
+            a = kernel.eval("N[(%s) /. {%s}]" % (lhs, rules))
+            b = kernel.eval("N[(%s) /. {%s}]" % (rhs, rules))
+        except Exception:
+            return ""
+        av = (a.get("result") or "").strip()
+        bv = (b.get("result") or "").strip()
+        if a.get("status") != "ok" or b.get("status") != "ok" or not av or not bv:
+            return ""
+        if av != bv:
+            return "at %s: %s vs %s" % (env, av, bv)
+    return ""
+
+
+def demo_expression(stmt: str) -> str:
+    """The demo prints each example as ``Print["  <label>  =  ", expr]`` so that
+    ``Get``/``make demo`` echoes every step. When a script is *opened* in the
+    notebook, that statement is loaded as the bare ``expr`` instead, so each
+    example gets a real ``Out[n]=`` line (and the label, already shown by the
+    ``In[n]:=`` line, is not repeated). Anything not matching the convention is
+    returned unchanged."""
+    s = stmt.strip()
+    if not s.startswith("Print["):
+        return stmt
+    i = len("Print[")
+    while i < len(s) and s[i] in " \t\r\n":
+        i += 1
+    if i >= len(s) or s[i] != '"':
+        return stmt
+    j = i + 1
+    while j < len(s):
+        c = s[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == '"':
+            break
+        j += 1
+    if j >= len(s) or "  =  " not in s[i + 1 : j]:
+        return stmt
+    k = j + 1
+    while k < len(s) and s[k] in " \t\r\n":
+        k += 1
+    if k >= len(s) or s[k] != ",":
+        return stmt
+    body = s[k + 1 :].rstrip()
+    if not body.endswith("]") or not _balanced(body[:-1]):
+        return stmt
+    expr = body[:-1].strip()
+    return expr if expr else stmt
+
+
 def handle_eval(body: dict) -> dict:
     text = body.get("input", "")
     with _KERNEL_LOCK:
         k = get_kernel()
-        r = k.eval(text)
+        r = k.eval(text, steps=bool(body.get("steps")))
     out = dict(r)
     if r.get("graphics"):
         from .svg import render_graphics
@@ -79,7 +172,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"available": lean.available(),
                         "lake": lean.lake(),
                         "project": lean.project_dir(),
-                        "toolchain": lean.toolchain()})
+                        "toolchain": lean.toolchain(),
+                        "server_mode": lean.persistent_mode(),
+                        "server_trusted": lean.server_trusted()})
         elif path == "/api/agent/status":
             from . import harness
             url, source = harness.endpoint()
@@ -97,7 +192,8 @@ class Handler(BaseHTTPRequestHandler):
                         "endpoint_source": source,
                         "ollama": harness.ollama_available(),
                         "ollama_models": harness.ollama_models(),
-                        "model": harness.harness_model()})
+                        "model": harness.harness_model(),
+                        "models": harness.available_models()})
         elif path.startswith("/katex/"):
             self.serve_katex(path[len("/katex/"):])
         else:
@@ -142,12 +238,22 @@ class Handler(BaseHTTPRequestHandler):
             with _KERNEL_LOCK:
                 get_kernel().reset()
             self._json({"status": "ok"})
+        elif path == "/api/split":
+            # Split a multi-line input into statements with the kernel's own
+            # splitter, which keeps one expression spanning lines together.
+            with _KERNEL_LOCK:
+                stmts = get_kernel().split(body.get("input", ""))
+            self._json({"statements": stmts})
         elif path == "/api/save":
             self.api_save(body)
         elif path == "/api/open":
             self.api_open(body)
         elif path == "/api/save-svg":
             self.api_save_svg(body)
+        elif path == "/api/session":
+            self.api_session()
+        elif path == "/api/autosave":
+            self.api_autosave(body)
         elif path == "/api/agent":
             self.api_agent(body)
         elif path == "/api/agent/stream":
@@ -163,8 +269,68 @@ class Handler(BaseHTTPRequestHandler):
             self._json(lean.run_lean(body.get("code", "")))
         elif path == "/api/lean/verify":
             from . import lean
-            self._json(lean.verify(body.get("input", ""), body.get("result") or None,
-                                   body.get("relation", "=")))
+            inp = body.get("input", "")
+            result = body.get("result") or None
+            result_form = None
+            # `Steps[...]`/`Trace[...]` is a display wrapper, and `Solve[...]`
+            # needs its roots in a structured form: for both, re-evaluate the
+            # expression so the bridge gets the real value / InputForm (the
+            # cell's displayed result is truncated OutputForm).
+            inner = lean.unwrap_display(inp)
+            query = inner if inner is not None else inp
+            numeric = None
+            if inner is not None or lean.is_solve(query):
+                with _KERNEL_LOCK:
+                    r = get_kernel().eval(query)
+                    if r.get("status") == "ok":
+                        plain = (r.get("result") or "").strip()
+                        if plain and plain not in ("Null", "True", "False"):
+                            result = plain
+                            result_form = plain
+                            if lean.is_solve(query):
+                                # N[roots] tells the bridge which roots are real
+                                # (Lean's ℝ check cannot use the complex ones).
+                                rn = get_kernel().eval("N[" + plain + "]")
+                                num = (rn.get("result") or "").strip()
+                                numeric = num if num and num != plain else None
+                inp = query
+            d = lean.verify(inp, result, body.get("relation", "="),
+                            result_form=result_form, numeric=numeric)
+            # Item 7: numeric fuzz. Only for a plain equality claim, and only for
+            # a verdict that would otherwise be reported as verified.
+            if (d.get("outcome") == "verified" and result_form is None and result
+                    and "==" not in inp and d.get("variables")):
+                with _KERNEL_LOCK:
+                    bad = fuzz_claim(get_kernel(), inp, result, d["variables"])
+                if bad:
+                    d["outcome"] = "cannot verify"
+                    d["error"] = "numeric fuzz disagreed: " + bad
+            self._json(d)
+        elif path == "/api/lean/search":
+            # Premise search (Loogle / LeanSearch). Offline is fine: an
+            # unreachable backend comes back as an error with no results.
+            from . import lean
+            self._json(lean.premise_search(body.get("query", ""),
+                                           body.get("backend", "loogle")))
+        elif path == "/api/lean/explore":
+            # Fast, *untrusted* diagnostics from the persistent LSP server
+            # (Mathlib loads once). Verdicts still come from the one-shot run —
+            # the server has published empty diagnostics for real errors before.
+            from . import lean
+            try:
+                code, prop, ty, vs = lean.build_statement(
+                    body.get("input", ""), body.get("result") or None,
+                    result_form=body.get("result_form") or None)
+            except ValueError as e:
+                self._json({"status": "error", "error": str(e)})
+                return
+            try:
+                diags, _, _ = lean.server().check(lean._finalized(code), timeout=60)
+                self._json({"status": "ok", "proposition": prop, "type": ty,
+                            "variables": vs, "diagnostics": diags,
+                            "note": "exploration only — verdicts use the one-shot run"})
+            except Exception as e:
+                self._json({"status": "error", "error": str(e)})
         elif path == "/api/agent/key":
             from . import harness
             key = (body.get("key") or "").strip()
@@ -176,6 +342,22 @@ class Handler(BaseHTTPRequestHandler):
                                 "path": harness.store_key(key, body.get("base_url") or "")})
                 except OSError as e:
                     self._json({"status": "error", "error": str(e)})
+        elif path == "/api/agent/model":
+            from . import acp, harness
+            model = (body.get("model") or "").strip()
+            try:
+                stored = harness.store_model(model)
+            except OSError as e:
+                self._json({"status": "error", "error": str(e)})
+                return
+            # The ACP client reuses one session; restart it so the new model
+            # takes effect on the next run (never kill a task in flight).
+            try:
+                if acp.available() and not acp.current():
+                    acp.stop()
+            except Exception:
+                pass
+            self._json({"status": "ok", "model": model, "path": stored})
 
         else:
             self._send(404, "text/plain", b"not found")
@@ -271,6 +453,9 @@ class Handler(BaseHTTPRequestHandler):
                 text = f.read()
             with _KERNEL_LOCK:
                 statements = get_kernel().split(text)
+            # The demo's labelled examples open as bare expressions, so they get
+            # Out lines in the notebook (Get still prints the labelled line).
+            statements = [demo_expression(s) for s in statements]
             if os.environ.get("RMATH_LOG_REQUESTS") == "1":
                 sys.stderr.write("open %s -> %d statements, %d bytes\n"
                                  % (path, len(statements), len(text)))
@@ -290,6 +475,37 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"status": "ok", "path": path})
         except Exception as e:
             self._json({"status": "error", "error": str(e)})
+
+    def api_session(self):
+        """The autosaved cell inputs, so a restart does not lose the notebook."""
+        try:
+            with open(session_path()) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            self._json({"status": "ok", "inputs": [], "path": None})
+            return
+        self._json({"status": "ok", "inputs": d.get("inputs") or [],
+                    "path": d.get("path")})
+
+    def api_autosave(self, body: dict):
+        inputs = body.get("inputs") or []
+        path = session_path()
+        try:
+            if not inputs:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            else:
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump({"inputs": inputs, "path": body.get("path"),
+                               "saved": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
+                os.replace(tmp, path)
+        except OSError as e:
+            self._json({"status": "error", "error": str(e)})
+            return
+        self._json({"status": "ok", "count": len(inputs)})
 
 
 INDEX_HTML = r"""<!DOCTYPE html>
@@ -359,6 +575,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
           white-space: pre-wrap; padding: 1px 0 1px 2px; }
   .err { color: #a3221f; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
          white-space: pre-wrap; }
+  .steps { margin: 6px 0 2px 0; border-left: 2px solid #cfd6dd; padding: 2px 0 3px 9px; }
+  .steps .stepshdr { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase;
+                     color: #7a8590; margin-bottom: 3px; }
+  .steps .step { display: flex; gap: 9px; align-items: baseline; padding: 1px 0; }
+  .steps .steplbl { flex: 0 0 auto; color: #2f6f4f; font-family: "SF Mono", Menlo, monospace;
+                    font-size: 12px; padding-top: 2px; }
+  .steps .tex { font-size: 15px; }
+  .tb.on { background: #dcefe4; color: #1d5c3c; border-color: #bcdcc9; }
   .tex { font-size: 15.5px; line-height: 1.7; }
   .texrow { padding: 3px 0; }
   .svgbox { margin: 4px 0 2px; }
@@ -451,6 +675,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
                        font-size: 12px; font-weight: 600; }
   #agent .row button.ghost { background: #f3f3f3; color: #333; border-color: #ccc; font-weight: 400; }
   #agent .row .status { font-size: 11.5px; color: #6b7280; }
+  #agent .row .modelpick { display: flex; align-items: center; gap: 5px; font-size: 11.5px;
+                           color: #6b7280; }
+  #agent .row .modelpick select { max-width: 230px; font-size: 11.5px; padding: 3px 5px;
+                                  border: 1px solid #ccc; border-radius: 4px; background: #fff; }
   #agentanswer { border-top: 1px solid #e2e2e2; padding: 9px 14px; flex: 0 1 auto;
                  max-height: 46vh; overflow: auto; font-size: 12.5px; display: none;
                  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
@@ -608,6 +836,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <span class="sep"></span>
   <button class="tb wide" id="formbtn" title="Typesetting form (StandardForm / TraditionalForm)"
           >Standard</button>
+  <button class="tb wide" id="stepsbtn" title="Show a derivation (Steps) under each result"
+          >Steps: Off</button>
   <span class="spacer"></span>
   <div id="activity" title="What rMath is doing (click for recent activity)">
     <span class="spin"></span>
@@ -643,7 +873,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="body">
     <div class="tips">
       <b>Shift+Enter</b> evaluates (or the Evaluate button) &middot; <b>Enter</b> adds a line to the
-      cell &middot; <b>Ctrl+Space</b> completes &middot; pasting several lines makes several cells.<br>
+      cell &middot; <b>Ctrl+Space</b> completes &middot; pasting several statements makes
+      several cells (one expression may span lines).<br>
       Load the demonstration: <code>Get["demo/demo.mt"]</code> &middot; inputs and outputs are
       typeset from the kernel's TeX printer.<br>
       Click any name below to insert it at the cursor.
@@ -664,6 +895,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <button id="agentstop" class="ghost" title="Stop the running task">Stop</button>
       <button id="agentcell" class="ghost">Ask about the last cell</button>
       <button id="agentkey" class="ghost">Set API key…</button>
+    </div>
+    <div class="row">
+      <label class="modelpick" title="Which LLM the harness runs on">Model
+        <select id="agentmodel"><option>(default model)</option></select></label>
       <span class="status" id="agentstatus"></span>
     </div>
     <div class="logwrap"><div id="agentlog"></div></div>
@@ -681,6 +916,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="row">
       <button id="leancheck">Check</button>
       <button id="leancell" class="ghost">Verify the last cell</button>
+      <button id="leanfast" class="ghost" title="Fast LSP diagnostics (exploration only)">Fast check</button>
+      <button id="leanfind" class="ghost" title="Search Mathlib (Loogle) for a lemma">Find lemmas</button>
       <span class="status" id="leanstatus"></span>
     </div>
     <div id="leanstmt" class="md"></div>
@@ -758,6 +995,22 @@ function setForm(form) {
 function toggleForm() {
   setForm(currentForm === 'traditional' ? 'standard' : 'traditional');
 }
+// "Show steps": when on, each evaluation also returns a derivation. The kernel
+// records it during the same pass, so nothing is evaluated twice.
+let showSteps = localStorage.getItem('rmath-steps') === '1';
+function setShowSteps(on) {
+  showSteps = !!on;
+  localStorage.setItem('rmath-steps', showSteps ? '1' : '0');
+  const b = document.getElementById('stepsbtn');
+  if (b) {
+    b.textContent = showSteps ? 'Steps: On' : 'Steps: Off';
+    b.classList.toggle('on', showSteps);
+  }
+}
+function toggleSteps() {
+  setShowSteps(!showSteps);
+  toast('Derivation: ' + (showSteps ? 'on' : 'off'));
+}
 function toast(msg) {
   const t = document.getElementById('toast');
   t.innerHTML = '<div>' + esc(msg) + '</div>';
@@ -790,12 +1043,13 @@ async function evaluateLine(input, cell) {
   inLbl.textContent = 'In[' + inCounter + ']:=';
   outLbl.textContent = 'Out[' + inCounter + ']=';
   inContent.textContent = input;
+  inContent.dataset.src = input;   // what a copy of this cell should yield
 
   let resp;
   try {
     const r = await fetch('/api/eval', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({input})});
+      body: JSON.stringify({input, steps: showSteps})});
     resp = await r.json();
   } catch (e) {
     outContent.innerHTML = '<div class="err">' + esc(String(e)) + '</div>';
@@ -827,11 +1081,20 @@ async function evaluateLine(input, cell) {
       lastPlotSvg = resp.svg;
     } else if (resp.tex) {
       html += mathSpan(resp.tex, resp.tex_trad);
-    } else if (resp.result && resp.result.trim()) {
+    } else if (resp.result && resp.result.trim() && resp.result.trim() !== 'Null') {
       html += esc(resp.result);
     }
   }
+  if (resp.steps && resp.steps.length) {
+    html += '<div class="steps"><div class="stepshdr">Derivation</div>' +
+      resp.steps.map(s =>
+        '<div class="step"><span class="steplbl">' + esc(s.label || '') + '</span>' +
+        (s.tex ? mathSpan(s.tex, s.tex_trad) : esc(s.result || '')) +
+        '</div>').join('') + '</div>';
+  }
   outContent.innerHTML = html;
+  // Copying an output should yield re-parseable InputForm, not rendered glyphs.
+  outContent.dataset.src = resp.input_form || '';
   cell.dataset.result = (resp.result || '').slice(0, 400);
   cell.dataset.status = resp.status || '';
   outRow.classList.remove('pending');
@@ -841,13 +1104,30 @@ async function evaluateLine(input, cell) {
   outLbl.textContent = (resp.status === 'error' || !hasValue) ? '' : 'Out[' + inN + ']=';
   typesetAll(cell);
   evaluated.push(input);
+  scheduleAutosave();
 }
 
 let lastCell = null;
+// A newline in the input bar usually separates statements, but a single
+// expression may also span lines (`N[Gamma[` / `21]]`). Ask the kernel's own
+// statement splitter so such an expression stays one cell.
+async function splitInput(raw) {
+  if (raw.indexOf('\n') < 0) return [raw];
+  try {
+    const r = await fetch('/api/split', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({input: raw})});
+    const d = await r.json();
+    const st = (d.statements || []).map(s => s.trim()).filter(s => s.length);
+    return st.length ? st : [raw];
+  } catch (e) {
+    return raw.split('\n').map(s => s.trim()).filter(s => s.length);
+  }
+}
 async function evalInput() {
   const raw = inp.value;
   if (!raw.trim()) return;
-  const lines = raw.split('\n').map(s => s.trim()).filter(s => s.length);
+  const lines = await splitInput(raw);
   inp.value = '';
   autoGrow();
   ac.style.display = 'none';
@@ -901,6 +1181,9 @@ function newNotebook() {
   evaluated = [];
   lastPlotSvg = null;
   inCounter = 0;
+  sessionToken++;          // abort any in-flight restore
+  sessionPath = null;
+  clearSession();
   setInLabel();
   resetKernelQuiet();
   document.title = 'Untitled-1 — rMath';
@@ -982,6 +1265,7 @@ async function openNotebook(intoInput, givenPath) {
   }
 
   newNotebook();
+  sessionPath = resp.path;
   Activity.setTitle(resp.path.split('/').pop() + ' — rMath');
   toast('Opened ' + resp.path + ' — ' + statements.length + ' cells');
   const act = Activity.begin("opening " + resp.path.split('/').pop(),
@@ -1010,7 +1294,58 @@ async function saveNotebook() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({inputs: evaluated})});
   const resp = await r.json();
+  if (resp.status === 'ok') sessionPath = resp.path;
   toast(resp.status === 'ok' ? 'Saved to ' + resp.path : 'Save failed: ' + (resp.error || ''));
+}
+
+// ---- session persistence ----------------------------------------------------
+// Cells are autosaved (debounced) so a restart does not lose the notebook, and
+// replayed on load, which also re-establishes any definitions they made.
+let sessionPath = null;
+let sessionToken = 0;
+let autosaveTimer = null;
+
+function scheduleAutosave() {
+  if (autosaveTimer) clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(function () {
+    autosaveTimer = null;
+    fetch('/api/autosave', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({inputs: evaluated, path: sessionPath})}).catch(function () {});
+  }, 600);
+}
+
+async function clearSession() {
+  if (autosaveTimer) { clearTimeout(autosaveTimer); autosaveTimer = null; }
+  try {
+    await fetch('/api/autosave', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({inputs: []})});
+  } catch (e) {}
+}
+
+async function restoreSession() {
+  if (notebook.querySelectorAll('.cell').length) return;
+  let s;
+  try {
+    const r = await fetch('/api/session', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}'});
+    s = await r.json();
+  } catch (e) { return; }
+  const inputs = (s && s.inputs) || [];
+  if (!inputs.length) return;
+  const token = sessionToken;
+  sessionPath = s.path || null;
+  Activity.setTitle((s.path ? s.path.split('/').pop() : 'Restored session') + ' — rMath');
+  let n = 0;
+  for (const stmt of inputs) {
+    if (token !== sessionToken) return;    // a New/Open happened meanwhile
+    const cell = addCell();
+    lastCell = cell;
+    await evaluateLine(stmt, cell);
+    n++;
+  }
+  toast('Restored ' + n + ' cell(s) from the last session');
 }
 
 async function saveLastPlotSvg() {
@@ -1599,6 +1934,51 @@ async function leanVerifyLastCell() {
     }
   } catch (e) { leanStatus("failed: " + e); act.end(false, String(e).slice(0, 40)); }
 }
+// Item 4: fast, *untrusted* diagnostics from the persistent LSP server. Mathlib
+// loads once, so this is quick; verdicts still come from the one-shot run.
+async function leanExploreLastCell() {
+  const cells = [...notebook.querySelectorAll(".cell")];
+  let input = inp.value, result = "";
+  const cell = cells[cells.length - 1];
+  if (cell && !input) {
+    const inC = cell.querySelector(".inrow .content");
+    input = (inC && inC.title) || "";
+    result = cell.dataset.result || "";
+  }
+  if (!input) { leanStatus("nothing to check — evaluate a cell first"); return; }
+  leanStatus("fast check…");
+  try {
+    const r = await fetch("/api/lean/explore", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({input: input, result: result})});
+    const res = await r.json();
+    if (res.status !== "ok") { leanStatus("fast check failed: " + (res.error || res.status)); return; }
+    leanShowDiagnostics(res);
+    leanStatus("fast check: " + (res.diagnostics || []).length +
+               " message(s) — exploration only");
+  } catch (e) { leanStatus("fast check failed: " + e); }
+}
+// Item 5: premise search (Loogle) from the panel.
+async function leanFindLemmas() {
+  const query = window.prompt("Search Mathlib (Loogle; ?a is a placeholder):", "");
+  if (!query) return;
+  leanStatus("searching…");
+  try {
+    const r = await fetch("/api/lean/search", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({query: query, backend: "loogle"})});
+    const res = await r.json();
+    if (res.status !== "ok") { leanStatus("search failed: " + (res.error || res.status)); return; }
+    const box = document.getElementById("leandiag");
+    (res.results || []).forEach(function (hit) {
+      const div = document.createElement("div");
+      div.className = "d";
+      div.textContent = hit.name + (hit.type ? "  :  " + hit.type : "");
+      box.insertBefore(div, box.firstChild);
+    });
+    leanStatus((res.results || []).length + " premise(s) found via " + res.backend);
+  } catch (e) { leanStatus("search failed: " + e); }
+}
 
 // ---------------- harness (agent) panel ----------------
 
@@ -1643,25 +2023,63 @@ function agentAnswer(text) {
   }
   a.classList.toggle("show", !!text);
 }
+function renderAgentWho(s) {
+  const pf = (s.preflight && s.preflight.problems || []);
+  document.getElementById("agentwho").textContent = (pf.length ? ("\u26a0 " + pf[0] + "  ") : "") + (s.available
+    ? ("dsh " + s.profile + " → " + s.endpoint + " (" + s.endpoint_source + ")" +
+       (s.model ? ", model " + s.model : "") +
+       (s.ollama ? ", ollama has " + s.ollama_models.length + " model(s)" : "") +
+       (s.key ? "" : "  — no API key: use “Set API key…” or export DEEPSEEK_API_KEY"))
+    : "dsh not found — set DSH_BIN");
+}
+// Fill the model dropdown: the current choice first, then whatever the endpoint
+// and the local Ollama offer.
+function fillAgentModels(s) {
+  const sel = document.getElementById("agentmodel");
+  if (!sel) return;
+  const cur = s.model || "";
+  // "" stands for "follow agent-default-model", so it is always offered first.
+  const models = [""].concat(s.models || []);
+  if (cur && models.indexOf(cur) < 0) models.push(cur);
+  sel.innerHTML = "";
+  models.forEach(function (m) {
+    const o = document.createElement("option");
+    o.value = m;
+    o.textContent = m || "(default model)";
+    if (m === cur) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+function refreshAgent() {
+  fetch("/api/agent/status").then(r => r.json()).then(s => {
+    renderAgentWho(s);
+    fillAgentModels(s);
+  }).catch(function (e) {
+    document.getElementById("agentwho").textContent =
+      isNetworkError(e) ? "\u26a0 notebook server unreachable — restarting it\u2026"
+                        : ("\u26a0 could not read the harness status: " + e);
+  });
+}
 function showAgent(task) {
   const panel = document.getElementById("agent");
   panel.classList.add("open");
   if (typeof task === "string") document.getElementById("agenttask").value = task;
   document.getElementById("agentwho").textContent = "DeepSeek Harness";
   document.getElementById("agenttask").focus();
-  fetch("/api/agent/status").then(r => r.json()).then(s => {
-    const pf = (s.preflight && s.preflight.problems || []);
-    document.getElementById("agentwho").textContent = (pf.length ? ("\u26a0 " + pf[0] + "  ") : "") + (s.available
-      ? ("dsh " + s.profile + " → " + s.endpoint + " (" + s.endpoint_source + ")" +
-         (s.model ? ", model " + s.model : "") +
-         (s.ollama ? ", ollama has " + s.ollama_models.length + " model(s)" : "") +
-         (s.key ? "" : "  — no API key: use “Set API key…” or export DEEPSEEK_API_KEY"))
-      : "dsh not found — set DSH_BIN");
-  }).catch(function (e) {
-    document.getElementById("agentwho").textContent =
-      isNetworkError(e) ? "\u26a0 notebook server unreachable — restarting it\u2026"
-                        : ("\u26a0 could not read the harness status: " + e);
-  });
+  refreshAgent();
+}
+async function chooseAgentModel(model) {
+  agentStatus("switching model…");
+  try {
+    const r = await fetch('/api/agent/model', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: model})});
+    const d = await r.json();
+    agentStatus(d.status === 'ok' ? ('model: ' + (d.model || 'default'))
+                                  : ('failed: ' + (d.error || d.status)));
+    refreshAgent();
+  } catch (e) {
+    agentStatus('failed: ' + e);
+  }
 }
 function hideAgent() { document.getElementById("agent").classList.remove("open"); }
 
@@ -1838,6 +2256,9 @@ function wireControls() {
   });
   const form = document.getElementById('formbtn');
   if (form) form.addEventListener('click', toggleForm);
+  const stepsBtn = document.getElementById('stepsbtn');
+  if (stepsBtn) stepsBtn.addEventListener('click', toggleSteps);
+  setShowSteps(showSteps);
   const report = document.getElementById('reportbtn');
   if (report) {
     report.addEventListener('click', reportBug);
@@ -1867,6 +2288,29 @@ function wireControls() {
   });
   const agentStopBtn = document.getElementById('agentstop');
   if (agentStopBtn) agentStopBtn.addEventListener('click', stopAgent);
+  const agentModelSel = document.getElementById('agentmodel');
+  if (agentModelSel) agentModelSel.addEventListener('change', function () {
+    chooseAgentModel(agentModelSel.value);
+  });
+  // Inputs and outputs are typeset, so a plain copy would paste rendered glyphs
+  // ("Together[1/x + 1/y]" copies as "Together[1x+1y]"). Replace the clipboard
+  // payload with the cell's source (or InputForm) when a single cell is copied.
+  document.addEventListener('copy', function (ev) {
+    try {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const r = sel.getRangeAt(0);
+      const holderOf = function (n) {
+        const el = n.nodeType === 1 ? n : n.parentElement;
+        return (el && el.closest) ? el.closest('.inrow .content, .outrow .content') : null;
+      };
+      const h1 = holderOf(r.startContainer), h2 = holderOf(r.endContainer);
+      if (h1 && h1 === h2 && h1.dataset && h1.dataset.src) {
+        ev.clipboardData.setData('text/plain', h1.dataset.src);
+        ev.preventDefault();
+      }
+    } catch (e) { /* fall back to the browser's copy */ }
+  });
   const agentCell = document.getElementById('agentcell');
   if (agentCell) agentCell.addEventListener('click', askAboutCell);
   const agentKey = document.getElementById('agentkey');
@@ -1891,6 +2335,10 @@ function wireControls() {
   });
   const leanCellBtn = document.getElementById('leancell');
   if (leanCellBtn) leanCellBtn.addEventListener('click', leanVerifyLastCell);
+  const leanFastBtn = document.getElementById('leanfast');
+  if (leanFastBtn) leanFastBtn.addEventListener('click', leanExploreLastCell);
+  const leanFindBtn = document.getElementById('leanfind');
+  if (leanFindBtn) leanFindBtn.addEventListener('click', leanFindLemmas);
   const leanClose = document.getElementById('leanclose');
   if (leanClose) leanClose.addEventListener('click', hideLean);
   const actEl = document.getElementById('activity');
@@ -1916,6 +2364,7 @@ function wireControls() {
   if (filter) filter.addEventListener('input', filterFns);
 }
 wireControls();
+restoreSession();
 
 function autoGrow() {
   inp.style.height = 'auto';

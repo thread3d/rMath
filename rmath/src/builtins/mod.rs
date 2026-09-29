@@ -7,6 +7,9 @@ use crate::builtins::lists::*;
 use crate::builtins::calculus::*;
 use crate::builtins::graphics::*;
 use crate::builtins::linalg::*;
+use crate::builtins::lang::*;
+use crate::builtins::simplify::*;
+use crate::builtins::steps::*;
 use crate::builtins::poly::*;
 use crate::builtins::special::*;
 use crate::eval::{EvalRes, Interp};
@@ -39,6 +42,10 @@ pub mod linalg;
 pub mod num;
 pub mod poly;
 pub mod special;
+pub mod sums;
+pub mod lang;
+pub mod simplify;
+pub mod steps;
 
 pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("List", 0, "`{e1, e2, ...}` list", b_list),
@@ -76,6 +83,13 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("Catch", A_HOLDALL, "`Catch[body]`", b_catch),
     builtin!("Throw", A_HOLDALL, "`Throw[value, tag?]`", b_throw),
     builtin!("Return", A_HOLDALL, "`Return[value?]`", b_return),
+    builtin!("Quiet", A_HOLDALL, "`Quiet[expr]` evaluate without messages", b_quiet),
+    builtin!("Check", A_HOLDALL, "`Check[expr, failexpr]`", b_check),
+    builtin!("Off", A_HOLDALL, "`Off[f, ...]` switch messages off", b_off),
+    builtin!("On", A_HOLDALL, "`On[f, ...]` switch messages on", b_on),
+    builtin!("Abort", 0, "`Abort[]`", b_abort),
+    builtin!("Step", A_HOLDALL, "`Step[label, expr]` a derivation step", b_step),
+    builtin!("TimeConstrained", A_HOLDALL, "`TimeConstrained[expr, t]`", b_timeconstrained),
     builtin!("Replace", crate::expr::A_HOLDALL, "`Replace[expr, rules]`", b_replace),
     builtin!("ReplaceAll", crate::expr::A_HOLDALL, "`expr /. rules`", b_replaceall),
     builtin!("ReplaceRepeated", crate::expr::A_HOLDALL, "`expr //. rules`", b_replacerepeated),
@@ -161,6 +175,12 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("ExpandAll", 0, "`ExpandAll[expr]`", b_expandall),
     builtin!("Together", 0, "`Together[expr]`", b_together),
     builtin!("Cancel", 0, "`Cancel[expr]`", b_cancel),
+    builtin!("Apart", 0, "`Apart[expr, x]` partial fractions", b_apart),
+    builtin!("Simplify", 0, "`Simplify[expr, assum?]`", b_simplify),
+    builtin!("FullSimplify", 0, "`FullSimplify[expr, assum?]`", b_fullsimplify),
+    builtin!("Assuming", A_HOLDALL, "`Assuming[assum, expr]`", b_assuming),
+    builtin!("Steps", A_HOLDALL, "`Steps[expr]` show a derivation", b_steps),
+    builtin!("Trace", A_HOLDALL, "`Trace[expr]` evaluation trace", b_trace),
     builtin!("Collect", 0, "`Collect[expr, x]`", b_collect),
     builtin!("Coefficient", 0, "`Coefficient[expr, x, n?]`", b_coefficient),
     builtin!("CoefficientList", 0, "`CoefficientList[poly, x]`", b_coefficientlist),
@@ -261,8 +281,88 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("RandomReal", A_LISTABLE, "`RandomReal[]`", b_randomreal),
     builtin!("RandomChoice", 0, "`RandomChoice[list]`", b_randomchoice),
     builtin!("AbsoluteTiming", A_HOLDALL, "`AbsoluteTiming[e]`", b_absolutetiming),
+    // ---- language surface (Piecewise, strings, associations, lists) ----
+    builtin!("Piecewise", A_HOLDALL, "`Piecewise[{{v, cond}, ...}]`", b_piecewise),
+    builtin!("StringSplit", 0, "`StringSplit[s, sep?]`", b_stringsplit),
+    builtin!("StringReplace", 0, "`StringReplace[s, a -> b]`", b_stringreplace),
+    builtin!("StringMatchQ", 0, "`StringMatchQ[s, patt]`", b_stringmatchq),
+    builtin!("StringContainsQ", 0, "`StringContainsQ[s, sub]`", b_stringcontainsq),
+    builtin!("Keys", 0, "`Keys[assoc]`", b_keys),
+    builtin!("Values", 0, "`Values[assoc]`", b_values),
+    builtin!("KeyExistsQ", 0, "`KeyExistsQ[assoc, key]`", b_keyexistsq),
+    builtin!("Lookup", 0, "`Lookup[assoc, key, default?]`", b_lookup),
+    builtin!("ConstantArray", 0, "`ConstantArray[c, n]`", b_constantarray),
+    builtin!("Array", A_HOLDFIRST, "`Array[f, n]`", b_array),
+    builtin!("Partition", 0, "`Partition[list, n, d?]`", b_partition),
+    builtin!("Accumulate", 0, "`Accumulate[list]`", b_accumulate),
+    builtin!("Differences", 0, "`Differences[list]`", b_differences),
+    builtin!("Ordering", 0, "`Ordering[list]`", b_ordering),
+    builtin!("TakeWhile", 0, "`TakeWhile[list, crit]`", b_takewhile),
+    builtin!("DeleteCases", 0, "`DeleteCases[list, patt]`", b_deletecases),
+    builtin!("Riffle", 0, "`Riffle[list, sep]`", b_riffle),
     builtin!("Quit", 0, "`Quit[]`", b_quit),
 ];
+
+/// Minimum number of arguments each built-in accepts. Built-ins not listed
+/// default to 0 (variadic or genuinely zero-argument). The evaluator consults
+/// this before dispatch, so a too-short call is reported and left unevaluated
+/// instead of reaching an implementation that indexes past the end of `args`.
+pub fn min_args(name: &str) -> usize {
+    match name {
+        // ---- two or more arguments ----
+        "Set" | "SetDelayed" | "Mod" | "Quotient" | "Rational" | "Complex"
+        | "D" | "Integrate" | "Limit" | "Series" | "Dot" | "Power"
+        | "MatrixPower" | "LinearSolve" | "Solve" | "NSolve" | "FindRoot"
+        | "MatchQ" | "FreeQ" | "MemberQ" | "Select" | "Cases" | "Count"
+        | "Position" | "SortBy" | "Append" | "Prepend" | "Take" | "Drop"
+        | "StringTake" | "StringDrop" | "SetAttributes" | "ClearAttributes"
+        | "AppendTo" | "Table" | "Sum" | "Product" | "Plot"
+        | "ParametricPlot" | "With" | "Block" | "Module" | "Do" | "While"
+        | "Coefficient" | "CoefficientList" | "Exponent" | "Collect"
+        | "PolynomialGCD" | "PolynomialQuotient" | "PolynomialRemainder"
+        | "PolynomialQuotientRemainder" | "Apart" | "Part" | "Put" | "PutAppend"
+        | "Export" | "FixedPoint" | "MapAll" | "MapThread" | "Rule"
+        | "RuleDelayed" | "Replace" | "ReplaceAll" | "ReplaceRepeated"
+        | "Check" | "TimeConstrained"
+        | "StringReplace" | "StringMatchQ" | "StringContainsQ" | "KeyExistsQ"
+        | "Lookup" | "ConstantArray" | "Array" | "Partition" | "TakeWhile"
+        | "DeleteCases" | "Riffle" | "Assuming" => 2,
+        // ---- three or more arguments ----
+        "For" | "Fold" | "Nest" | "NestList" => 3,
+        // ---- one or more arguments ----
+        _ => one_arg_min(name),
+    }
+}
+
+fn one_arg_min(name: &str) -> usize {
+    match name {
+        "Abs" | "Sign" | "Floor" | "Ceiling" | "Round" | "Chop"
+        | "IntegerPart" | "FractionalPart" | "Re" | "Im" | "Conjugate"
+        | "Numerator" | "Denominator" | "Exp" | "Log" | "Sin" | "Cos"
+        | "Tan" | "Cot" | "Sec" | "Csc" | "ArcSin" | "ArcCos" | "ArcTan"
+        | "Sinh" | "Cosh" | "Tanh" | "Sqrt" | "Factorial" | "Gamma"
+        | "Erf" | "Erfc" | "SinIntegral" | "CosIntegral" | "ExpIntegralEi"
+        | "LogIntegral" | "SinhIntegral" | "CoshIntegral" | "Sinc"
+        | "Expand" | "ExpandAll" | "Together" | "Cancel" | "Variables"
+        | "Factor" | "Normal" | "Det" | "Inverse" | "Transpose"
+        | "IdentityMatrix" | "DiagonalMatrix" | "RowReduce" | "MatrixRank"
+        | "ListPlot" | "ListLinePlot" | "Import" | "FileExistsQ"
+        | "DeleteFile" | "PrimeQ" | "Prime" | "Total" | "Reverse"
+        | "Flatten" | "DeleteDuplicates" | "First" | "Last" | "Most"
+        | "Rest" | "Join" | "Thread" | "FullForm" | "InputForm" | "TeXForm"
+        | "ToString" | "ToExpression" | "StringLength" | "Characters"
+        | "ToUpperCase" | "ToLowerCase" | "Attributes" | "Options"
+        | "Definition" | "Names" | "Identity" | "ListQ" | "ValueQ"
+        | "SeedRandom" | "RandomChoice" | "AbsoluteTiming" | "ReleaseHold"
+        | "Evaluate" | "Unevaluated" | "Catch" | "Not" | "TrueQ"
+        | "IntegerQ" | "EvenQ" | "OddQ" | "NumberQ" | "NumericQ" | "AtomQ"
+        | "Head" | "Length" | "Boole" | "N" | "If" | "Unset" | "Get"
+        | "Quiet" | "Piecewise" | "StringSplit" | "Keys" | "Values"
+        | "Accumulate" | "Differences" | "Ordering" | "Simplify"
+        | "FullSimplify" | "Steps" | "Trace" => 1,
+        _ => 0,
+    }
+}
 
 /// Texts for common messages.
 pub fn message_text(tag: &str, name: &str) -> String {

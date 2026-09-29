@@ -193,6 +193,7 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
             i.prints.clear();
             i.in_count += 1;
             let in_n = i.in_count;
+            let want_steps = matches!(req.get("steps"), Some(crate::json::J::Bool(true)));
             match parse_input(&mut i.t, &input) {
                 Err(pe) => {
                     let resp = obj(vec![
@@ -223,7 +224,21 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                     let mut input_text = String::new();
                     let mut graphics = None;
                     let mut flow_err: Option<String> = None;
-                    match i.eval(&e) {
+                    // "Show steps": one evaluation that also records the
+                    // derivation (no double evaluation, so no double effects).
+                    let mut steps_out: Option<Vec<(String, Expr)>> = None;
+                    let eval_res: Result<Expr, Flow> = if want_steps {
+                        match crate::builtins::steps::run_with_steps(i, &e) {
+                            Ok((st, v)) => {
+                                steps_out = Some(st);
+                                Ok(v)
+                            }
+                            Err(f) => Err(f),
+                        }
+                    } else {
+                        i.eval(&e)
+                    };
+                    match eval_res {
                         Ok(v) => {
                             for (tag, text) in i.messages.drain(..) {
                                 msgs.push(
@@ -268,6 +283,20 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                             i.out_history.push(v);
                             out_n = Some(i.out_history.len());
                         }
+                        Err(Flow::Abort) => {
+                            i.depth = 0;
+                            let v = Expr::Sym(i.t.intern("$Aborted"));
+                            result_text = output_form(&i.t, &v);
+                            input_text = input_form(&i.t, &v);
+                            tex_text = Some(crate::tex::tex_form(&i.t, &v));
+                            tex_trad = Some(crate::tex::tex_form_as(
+                                &i.t,
+                                &v,
+                                crate::tex::Form::Traditional,
+                            ));
+                            i.out_history.push(v);
+                            out_n = Some(i.out_history.len());
+                        }
                         Err(_) => {
                             flow_err = Some("Evaluation aborted.".to_string());
                         }
@@ -307,6 +336,32 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                         }
                         if !msgs.is_empty() {
                             resp = resp.set("messages", crate::json::J::Arr(msgs));
+                        }
+                        if let Some(steps) = steps_out.take() {
+                            let arr: Vec<crate::json::J> = steps
+                                .iter()
+                                .map(|(label, expr)| {
+                                    crate::json::J::obj()
+                                        .set("label", crate::json::J::str_of(label))
+                                        .set(
+                                            "result",
+                                            crate::json::J::str_of(&output_form(&i.t, expr)),
+                                        )
+                                        .set(
+                                            "tex",
+                                            crate::json::J::str_of(&crate::tex::tex_form(&i.t, expr)),
+                                        )
+                                        .set(
+                                            "tex_trad",
+                                            crate::json::J::str_of(&crate::tex::tex_form_as(
+                                                &i.t,
+                                                expr,
+                                                crate::tex::Form::Traditional,
+                                            )),
+                                        )
+                                })
+                                .collect();
+                            resp = resp.set("steps", crate::json::J::Arr(arr));
                         }
                     }
                     resp.write(out);

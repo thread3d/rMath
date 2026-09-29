@@ -319,9 +319,18 @@ pub fn canon_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
     match (a, b) {
         (Expr::Int(x), Expr::Int(y)) => x.cmp(y),
         (Expr::Rat(x), Expr::Rat(y)) => x.cmp(y),
-        (Expr::Int(x), Expr::Rat(y)) | (Expr::Rat(y), Expr::Int(x)) => {
+        // These must be two arms: the or-pattern form always compared
+        // `Int.cmp(Rat)`, so `canon_cmp(Rat, Int)` came out the same as
+        // `canon_cmp(Int, Rat)`. The Orderless sort then was not antisymmetric
+        // and could oscillate — `-x^3 + 5/4 x^4` looped until the iteration
+        // limit, which surfaced as `Integrate` hanging on some polynomials.
+        (Expr::Int(x), Expr::Rat(y)) => {
             let rx = Rat { num: x.clone(), den: BigInt::one() };
             rx.cmp(y)
+        }
+        (Expr::Rat(x), Expr::Int(y)) => {
+            let ry = Rat { num: y.clone(), den: BigInt::one() };
+            x.cmp(&ry)
         }
         (Expr::Real(x), Expr::Real(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
         (Expr::Cnum(x), Expr::Cnum(y)) => {

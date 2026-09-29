@@ -14,6 +14,7 @@ which avoids writing yet another parser.
 
 import ast
 import atexit
+import copy
 import json
 import os
 import re
@@ -51,18 +52,26 @@ CONSTS = {
 # chain is deliberately a set of fallbacks.
 QUIET = ("set_option linter.unreachableTactic false\n"
          "set_option linter.unusedTactic false\n"
-         "set_option linter.unnecessarySimpa false\n\n")
+         "set_option linter.unnecessarySimpa false\n"
+         "set_option autoImplicit false\n\n")
 
 # Functions that are real-valued, forcing the ℝ interpretation.
 REAL_FUNCS = {v for k, v in FUNCS.items() if v.startswith("Real.")}
 
 # Used as `solve | ...`: only an alternative that *closes* the goal counts.
 # `first` would stop at a tactic that merely simplified, leaving the goal open.
-TACTICS = ("norm_num | ring | ring_nf | positivity | linarith | nlinarith | "
-           "omega | simp | decide | rfl"
-           if False else
-           "norm_num | ring | ring_nf | positivity | linarith | nlinarith | "
-           "omega | simp | decide | rfl")
+# Ordered cheapest/most-likely first; `solve |` only accepts a tactic that
+# *closes* the goal, so the search engines go last. `rmath_radical` is defined in
+# `lean/RMathLemmas.lean`, which is inlined into every generated file.
+TACTICS = ("rmath_radical | norm_num [Real.sq_sqrt] | norm_num | ring | ring_nf | "
+           "field_simp | norm_cast | positivity | linarith | nlinarith | gcongr | "
+           "omega | simp | simp_all | decide | rfl | aesop | grind")
+
+# Root substitution additionally knows how to use `Real.sq_sqrt`, which closes
+# real-radical roots like (√2)² − 2 = 0 that plain `norm_num` leaves open.
+SOLVE_TACTICS = ("rmath_radical | norm_num [Real.sq_sqrt] | norm_num | ring | ring_nf | "
+                 "field_simp | norm_cast | nlinarith | linarith | positivity | gcongr | "
+                 "omega | simp | simp_all | decide | rfl | aesop | grind")
 
 
 def project_dir():
@@ -118,14 +127,17 @@ class LeanServer:
 
     def __init__(self, project, timeout=600):
         self.project = project
-        self.uri = "file://" + os.path.join(project, "RMathSession.lean")
-        self.path = os.path.join(project, "RMathSession.lean")
+        # One persistent session file (gitignored), changed in place so Mathlib
+        # is imported once.
+        self.uri = "file://" + os.path.join(project, "RMathCheck.lean")
+        self.path = os.path.join(project, "RMathCheck.lean")
         self.timeout = timeout
         self.proc = None
         self.version = 0
         self.opened = False
         self.seq = 0
         self.lock = threading.RLock()
+        self.check_lock = threading.Lock()
         self.msgs = []
         self.cond = threading.Condition(self.lock)
         self.next_id = 1
@@ -134,6 +146,8 @@ class LeanServer:
         self.done_seq = 0     # $/lean/fileProgress with no work left
         self.trace = []       # (method, summary) for debugging
         self.stderr = ""
+        self.logs = []        # window/logMessage + showMessage text (e.g. #print axioms)
+        self.trusted = None   # calibration result; None = not run yet
 
     # ---- plumbing
     def _env(self):
@@ -186,6 +200,11 @@ class LeanServer:
                 if method == "textDocument/publishDiagnostics":
                     self.msgs.append(msg)
                     self.diag_seq += 1
+                elif method in ("window/logMessage", "window/showMessage"):
+                    text = (msg.get("params") or {}).get("message", "")
+                    if text:
+                        self.logs.append(text)
+                        del self.logs[:-200]
                 elif method == "$/lean/fileProgress":
                     if not (msg.get("params") or {}).get("processing"):
                         self.done_seq += 1
@@ -231,82 +250,100 @@ class LeanServer:
         return self.proc is not None and self.proc.poll() is None
 
     # ---- checking
-    def check(self, code, timeout=None, settle=3.0):
-        """Check `code`, waiting for this file's *elaborated* diagnostics.
+    def check(self, code, timeout=None, settle=2.0):
+        """Check `code` in one shared session file.
 
-        Each check gets a fresh URI and an explicit `didChange`: a plain
-        `didOpen` makes the server publish an empty batch and the real
-        diagnostics only afterwards, which is how a false claim once came back
-        "verified". Matching on the fresh URI *and* version removes both the
-        staleness and the too-early read.
+        The same gitignored file is kept open and changed in place, so Mathlib is
+        imported once and each later check costs only elaboration. Two things
+        make the result conclusive: the `didSave` (without it the server leaves
+        the file at its pre-elaboration, empty batch — the old "false claim came
+        back verified" bug) and the `$/lean/fileProgress` completion. An absent
+        batch is therefore never read as "no errors"; the caller falls back to
+        the one-shot run.
         """
-        with self.lock:
-            self.seq += 1
-            name = "RMathCheck_%d.lean" % self.seq
-        path = os.path.join(self.project, name)
-        uri = "file://" + path
-        with open(path, "w") as f:
-            f.write(code)
-        self._notify("textDocument/didOpen", {"textDocument": {
-            "uri": uri, "languageId": "lean4", "version": 1, "text": code}})
+        with self.check_lock:
+            self.version += 1
+            version = self.version
+            path, uri = self.path, self.uri
+            with open(path, "w") as f:
+                f.write(code)
+            if not self.opened:
+                self._notify("textDocument/didOpen", {"textDocument": {
+                    "uri": uri, "languageId": "lean4", "version": version,
+                    "text": code}})
+                self.opened = True
+            else:
+                self._notify("textDocument/didChange", {
+                    "textDocument": {"uri": uri, "version": version},
+                    "contentChanges": [{"text": code}]})
+            self._notify("textDocument/didSave", {"textDocument": {"uri": uri}})
 
-        limit = timeout or self.timeout
-        deadline = time.time() + limit
-        batch = None
-        try:
-            # The server answers `didOpen` with a pre-elaboration (empty) batch;
-            # wait for that round to finish before asking for the change, or the
-            # two collapse and the elaborated diagnostics never arrive.
-            with self.cond:
-                while not any(m["params"].get("uri") == uri for m in self.msgs):
-                    if not self.cond.wait(max(0.05, min(5.0, deadline - time.time()))):
-                        break
-            time.sleep(0.3)
-            self._notify("textDocument/didChange", {
-                "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [{"text": code}]})
+            limit = timeout or self.timeout
+            deadline = time.time() + limit
+            done0 = self.done_seq
+            batch = None
             with self.cond:
                 while True:
                     batch = next((m for m in reversed(self.msgs)
                                   if m["params"].get("uri") == uri
-                                  and m["params"].get("version") == 2), None)
-                    if batch is not None:
+                                  and m["params"].get("version") == version), None)
+                    has_diag = bool(batch and batch["params"].get("diagnostics"))
+                    if has_diag or self.done_seq > done0:
                         break
                     if self.proc.poll() is not None:
                         raise RuntimeError("lean --server exited: %s" % self.stderr[-300:])
                     if not self.cond.wait(max(0.05, deadline - time.time())):
                         if time.time() > deadline:
-                            raise TimeoutError("no diagnostics for %s within %ss" % (name, limit))
-                # let any follow-up batch for the same file/version land
+                            break           # inconclusive: the caller falls back
+                # let any follow-up batch for the same version land
                 last = time.monotonic()
                 while time.monotonic() - last < settle and time.monotonic() < deadline:
                     self.cond.wait(0.1)
                     newer = next((m for m in reversed(self.msgs)
                                   if m["params"].get("uri") == uri
-                                  and m["params"].get("version") == 2), None)
+                                  and m["params"].get("version") == version), None)
                     if newer is not batch:
                         batch = newer
                         last = time.monotonic()
-        finally:
-            try:
-                self._notify("textDocument/didClose", {"textDocument": {"uri": uri}})
-            except Exception:
-                pass
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
 
-        diags = []
-        for d in (batch or {}).get("params", {}).get("diagnostics", []):
-            sev = d.get("severity")
-            diags.append({
-                "severity": {1: "error", 2: "warning"}.get(sev, "info"),
-                "line": d.get("range", {}).get("start", {}).get("line", 0) + 1,
-                "col": d.get("range", {}).get("start", {}).get("character", 0) + 1,
-                "message": d.get("message", "").strip(),
-            })
-        return diags, "\n".join(d["message"] for d in diags)
+            diags = []
+            for d in (batch or {}).get("params", {}).get("diagnostics", []):
+                sev = d.get("severity")
+                diags.append({
+                    "severity": {1: "error", 2: "warning"}.get(sev, "info"),
+                    "line": d.get("range", {}).get("start", {}).get("line", 0) + 1,
+                    "col": d.get("range", {}).get("start", {}).get("character", 0) + 1,
+                    "message": d.get("message", "").strip(),
+                })
+            # `conclusive` requires an elaboration-complete signal (fileProgress)
+            # or a batch that actually carries diagnostics.
+            conclusive = (self.done_seq > done0) or bool(
+                batch and batch["params"].get("diagnostics"))
+            return diags, "\n".join(d["message"] for d in diags), conclusive
+
+    def calibrate(self):
+        """Prove the server can tell a false claim from a true one.
+
+        A verdict is only taken from the server when this passes; otherwise the
+        one-shot `lake env lean` run decides. This is what closes the LSP path:
+        the empty-diagnostics race can no longer turn a false claim into a
+        verified one, whatever the protocol timing.
+        """
+        if self.trusted is not None:
+            return self.trusted
+        header = "import Mathlib\n\n"
+        try:
+            bad, _, cb = self.check(header + "example : (1 : ℚ) = 2 := by norm_num",
+                                    timeout=180)
+            good, _, cg = self.check(header + "example : (1 : ℚ) = 1 := by norm_num",
+                                     timeout=180)
+        except Exception:
+            self.trusted = False
+            return False
+        bad_err = any(d["severity"] == "error" for d in bad)
+        good_err = any(d["severity"] == "error" for d in good)
+        self.trusted = bool(cb and cg and bad_err and not good_err)
+        return self.trusted
 
     def stop(self):
         try:
@@ -347,6 +384,13 @@ def stop_server():
             _SERVER = None
 
 
+def server_trusted():
+    """Whether the live server has passed calibration (`None` if not running or
+    not yet calibrated)."""
+    with _SERVER_LOCK:
+        return None if _SERVER is None else _SERVER.trusted
+
+
 def parse_diagnostics(output):
     """Lean prints `file:line:col: severity: message`; fold continuation lines
     into the message they belong to."""
@@ -367,17 +411,24 @@ def parse_diagnostics(output):
     return diags
 
 
-def persistent_enabled():
-    """The LSP server is opt-in.
+def persistent_mode():
+    """How the persistent LSP server may be used.
 
-    It is much faster (Mathlib loads once: ~0.8s per check instead of ~10s), but
-    in testing it published *empty* diagnostic batches for files with genuine
-    errors — for example `example : (1 : ℚ) = 2 := by norm_num` came back with
-    no diagnostics, which would report a false claim as verified. Verdicts
-    therefore use the one-shot run, whose exit status is authoritative. Set
-    RMATH_LEAN_SERVER=1 to use the server for interactive checking only.
+    `"auto"` (default) — use it for verdicts once it calibrates, else fall back
+    to the one-shot run; `"require"` — as auto, but report if it is unusable;
+    `"off"` — always one-shot. Whatever the mode, a non-conclusive server check
+    falls back, so a verdict can never come from a missing diagnostics batch.
     """
-    return os.environ.get("RMATH_LEAN_SERVER", "") not in ("", "0", "false")
+    v = os.environ.get("RMATH_LEAN_SERVER", "auto").strip().lower()
+    if v in ("0", "false", "no", "off", "none"):
+        return "off"
+    if v in ("1", "true", "yes", "on", "require"):
+        return "require"
+    return "auto"
+
+
+def persistent_enabled():
+    return persistent_mode() != "off"
 
 
 def run_lean(code, timeout=600, filename=None, persistent=None):
@@ -392,7 +443,14 @@ def run_lean(code, timeout=600, filename=None, persistent=None):
     if persistent and available():
         try:
             t0 = time.time()
-            diags, _ = server().check(body, timeout=timeout)
+            srv = server()
+            # A verdict is only taken from the server once it has proved it can
+            # tell a false claim from a true one, and only from a conclusive check.
+            if not srv.calibrate():
+                raise RuntimeError("LSP server failed calibration")
+            diags, _, conclusive = srv.check(body, timeout=timeout)
+            if not conclusive:
+                raise RuntimeError("LSP server returned no diagnostics batch")
             errors = [d for d in diags if d["severity"] == "error"]
             return {"status": "ok" if not errors else "error", "output": "",
                     "diagnostics": diags, "exit": 0 if not errors else 1,
@@ -474,6 +532,11 @@ def _rmath_to_python(text):
     t = re.sub(r"\b([A-Za-z][A-Za-z0-9]*)\s*\[", r"\1(", t)  # calls: Sin[x] -> Sin(x)
     t = t.replace("[", "(").replace("]", ")")
     t = t.replace("{", "(").replace("}", ")")
+    # Juxtaposition without whitespace, as rMath input allows: `2x²`, `2(x+1)`,
+    # `(x+1)(x-1)`. The leading lookbehind keeps identifiers that merely end in a
+    # digit (e.g. `Log2`) and decimals (`1.5`) from being split.
+    t = re.sub(r"(?<![A-Za-z_0-9.])([0-9]+)(?=[A-Za-z(])", r"\1*", t)
+    t = re.sub(r"(?<=\))(?=[A-Za-z0-9(])", "*", t)
     t = t.replace("^", "**")
     t = t.replace("&&", " and ").replace("||", " or ")
     # insert multiplication for juxtaposed factors, but never before a call
@@ -500,9 +563,10 @@ def _rmath_to_python(text):
 class Translator:
     """rMath text -> (Lean expression, type, free variables)."""
 
-    def __init__(self, ascribe=False, ty=None):
+    def __init__(self, ascribe=False, ty=None, complex=False):
         self.vars = {}
         self.real = False
+        self.complex = complex
         self.error = None
         # Second pass: every numeral carries its type, so Lean cannot default
         # a bare `1/2` to ℕ (where 1/2 = 0 and false claims become provable).
@@ -534,7 +598,9 @@ class Translator:
                 self.real = True
                 return CONSTS[n]
             if n == "I":
-                raise ValueError("complex numbers are not translated")
+                if not self.complex:
+                    raise ValueError("complex numbers are not translated")
+                return "Complex.I"
             if n in ("True", "False"):
                 return n
             self.vars[n] = self.vars.get(n, None)
@@ -594,6 +660,10 @@ class Translator:
                 if self.ascribe and outer:
                     return "((Nat.factorial %s : ℕ) : %s)" % (inner, outer)
                 return "Nat.factorial %s" % inner
+            if fname == "Sqrt" and self.complex and len(node.args) == 1:
+                # A negative radicand is a genuine complex square root; keep it
+                # in ℂ rather than letting ℝ collapse it to 0.
+                return "Complex.sqrt (%s)" % self.expr(node.args[0])
             target = FUNCS.get(fname)
             if target is None:
                 raise ValueError("no Lean translation for %s" % fname)
@@ -830,8 +900,13 @@ def calculus_statement(lhs_text, rhs_text):
         return (QUIET + "example : %s := by\n  solve | %s\n" % (prop, INTEGRAL_TACTICS),
                 prop, "ℝ", [])
     if kind == "indefinite":
-        raise ValueError("antiderivatives need a derivative proof, which is not "
-                         "wired up yet (this Mathlib has no `deriv` tactic)")
+        # ∫ f dx = F is checked by proving (d/dx) F = f — the same HasDerivAt
+        # wiring used for D[...], with F on the left instead of the integrand.
+        target_text = _to_text(target) if not isinstance(target, str) else target
+        try:
+            return derivative_statement("D[%s, %s]" % (rhs_text, var), target_text, var)
+        except ValueError as e:
+            raise ValueError("cannot check this antiderivative: %s" % e)
     try:
         return derivative_statement(lhs_text, rhs_text, var)
     except ValueError as e:
@@ -842,8 +917,355 @@ def _to_text(node):
     return ast.unparse(node)
 
 
+def _balanced_brackets(text):
+    """True when brackets/braces/parens are balanced (string literals respected)."""
+    depth = 0
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            if i >= len(text):
+                return False
+        elif c in "[{(":
+            depth += 1
+        elif c in "]})":
+            depth -= 1
+            if depth < 0:
+                return False
+        i += 1
+    return depth == 0
+
+
+# Heads that only wrap an expression for display; Lean checks what is inside.
+DISPLAY_WRAPPERS = ("Steps", "Trace")
+
+
+def unwrap_display(text):
+    """The inner expression of a display wrapper `Steps[e]` / `Trace[e]`, or
+    None when `text` is not one. A cell showing a derivation should be verified
+    by the thing it derives, not by the Step list."""
+    s = text.strip()
+    for head in DISPLAY_WRAPPERS:
+        prefix = head + "["
+        if s.startswith(prefix) and s.endswith("]"):
+            inner = s[len(prefix):-1].strip()
+            if inner and _balanced_brackets(inner):
+                return inner
+    return None
+
+
+def is_solve(text):
+    """True when `text` is a `Solve[...]` call."""
+    try:
+        body = ast.parse(_rmath_to_python(text), mode="eval").body
+    except SyntaxError:
+        return False
+    return isinstance(body, ast.Call) and getattr(body.func, "id", "") == "Solve"
+
+
+def _split_top_level(text):
+    """Split at top-level commas, respecting brackets/braces and strings."""
+    parts, depth, cur, i = [], 0, [], 0
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            cur.append(c)
+            i += 1
+            while i < len(text):
+                cur.append(text[i])
+                if text[i] == "\\" and i + 1 < len(text):
+                    cur.append(text[i + 1])
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c in "[{(":
+            depth += 1
+        elif c in "]})":
+            depth -= 1
+        if c == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    parts.append("".join(cur))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _parse_root_ast(result_text, numeric=None):
+    """Root values from a Solve result's OutputForm,
+    `{{x -> r1}, {x -> r2}}` -> `[r1, r2]` (ASTs). OutputForm keeps `Sqrt[…]`
+    and `^`, which the translator already understands.
+
+    `numeric` is the OutputForm of `N[result]`; roots with an imaginary part are
+    dropped, since Lean checks equations over ℝ (and `Real.sqrt` of a negative
+    is 0, so such a claim would be false)."""
+    sym_texts = _root_texts(result_text)
+    num_texts = _root_texts(numeric) if numeric else []
+    roots = []
+    for i, txt in enumerate(sym_texts):
+        if i < len(num_texts) and "I" in num_texts[i]:
+            continue
+        try:
+            roots.append(ast.parse(_rmath_to_python(txt), mode="eval").body)
+        except SyntaxError:
+            continue
+    return roots
+
+
+def _root_texts(result_text):
+    """The rMath text of each root in a `{{x -> r}, ...}` result."""
+    s = (result_text or "").strip()
+    if s.startswith("{") and s.endswith("}"):
+        s = s[1:-1]
+    out = []
+    for item in _split_top_level(s):
+        if item.startswith("{") and item.endswith("}"):
+            item = item[1:-1]
+        if "->" not in item:
+            continue
+        rhs = item.partition("->")[2].strip()
+        if rhs:
+            out.append(rhs)
+    return out
+
+
+class _SubstituteVar(ast.NodeTransformer):
+    def __init__(self, name, repl):
+        self.name = name
+        self.repl = repl
+
+    def visit_Name(self, node):
+        if node.id == self.name:
+            return ast.copy_location(self.repl, node)
+        return node
+
+
+def _complex_solve_statement(left, right, var, all_texts, relation):
+    """All roots are non-real: substitute them back over ℂ (where they live).
+    Item 3 of the Lean backlog."""
+    parts, vs = [], set()
+    for txt in all_texts:
+        try:
+            root = ast.parse(_rmath_to_python(txt), mode="eval").body
+        except SyntaxError:
+            continue
+        t = _SubstituteVar(var, root)
+        lhs = t.visit(copy.deepcopy(left))
+        rhs = t.visit(copy.deepcopy(right))
+        tl = Translator(ascribe=True, ty="ℂ", complex=True)
+        rl = Translator(ascribe=True, ty="ℂ", complex=True)
+        parts.append("(%s %s %s)" % (tl.expr(lhs), relation, rl.expr(rhs)))
+        vs |= set(tl.vars) | set(rl.vars)
+    if not parts:
+        raise ValueError("every root is complex and could not be translated")
+    vs.discard(var)
+    prop = " ∧ ".join(parts) if len(parts) > 1 else parts[0]
+    names = sorted(vs)
+    binders = ("(" + " ".join(names) + " : ℂ) ") if names else ""
+    code = ("-- no real roots: the roots are substituted back over ℂ\n" + QUIET +
+            "example %s: %s := by\n  solve | %s\n" % (binders, prop, SOLVE_TACTICS))
+    return (code, prop, "ℂ", names)
+
+
+def solve_statement(solve_text, result_form, numeric=None, relation="="):
+    """A `Solve[eq, x]` claim: each (real) root the kernel returned satisfies
+    `eq`. The kernel found the roots; Lean is asked the independent question —
+    is each of these actually a root? — by substituting it back into the
+    equation. Non-real roots are dropped (this is an ℝ check). Returns None when
+    `solve_text` is not a Solve call.
+    """
+    try:
+        body = ast.parse(_rmath_to_python(solve_text), mode="eval").body
+    except SyntaxError as e:
+        raise ValueError("cannot parse %r as rMath: %s" % (solve_text, e.msg))
+    if not (isinstance(body, ast.Call) and getattr(body.func, "id", "") == "Solve"):
+        return None
+    if len(body.args) != 2 or not isinstance(body.args[1], ast.Name):
+        raise ValueError("cannot check this Solve: only one equation in one "
+                         "variable is supported")
+    eq, var = body.args[0], body.args[1].id
+    if not (isinstance(eq, ast.Compare) and len(eq.ops) == 1
+            and isinstance(eq.ops[0], ast.Eq)):
+        raise ValueError("cannot check this Solve: the input must be an "
+                         "equation `a == b`")
+    left, right = eq.left, eq.comparators[0]
+    all_texts = _root_texts(result_form)
+    roots = _parse_root_ast(result_form, numeric)
+    if not roots:
+        if all_texts:
+            # No real roots: check them over ℂ instead of refusing.
+            return _complex_solve_statement(left, right, var, all_texts, relation)
+        raise ValueError("Solve returned no roots to check")
+    skipped = len(all_texts) - len(roots)
+    # ℝ when the equation or any root is real-valued (Sqrt, Pi, Real.*).
+    real = False
+    for r in roots:
+        p = Translator()
+        p.expr(r)
+        real = real or p.real
+    p = Translator()
+    p.expr(eq)
+    real = real or p.real
+    ty = "ℝ" if real else "ℚ"
+    parts = []
+    vs = set()
+    for root in roots:
+        t = _SubstituteVar(var, root)
+        lhs = t.visit(copy.deepcopy(left))
+        rhs = t.visit(copy.deepcopy(right))
+        tl = Translator(ascribe=True, ty=ty)
+        rl = Translator(ascribe=True, ty=ty)
+        parts.append("(%s %s %s)" % (tl.expr(lhs), relation, rl.expr(rhs)))
+        vs |= set(tl.vars) | set(rl.vars)
+    vs.discard(var)
+    prop = " ∧ ".join(parts) if len(parts) > 1 else parts[0]
+    names = sorted(vs)
+    binders = ("(" + " ".join(names) + " : %s) " % ty) if names else ""
+    note = ""
+    if skipped:
+        note = "-- checked %d of %d roots; the other %d are not real\n" % (
+            len(roots), len(all_texts), skipped)
+    code = note + QUIET + "example %s: %s := by\n  solve | %s\n" % (
+        binders, prop, SOLVE_TACTICS)
+    return (code, prop, ty, names)
+
+
+_PREAMBLE = None
+
+
+def _with_import(code):
+    """The file body with `import Mathlib` guaranteed (the inlined preamble has
+    no import of its own)."""
+    return code if code.lstrip().startswith("import") else "import Mathlib\n\n" + code
+
+
+def _preamble():
+    """`lean/RMathLemmas.lean` without its `import` line, inlined into each
+    generated file so no separate `lake build` step is needed."""
+    global _PREAMBLE
+    if _PREAMBLE is None:
+        try:
+            with open(os.path.join(project_dir(), "RMathLemmas.lean")) as f:
+                lines = f.readlines()
+            _PREAMBLE = "".join(
+                l for l in lines if not l.strip().startswith("import ")).strip() + "\n\n"
+        except OSError:
+            _PREAMBLE = ""
+    return _PREAMBLE
+
+
+def _named(code):
+    """Name the generated proof so `#print axioms` can audit it."""
+    return code.replace("example", "theorem rmath_check", 1)
+
+
+def _finalized(code):
+    return _preamble() + _named(code) + "\n#print axioms rmath_check\n"
+
+
+def _display(code):
+    """What the panel shows: the claim without the linter preamble."""
+    return _named(code).replace(QUIET, "") + "\n#print axioms rmath_check"
+
+
+_AXIOM_RE = re.compile(r"depends on axioms:\s*\[([^\]]*)\]")
+
+
+def _parse_axioms(output):
+    m = _AXIOM_RE.search(output or "")
+    if not m:
+        return []
+    return [a.strip() for a in m.group(1).split(",") if a.strip()]
+
+
+def _hammer_enabled():
+    return os.environ.get("RMATH_LEAN_HAMMER", "") in ("1", "true", "yes")
+
+
+def _hammer_run(code, timeout):
+    """A second attempt with external hammers, for projects that add Duper or
+    lean-smt to `lakefile.toml`. Harmless (just unproved) when they are absent."""
+    alt = re.sub(r"solve \| .*", "solve | duper | lean_smt | aesop | grind", code, count=1)
+    if alt == code:
+        return None
+    res = run_lean(_finalized(alt), timeout=timeout, filename="RMathVerify.lean",
+                   persistent=False)
+    res["lean"] = _finalized(alt)
+    res["lean_display"] = _display(alt)
+    res["axioms"] = _parse_axioms(res.get("output", ""))
+    res["via"] = "hammer"
+    if res.get("status") == "ok":
+        res["outcome"] = "verified"
+    elif res.get("status") == "error" and res.get("errors"):
+        res["outcome"] = "unproved"
+    else:
+        res["outcome"] = res.get("status", "error")
+    return res
+
+
+def _transparent_unwrap(text):
+    """Reduce `Collect[e, x]`, `Apart[e, x]`, `Factor[e]`, … to the expression
+    whose value they preserve. Without this their extra argument reaches the
+    Python translation and becomes a tuple (`unsupported construct Tuple`)."""
+    s = text.strip()
+    for name in sorted(TRANSPARENT, key=len, reverse=True):
+        if s.startswith(name) and s[len(name):].lstrip().startswith("["):
+            inner = s[s.index("[") + 1:].rstrip()
+            if inner.endswith("]"):
+                inner = inner[:-1]
+            parts = _split_top_level(inner)
+            if parts:
+                return _transparent_unwrap(parts[0])
+    return s
+
+
+_FINITE = re.compile(r"^(Sum|Product)\s*\[(.*)\]\s*$", re.S)
+
+
+def _expand_finite(text):
+    """`Sum[f, {i, a, b}]` / `Product[f, {i, a, b}]` with integer bounds become
+    the explicit sum/product, which `norm_num` can evaluate directly."""
+    m = _FINITE.match(text.strip())
+    if not m:
+        return text
+    head, inner = m.group(1), m.group(2)
+    parts = _split_top_level(inner)
+    if len(parts) != 2:
+        return text
+    spec = parts[1].strip().strip("{}")
+    spec = _split_top_level(spec)
+    if len(spec) != 3 or not isinstance(spec[0], str):
+        return text
+    var = spec[0].strip()
+    try:
+        lo, hi = int(spec[1]), int(spec[2])
+    except ValueError:
+        return text
+    if hi < lo or hi - lo > 40:
+        return text
+    body = parts[0]
+    terms = [re.sub(r"\b%s\b" % re.escape(var), str(k), body) for k in range(lo, hi + 1)]
+    op = " + " if head == "Sum" else " * "
+    return "(" + op.join("(%s)" % t for t in terms) + ")"
+
+
 def statement(lhs_text, rhs_text=None, relation="="):
     """Build a Lean `example` proving lhs = rhs (or a claim about lhs)."""
+    # `Collect[e, x]` etc. preserve the value of their first argument, and a
+    # finite `Sum`/`Product` is an explicit sum/product.
+    lhs_text = _expand_finite(_transparent_unwrap(lhs_text))
+    if rhs_text is not None:
+        rhs_text = _transparent_unwrap(rhs_text)
+
     def tree(text):
         try:
             return ast.parse(_rmath_to_python(text), mode="eval")
@@ -881,39 +1303,134 @@ def statement(lhs_text, rhs_text=None, relation="="):
 _VERIFY_CACHE = {}
 
 
-def verify(lhs_text, rhs_text=None, relation="=", timeout=600, use_cache=True):
+def premise_search(query, backend="loogle", timeout=8):
+    """Search Mathlib premises for a goal or a natural-language query.
+
+    Returns `{"status": ..., "results": [...]}`; an unreachable backend is an
+    `error` with no results (the bridge must work offline). `loogle` is
+    structure search (e.g. `Real.sqrt ?a * Real.sqrt ?a`), `leansearch` is
+    natural language.
+    """
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.quote(query)
+    urls = {
+        "loogle": "https://loogle.lean-lang.org/json?q=" + q,
+        "leansearch": "https://leansearch.net/search?query=" + q + "&num_results=8",
+    }
+    url = urls.get(backend)
+    if not url:
+        return {"status": "error", "error": "unknown backend %r" % backend, "results": []}
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "rMath/0.1"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.load(r)
+    except Exception as e:
+        return {"status": "error", "error": str(e), "backend": backend, "results": []}
+    return {"status": "ok", "backend": backend, "results": _search_results(backend, data)}
+
+
+def _search_results(backend, data):
+    """Normalise the two search backends to `[{name, type, module}]`."""
+    out = []
+
+    def add(name, ty="", module=""):
+        if name and not any(x["name"] == name for x in out):
+            out.append({"name": name, "type": ty, "module": module})
+
+    if backend == "loogle":
+        for hit in (data.get("hits") or []):
+            add(hit.get("name", ""), hit.get("type", ""), hit.get("module", ""))
+    else:
+        items = data if isinstance(data, list) else (data.get("results") or [])
+        for hit in items:
+            if not isinstance(hit, dict):
+                continue
+            inner = hit.get("result") if isinstance(hit.get("result"), dict) else hit
+            add(inner.get("name", ""), inner.get("type", ""), inner.get("module", ""))
+    return out
+
+
+def build_statement(lhs_text, rhs_text=None, result_form=None, numeric=None,
+                    relation="="):
+    """The `(code, proposition, type, variables)` for a claim, or `ValueError`.
+    Shared by the one-shot verifier and the fast LSP explorer."""
+    built = calculus_statement(lhs_text, rhs_text) if rhs_text is not None else None
+    if built is None and result_form:
+        built = solve_statement(lhs_text, result_form, numeric=numeric, relation=relation)
+    return built if built else statement(lhs_text, rhs_text, relation)
+
+
+def verify(lhs_text, rhs_text=None, relation="=", timeout=600, use_cache=True,
+           result_form=None, numeric=None):
     """Verify an rMath claim in Lean. Returns a result dict with `outcome`:
     verified | unproved | cannot verify | error.
 
-    The authoritative one-shot `lake env lean` run decides: its exit status and
-    diagnostics come from the elaborator itself, with no notification-timing
-    assumptions. Results are cached per claim, so re-checking a cell is free.
+    `result_form` is the InputForm of the cell's result; for a `Solve[...]` cell
+    it carries the roots, and the claim checked is that each of them really is a
+    root (by substitution). The authoritative one-shot `lake env lean` run
+    decides: its exit status and diagnostics come from the elaborator itself,
+    with no notification-timing assumptions. Results are cached per claim, so
+    re-checking a cell is free.
     """
-    ck = (lhs_text, rhs_text, relation)
+    ck = (lhs_text, rhs_text, relation, result_form, numeric)
     if use_cache and ck in _VERIFY_CACHE:
         cached = dict(_VERIFY_CACHE[ck])
         cached["cached"] = True
         return cached
     try:
-        built = calculus_statement(lhs_text, rhs_text) if rhs_text is not None else None
-        if built is None and _calculus(lhs_text) is not None and rhs_text is not None:
-            built = None
-        code, prop, ty, vs = built if built else statement(lhs_text, rhs_text, relation)
+        code, prop, ty, vs = build_statement(lhs_text, rhs_text, result_form=result_form,
+                                             numeric=numeric, relation=relation)
     except ValueError as e:
         return {"status": "error", "error": str(e), "lean": None, "outcome": "cannot verify"}
-    res = run_lean(code, timeout=timeout, filename="RMathVerify.lean", persistent=False)
-    res["lean"] = code
-    # The file needs the linter options; the panel should show the statement.
-    res["lean_display"] = code.replace(QUIET, "")
+    full = _finalized(code)
+    # Fast path: the persistent LSP server, but only if it has calibrated and
+    # returns a conclusive batch. Anything else falls through to the one-shot
+    # run, so a server timing issue can never decide a verdict.
+    res = None
+    if persistent_mode() != "off" and available():
+        try:
+            srv = server()
+            if srv.calibrate():
+                t0 = time.time()
+                diags, _, conclusive = srv.check(_with_import(full), timeout=timeout)
+                if conclusive:
+                    errors = [d for d in diags if d["severity"] == "error"]
+                    res = {"status": "ok" if not errors else "error",
+                           "output": "\n".join(srv.logs[-40:]),
+                           "diagnostics": diags, "errors": errors,
+                           "warnings": [d for d in diags if d["severity"] == "warning"],
+                           "via": "server", "seconds": round(time.time() - t0, 2)}
+        except Exception:
+            res = None
+    if res is None:
+        res = run_lean(full, timeout=timeout, filename="RMathVerify.lean",
+                       persistent=False)
+    res.setdefault("via", "one-shot")
+    res["lean"] = full
+    res["lean_display"] = _display(code)
     res["proposition"] = prop
     res["type"] = ty
     res["variables"] = vs
+    res["axioms"] = _parse_axioms(
+        (res.get("output") or "") + "\n" +
+        "\n".join(d.get("message", "") for d in (res.get("diagnostics") or [])))
     if res.get("status") == "ok":
         res["outcome"] = "verified"
     elif res.get("status") == "error" and res.get("errors"):
         res["outcome"] = "unproved"
     else:
         res["outcome"] = res.get("status", "error")
+    # A proof that used `sorry` proves nothing; never report it as verified.
+    if "sorryAx" in res.get("axioms", []) or any(
+            "sorry" in (d.get("message") or "").lower()
+            for d in (res.get("diagnostics") or [])):
+        res["outcome"] = "unproved"
+    # Item 8: optional external-hammer fallback (env-gated).
+    if res.get("outcome") == "unproved" and _hammer_enabled():
+        alt = _hammer_run(code, timeout)
+        if alt is not None and alt.get("outcome") == "verified":
+            res = alt
     if use_cache and res.get("outcome") in ("verified", "unproved"):
         _VERIFY_CACHE[ck] = dict(res)
     return res

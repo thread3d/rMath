@@ -153,10 +153,14 @@ impl<'a> Lexer<'a> {
             '≤' => Some(TokKind::LessEq),
             '≥' => Some(TokKind::GreaterEq),
             '≠' => Some(TokKind::BangEq),
+            '−' => Some(TokKind::Minus), // U+2212 MINUS SIGN (= \[Minus])
             '→' | '⟶' => Some(TokKind::Rule),
             '↦' => Some(TokKind::RuleDelayed),
             '×' | '·' | '∗' => Some(TokKind::Star),
             '√' => Some(TokKind::Radical),
+            // U+2215 DIVISION SLASH / U+2044 FRACTION SLASH: rendered math
+            // pastes these in where the source had `/`.
+            '∕' | '⁄' => Some(TokKind::Slash),
             _ => None,
         };
         if let Some(kind) = op {
@@ -227,6 +231,24 @@ impl<'a> Lexer<'a> {
                 }
                 _ => {}
             }
+            // Invisible formatting characters (zero-width space, word joiner,
+            // BOM) arrive from copy-paste; treat them as whitespace rather than
+            // reporting "unexpected character".
+            if self.peek().map_or(false, |c| c >= 0x80) {
+                if let Some(ch) = self.decode_char_at(self.i) {
+                    if matches!(
+                        ch,
+                        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+                    ) {
+                        let width = ch.len_utf8();
+                        for _ in 0..width {
+                            self.bump();
+                        }
+                        self.space = true;
+                        continue;
+                    }
+                }
+            }
             // comments (* ... *) with nesting
             if self.peek() == Some(b'(') && self.peek2() == Some(b'*') {
                 self.bump();
@@ -266,7 +288,7 @@ impl<'a> Lexer<'a> {
             match c {
                 b'0'..=b'9' => self.number()?,
                 b'.' if self.peek2().map_or(false, |c| c.is_ascii_digit()) => self.number()?,
-                b'A'..=b'Z' | b'a'..=b'z' => self.ident()?,
+                b'A'..=b'Z' | b'a'..=b'z' | b'$' => self.ident()?,
                 b'`' => {
                     self.ident()?
                 }
@@ -934,6 +956,7 @@ fn named_char(name: &str) -> String {
         "Times" => "\u{00d7}",
         "Divide" => "\u{00f7}",
         "PlusMinus" => "\u{00b1}",
+        "Minus" => "\u{2212}",
         "Degree" => "\u{00b0}",
         "Rule" => "\u{2192}",
         "RuleDelayed" => "\u{21a6}",
@@ -976,6 +999,33 @@ mod tests {
             .map(|t| t.kind)
             .filter(|k| *k != TokKind::Eof)
             .collect()
+    }
+
+    #[test]
+    fn invisible_formatting_characters_are_whitespace() {
+        // Zero-width space and BOM arrive from copy-paste; they must not be
+        // "unexpected character" syntax errors.
+        assert!(lex("1\u{200b}+1").is_ok());
+        assert!(lex("\u{feff}1 + 1").is_ok());
+    }
+
+    #[test]
+    fn unicode_minus_is_an_operator() {
+        // U+2212 MINUS SIGN (\[Minus]) is visually an ASCII '-' but is not one.
+        // It arrives when math is pasted from a document or a chat answer, and
+        // must lex as subtraction rather than being rejected as unknown.
+        assert_eq!(kinds("x\u{2212}y"), vec![TokKind::Sym, TokKind::Minus, TokKind::Sym]);
+        assert_eq!(kinds("5\u{2212}3"), vec![TokKind::Int, TokKind::Minus, TokKind::Int]);
+        // It is a prefix minus in the usual positions, too.
+        assert_eq!(kinds("\u{2212}5"), vec![TokKind::Minus, TokKind::Int]);
+    }
+
+    #[test]
+    fn unicode_division_slashes() {
+        // U+2215 DIVISION SLASH and U+2044 FRACTION SLASH paste in from
+        // rendered math; both mean `/`.
+        assert_eq!(kinds("1\u{2215}2"), vec![TokKind::Int, TokKind::Slash, TokKind::Int]);
+        assert_eq!(kinds("1\u{2044}2"), vec![TokKind::Int, TokKind::Slash, TokKind::Int]);
     }
 
     #[test]

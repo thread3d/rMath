@@ -9,48 +9,63 @@ use std::io::{BufRead, Write};
 fn run_input(i: &mut Interp, src: &str) -> (Option<String>, Vec<String>) {
     i.messages.clear();
     i.prints.clear();
-    match parse_input(&mut i.t, src) {
+    let (out, fatal) = match parse_input(&mut i.t, src) {
         Err(e) => (
             None,
-            vec![format!("Syntax error at line {}: {}", e.line, e.msg)],
+            Some(format!("Syntax error at line {}: {}", e.line, e.msg)),
         ),
-        Ok(e) => {
-            let msgs: Vec<String> = Vec::new();
-            match i.eval(&e) {
-                Ok(v) => {
-                    for p in i.prints.drain(..) {
-                        println!("{}", p);
-                    }
-                    let is_null = v.is_symbol(i.t.sys.null);
-                    let out = output_form(&i.t, &v);
-                    if !is_null {
-                        i.out_history.push(v.clone());
-                        let n = i.out_history.len();
-                        (Some(format!("Out[{}]= {}", n, out)), msgs)
-                    } else {
-                        (None, msgs)
-                    }
+        Ok(e) => match i.eval(&e) {
+            Ok(v) => {
+                for p in i.prints.drain(..) {
+                    println!("{}", p);
                 }
-                Err(Flow::Halt(msg)) => {
-                    i.depth = 0;
-                    (None, vec![msg])
-                }
-                Err(Flow::Throw(v, _)) => {
-                    let _ = v;
-                    (None, vec!["Throw::nocatch: Throw not caught.".to_string()])
-                }
-                Err(Flow::Return(v)) => {
-                    let v = v.unwrap_or(Expr::Sym(i.t.sys.null));
-                    i.depth = 0;
-                    let out = output_form(&i.t, &v);
+                let is_null = v.is_symbol(i.t.sys.null);
+                let text = output_form(&i.t, &v);
+                if is_null {
+                    (None, None)
+                } else {
                     i.out_history.push(v);
                     let n = i.out_history.len();
-                    (Some(format!("Out[{}]= {}", n, out)), msgs)
+                    (Some(format!("Out[{}]= {}", n, text)), None)
                 }
-                Err(_) => (None, vec!["Evaluation aborted.".to_string()]),
             }
-        }
+            Err(Flow::Halt(msg)) => {
+                i.depth = 0;
+                (None, Some(msg))
+            }
+            Err(Flow::Throw(v, _)) => {
+                let _ = v;
+                (None, Some("Throw::nocatch: Throw not caught.".to_string()))
+            }
+            Err(Flow::Return(v)) => {
+                let v = v.unwrap_or(Expr::Sym(i.t.sys.null));
+                i.depth = 0;
+                let text = output_form(&i.t, &v);
+                i.out_history.push(v);
+                let n = i.out_history.len();
+                (Some(format!("Out[{}]= {}", n, text)), None)
+            }
+            Err(Flow::Abort) => {
+                i.depth = 0;
+                let v = Expr::Sym(i.t.intern("$Aborted"));
+                i.out_history.push(v);
+                let n = i.out_history.len();
+                (Some(format!("Out[{}]= $Aborted", n)), None)
+            }
+            Err(_) => (None, Some("Evaluation aborted.".to_string())),
+        },
+    };
+    // Collect any messages the evaluation produced (previously these were
+    // dropped, so `rmath -e '1/0'` was silent about the infinite expression).
+    let mut msgs: Vec<String> = i
+        .messages
+        .drain(..)
+        .map(|(tag, text)| format!("{}: {}", tag, text))
+        .collect();
+    if let Some(f) = fatal {
+        msgs.push(f);
     }
+    (out, msgs)
 }
 
 fn main() {

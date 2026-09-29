@@ -82,18 +82,62 @@ fn tex_symbol(name: &str) -> String {
     tex_symbol_as(name, Form::Standard)
 }
 
+/// Escape characters that are special in KaTeX math mode. Symbol names may
+/// contain `$` ($Version, x$1, Pattern$Marker), which must not reach the
+/// output bare or every KaTeX parse fails.
+fn tex_escape_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        match c {
+            '$' | '%' | '&' | '#' | '_' | '{' | '}' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\\' => out.push_str("\\backslash "),
+            '~' => out.push_str("\\textasciitilde "),
+            '^' => out.push_str("\\textasciicircum "),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn tex_symbol_as(name: &str, form: Form) -> String {
     if let Some(tex) = symbol_tex(name) {
         return tex.to_string();
     }
+    let escaped = tex_escape_name(name);
     if name.len() == 1 {
-        name.to_string()
+        escaped
     } else {
         match form {
-            Form::Standard => format!("\\text{{{}}}", name),
-            Form::Traditional => format!("\\mathit{{{}}}", name),
+            Form::Standard => format!("\\text{{{}}}", escaped),
+            Form::Traditional => format!("\\mathit{{{}}}", escaped),
         }
     }
+}
+
+/// Machine reals in scientific notation carry Mathematica's `*^` marker;
+/// KaTeX needs it as `\times 10^{n}` (the old code emitted `2.4329*^18`
+/// verbatim, which rendered as nonsense).
+fn tex_real(x: f64) -> String {
+    let s = crate::fmt::format_real_out(x);
+    match s.split_once("*^") {
+        Some((m, e)) => format!("{} \\times 10^{{{}}}", m, e),
+        None => s,
+    }
+}
+
+/// A `Step[label, expr]` node (the head of a derivation step).
+fn is_step_node(t: &SymbolTable, e: &Expr) -> bool {
+    if let Some((h, a)) = e.parts() {
+        if a.len() == 2 {
+            if let Some(id) = h.sym_id() {
+                return t.name_of(id) == "Step";
+            }
+        }
+    }
+    false
 }
 
 fn fn_tex_name(t: &SymbolTable, head_id: usize) -> Option<&'static str> {
@@ -185,7 +229,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
                 out.push_str(&format!("\\dfrac{{{}}}{{{}}}", r.num, r.den));
             }
         }
-        Expr::Real(x) => out.push_str(&crate::fmt::format_real_out(*x)),
+        Expr::Real(x) => out.push_str(&tex_real(*x)),
         Expr::Str(s) => {
             // Text mode: only LaTeX specials need escaping. A double quote is
             // literal (escaping it as \" would be an accent command, which
@@ -249,6 +293,32 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
             // Operator forms
             if let Expr::Sym(id) = &nd.head {
                 let sys = t.sys;
+                // Derivation step: `\text{label: } expr`.
+                if nd.args.len() == 2 && t.name_of(*id) == "Step" {
+                    if let Expr::Str(label) = &nd.args[0] {
+                        if !label.is_empty() {
+                            out.push_str("\\text{");
+                            for ch in label.chars() {
+                                match ch {
+                                    '\\' => out.push_str("\\textbackslash{}"),
+                                    '{' => out.push_str("\\{"),
+                                    '}' => out.push_str("\\}"),
+                                    '&' => out.push_str("\\&"),
+                                    '%' => out.push_str("\\%"),
+                                    '#' => out.push_str("\\#"),
+                                    '$' => out.push_str("\\$"),
+                                    '_' => out.push_str("\\_"),
+                                    '^' => out.push_str("\\textasciicircum{}"),
+                                    '~' => out.push_str("\\textasciitilde{}"),
+                                    c => out.push(c),
+                                }
+                            }
+                            out.push_str(": } ");
+                        }
+                    }
+                    tex_into(t, &nd.args[1], form, out);
+                    return;
+                }
                 if *id == sys.plus && !nd.args.is_empty() {
                     let mut first = true;
                     for a in &nd.args {
@@ -445,6 +515,19 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
                     return;
                 }
                 if *id == sys.list {
+                    // A derivation (`Steps`/`Trace`) reads far better with each
+                    // step on its own line than as a one-line `{…}` list.
+                    if !nd.args.is_empty() && nd.args.iter().all(|a| is_step_node(t, a)) {
+                        out.push_str("\\begin{array}{l}");
+                        for (k, a) in nd.args.iter().enumerate() {
+                            if k > 0 {
+                                out.push_str(" \\\\ ");
+                            }
+                            tex_into(t, a, form, out);
+                        }
+                        out.push_str("\\end{array}");
+                        return;
+                    }
                     out.push_str("\\left\\{");
                     for (k, a) in nd.args.iter().enumerate() {
                         if k > 0 {

@@ -95,10 +95,9 @@ def settings_path():
     return os.environ.get("RMATH_DSH_SETTINGS") or os.path.join(home, "settings.yaml")
 
 
-def harness_model():
-    """The default model the harness starts agents on, read from its settings
-    document (a tiny parse of the `agent-default-model:` section, so no YAML
-    dependency is needed)."""
+def settings_model():
+    """The default model from the harness settings document (a tiny parse of the
+    `agent-default-model:` section, so no YAML dependency is needed)."""
     try:
         with open(settings_path()) as f:
             lines = f.readlines()
@@ -119,6 +118,89 @@ def harness_model():
             if name.strip() == "model":
                 return val.strip().strip("\"'")
     return ""
+
+
+def model_path():
+    """Where the panel's model choice is kept (next to the key, outside the
+    repository)."""
+    env = os.environ.get("RMATH_HARNESS_MODEL_FILE")
+    if env:
+        return env
+    return os.path.join(os.path.dirname(keyfile()), "model")
+
+
+def read_model():
+    """The model chosen in the panel, or "" to follow the settings document."""
+    env = os.environ.get("RMATH_HARNESS_MODEL", "").strip()
+    if env:
+        return env
+    try:
+        with open(model_path()) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def store_model(model):
+    """Remember the panel's model choice (an empty string clears it)."""
+    path = model_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        if model.strip():
+            f.write(model.strip() + "\n")
+    return path
+
+
+def harness_model():
+    """The model the harness runs on: the panel's choice, else the settings
+    document's `agent-default-model`."""
+    return read_model() or settings_model()
+
+
+def endpoint_models(timeout=4):
+    """Model ids the configured endpoint advertises (OpenAI-compatible
+    `/models`), so the dropdown reflects whatever the endpoint actually serves."""
+    url, _ = endpoint()
+    base = url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")]
+    candidates = [base + "/models"]
+    if not base.endswith("/v1"):
+        candidates.append(base + "/v1/models")
+    key = read_key()
+    for candidate in candidates:
+        try:
+            req = urllib.request.Request(candidate)
+            if key:
+                req.add_header("Authorization", "Bearer " + key)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.load(r)
+            ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+            if ids:
+                return ids
+        except Exception:
+            continue
+    return []
+
+
+def available_models():
+    """The list behind the panel's model dropdown: the current choice, whatever
+    the endpoint serves, and the local Ollama's models. Always at least one."""
+    out = []
+
+    def add(m):
+        m = (m or "").strip()
+        if m and m not in out:
+            out.append(m)
+
+    add(harness_model())
+    for m in endpoint_models():
+        add(m)
+    if ollama_available():
+        for m in ollama_models():
+            add(m)
+    return out
 
 
 def _keyfile_lines():
@@ -240,33 +322,33 @@ def cancel_current():
     return {"status": "ok", "cancelled": True, "pid": proc.pid}
 
 
-def proxy_patch():
-    """A per-run overlay that routes the model through the thinking proxy.
+def run_overlay():
+    """A per-run overlay supplying the endpoint (when the thinking proxy is up)
+    and the selected model.
 
     The adapter resolves its endpoint as `config.baseURL ?? $DEEPSEEK_BASE_URL`,
     so the user settings document wins over the environment; disabling that row
-    for this invocation lets the overlay supply the endpoint instead. Nothing
-    global is modified, so a terminal `dsh` run is unaffected.
+    for this invocation lets the overlay supply these values instead. Nothing
+    global is modified, so a terminal `dsh` run is unaffected. Returns None when
+    there is nothing to override (no proxy and no explicit model choice).
     """
     from . import ollama_proxy
-    if not ollama_proxy.running():
-        return None
-    url = ollama_proxy.start()
-    if not url:
+    url = ollama_proxy.start() if ollama_proxy.running() else None
+    explicit = read_model()
+    if not url and not explicit:
         return None
     model = harness_model() or "deepseek-flash"
-    body = ("# written by rMath: show the model's thinking while it works\n"
+    body = ("# written by rMath: the harness endpoint and model for this run\n"
             "- id: settings\n"
-            "  disabled: true\n"
-            "- id: llm-deepseek\n"
-            "  config:\n"
-            "    baseURL: %s\n"
-            "- id: agent-default-model\n"
-            "  config:\n"
-            "    provider: deepseek-official\n"
-            "    model: %s\n" % (url, model))
-    for path in (os.path.join(os.path.dirname(keyfile()), "thinking.patch.yml"),
-                 os.path.join(tempfile.gettempdir(), "rmath-thinking.patch.yml")):
+            "  disabled: true\n")
+    if url:
+        body += "- id: llm-deepseek\n  config:\n    baseURL: %s\n" % url
+    body += ("- id: agent-default-model\n"
+             "  config:\n"
+             "    provider: deepseek-official\n"
+             "    model: %s\n" % model)
+    for path in (os.path.join(os.path.dirname(keyfile()), "run.patch.yml"),
+                 os.path.join(tempfile.gettempdir(), "rmath-run.patch.yml")):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
@@ -293,7 +375,7 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
             "exit": None,
         }
     root = cwd or workspace_root()
-    patch = proxy_patch()
+    patch = run_overlay()
     cmd = [dsh, "--profile", profile()]
     if patch:
         cmd += ["--patch", patch]
@@ -383,7 +465,8 @@ def run_task(task, timeout=1800, on_line=None, cwd=None):
         "workspace": root,
         "endpoint": url,
         "endpoint_source": source,
-        "thinking_patch": patch,
+        "model": harness_model(),
+        "overlay": patch,
     }
 
 

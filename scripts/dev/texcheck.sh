@@ -17,7 +17,12 @@ TMP="$(mktemp -d)"
 PORT="${URL##*:}"
 STARTED=""
 if ! curl -fsS --max-time 3 "$URL/api/health" >/dev/null 2>&1; then
-  ( cd "$ROOT" && nohup python3 -m rmathpy.notebook --port "$PORT" >"$TMP/server.log" 2>&1 & )
+  # A throwaway work dir: rendering the demo autosaves a session, which must
+  # not land in the repository. The demo itself is linked in so the relative
+  # path `demo/demo.mt` still resolves.
+  mkdir -p "$TMP/work"
+  ln -sfn "$ROOT/demo" "$TMP/work/demo"
+  ( cd "$ROOT" && RMATH_WORKDIR="$TMP/work" nohup python3 -m rmathpy.notebook --port "$PORT" >"$TMP/server.log" 2>&1 & )
   STARTED="1"
   for _ in $(seq 1 40); do
     curl -fsS --max-time 2 "$URL/api/health" >/dev/null 2>&1 && break

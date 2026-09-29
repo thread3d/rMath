@@ -2,6 +2,7 @@
 
 import json
 import os
+import select
 import subprocess
 import threading
 
@@ -50,31 +51,92 @@ class Kernel:
         if self._proc is None or self._proc.poll() is not None:
             self._spawn()
 
+    def _kill(self):
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            try:
+                self._proc.wait(timeout=2)
+            except Exception:
+                pass
+            self._proc = None
+
+    def _timeout(self):
+        """Seconds to wait for a response; 0 disables the limit."""
+        try:
+            t = float(os.environ.get("RMATH_EVAL_TIMEOUT", "120"))
+        except ValueError:
+            t = 120.0
+        return t if t > 0 else 0
+
+    def _read_line(self, timeout):
+        """Return a response line, "" on EOF, or None if the wait timed out."""
+        if timeout:
+            try:
+                ready, _, _ = select.select([self._proc.stdout], [], [], timeout)
+            except Exception:
+                return None
+            if not ready:
+                return None
+        return self._proc.stdout.readline()
+
+    def _roundtrip(self, body, timeout):
+        payload = json.dumps(body) + "\n"
+        for attempt in (0, 1):
+            try:
+                self._proc.stdin.write(payload)
+                self._proc.stdin.flush()
+                line = self._read_line(timeout)
+            except Exception:
+                line = ""
+            if line is None or line:
+                return line
+            # Empty line: the kernel died. Respawn once and retry.
+            if attempt == 0:
+                self._spawn()
+        return ""
+
     def _request(self, payload: dict) -> dict:
         with self._lock:
             self._ensure()
             self._id += 1
             body = dict(payload)
             body["id"] = self._id
-            try:
-                self._proc.stdin.write(json.dumps(body) + "\n")
-                self._proc.stdin.flush()
-                line = self._proc.stdout.readline()
-            except Exception:
-                self._spawn()
-                self._proc.stdin.write(json.dumps(body) + "\n")
-                self._proc.stdin.flush()
-                line = self._proc.stdout.readline()
+            timeout = self._timeout()
+            line = self._roundtrip(body, timeout)
+            if line is None:
+                # A runaway evaluation: killing the kernel is the only way out.
+                self._kill()
+                return {
+                    "id": body["id"],
+                    "status": "error",
+                    "error": (
+                        "Evaluation did not finish within %g s, so the kernel "
+                        "was restarted (definitions from this session were "
+                        "lost). Set RMATH_EVAL_TIMEOUT=0 to disable the limit."
+                        % timeout
+                    ),
+                }
             if not line:
-                # Kernel died; restart once and retry.
                 self._spawn()
-                self._proc.stdin.write(json.dumps(body) + "\n")
-                self._proc.stdin.flush()
-                line = self._proc.stdout.readline()
-            return json.loads(line)
+                return {
+                    "id": body["id"],
+                    "status": "error",
+                    "error": "kernel stopped responding",
+                }
+            try:
+                return json.loads(line)
+            except Exception as e:
+                return {
+                    "id": body["id"],
+                    "status": "error",
+                    "error": "bad kernel response: %s" % e,
+                }
 
-    def eval(self, text: str) -> dict:
-        return self._request({"op": "eval", "input": text})
+    def eval(self, text: str, steps: bool = False) -> dict:
+        return self._request({"op": "eval", "input": text, "steps": bool(steps)})
 
     def split(self, text: str):
         """Split a script into statements using the kernel's own splitter."""

@@ -385,7 +385,10 @@ pub fn b_table(i: &mut Interp, args: &[Expr]) -> EvalRes {
         i.message("Table", "argr");
         return Ok(unevaluated_call(i, "Table", args));
     }
-    let iters = crate::builtins::core::build_iters(i, &args[1..])?;
+    let Some(iters) = crate::builtins::core::build_iters(i, &args[1..])? else {
+        i.message("Table", "itform");
+        return Ok(unevaluated_call(i, "Table", args));
+    };
     table_rec(i, &iters, &mut Vec::new(), &args[0])
 }
 
@@ -435,10 +438,24 @@ fn table_rec(i: &mut Interp, iters: &[crate::builtins::core::Iter], env: &mut Ve
 }
 
 pub fn b_sum(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() == 2 {
+        if let Some(v) =
+            crate::builtins::sums::symbolic_sum_product(i, &args[0], &args[1], true)?
+        {
+            return Ok(v);
+        }
+    }
     iter_accumulate(i, args, "Sum", true)
 }
 
 pub fn b_product(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() == 2 {
+        if let Some(v) =
+            crate::builtins::sums::symbolic_sum_product(i, &args[0], &args[1], false)?
+        {
+            return Ok(v);
+        }
+    }
     iter_accumulate(i, args, "Product", false)
 }
 
@@ -447,7 +464,10 @@ fn iter_accumulate(i: &mut Interp, args: &[Expr], name: &str, plus: bool) -> Eva
         i.message(name, "argr");
         return Ok(unevaluated_call(i, name, args));
     }
-    let iters = crate::builtins::core::build_iters(i, &args[1..])?;
+    let Some(iters) = crate::builtins::core::build_iters(i, &args[1..])? else {
+        // Symbolic or malformed bounds with no closed form: stay unevaluated.
+        return Ok(unevaluated_call(i, name, args));
+    };
     let mut env: Vec<(usize, Expr)> = Vec::new();
     let mut acc = if plus { Expr::int_i64(0) } else { Expr::int_i64(1) };
     let head = if plus { i.t.sys.plus } else { i.t.sys.times };

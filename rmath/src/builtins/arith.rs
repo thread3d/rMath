@@ -3,7 +3,7 @@
 use crate::bigint::BigInt;
 use crate::builtins::core::{expr_to_int, unevaluated_call};
 use crate::builtins::num::*;
-use crate::eval::{EvalRes, Interp};
+use crate::eval::{EvalRes, Flow, Interp};
 use crate::expr::{Expr, NumVal};
 use crate::rational::Rat;
 
@@ -19,6 +19,51 @@ pub fn eval_int_of(i: &mut Interp, e: &Expr) -> EvalRes {
 
 pub fn b_plus(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let sys = i.t.sys;
+    // Infinity is not an ordinary term: `Indeterminate + x` stays
+    // Indeterminate, and `Infinity + (-Infinity)` is an indeterminate form.
+    // (Previously the two infinities merged to a zero coefficient and the sum
+    // silently collapsed to 0.)
+    let mut saw_pos_inf = false;
+    let mut saw_neg_inf = false;
+    let mut saw_indet = false;
+    for a in args {
+        if is_undetermined(a, &i.t) {
+            saw_indet = true;
+            continue;
+        }
+        if is_infinity_like(a, &i.t) {
+            saw_pos_inf = true;
+            continue;
+        }
+        if let Some((h, hargs)) = a.parts() {
+            if h.is_symbol(sys.times) {
+                let mut has_inf = false;
+                let mut negative = false;
+                for x in hargs {
+                    if is_infinity_like(x, &i.t) {
+                        has_inf = true;
+                    }
+                    match x {
+                        Expr::Int(n) if n.sign < 0 => negative = true,
+                        Expr::Rat(r) if r.is_neg() => negative = true,
+                        Expr::Real(v) if *v < 0.0 => negative = true,
+                        _ => {}
+                    }
+                }
+                if has_inf {
+                    if negative {
+                        saw_neg_inf = true;
+                    } else {
+                        saw_pos_inf = true;
+                    }
+                }
+            }
+        }
+    }
+    if saw_indet || (saw_pos_inf && saw_neg_inf) {
+        i.message("Plus", "indet");
+        return Ok(Expr::Sym(sys.indeterminate));
+    }
     let times_id = sys.times;
     let mut exact_sum = Rat::from_i64(0);
     let mut any_machine = false;
@@ -133,9 +178,10 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let mut mc: Option<f64> = None;
     let mut c_re: Option<NumVal> = None;
     let mut c_im: Option<NumVal> = None;
-    // (base, exact_exp, machine_exp)
-    let mut powers: Vec<(Expr, Rat, Option<f64>)> = Vec::new();
-    let mut others: Vec<Expr> = Vec::new();
+    // (base, exponent) — the exponent may be exact, machine, or symbolic, so it
+    // is kept as an expression. The old three-field form stored a symbolic
+    // exponent as 0, which silently deleted the factor (`x^n y` -> `y`).
+    let mut powers: Vec<(Expr, Expr)> = Vec::new();
 
     for a in args {
         match a {
@@ -168,40 +214,28 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
                 }
             }
             Expr::Node(nd) if nd.head.is_symbol(power_id) && nd.args.len() == 2 => {
-                push_power(&mut powers, &nd.args[0], &nd.args[1]);
+                push_power(i, &mut powers, &nd.args[0], &nd.args[1])?;
             }
             other => {
-                let mut merged = false;
-                let (b0, e0) = (other.clone(), Expr::int_i64(1));
-                for (base, ee, me) in powers.iter_mut() {
-                    if crate::expr::same_q(base, &b0) {
-                        *ee = ee.add(&e0.as_rat_exact().unwrap());
-                        merged = true;
-                        break;
-                    }
-                    let _ = me;
-                }
-                if !merged {
-                    powers.push((b0, Rat::from_i64(1), None));
-                }
+                push_power(i, &mut powers, other, &Expr::int_i64(1))?;
             }
         }
     }
 
-    // Zero coefficient short-circuits.
-    if ec.is_zero() && mc.is_none() {
+    // Zero coefficient short-circuits — unless an infinity is involved, in
+    // which case the product is an indeterminate form (0*Infinity, 0/0, ...).
+    let complex_zero = matches!(
+        (&c_re, &c_im),
+        (Some(re), Some(im)) if nv_is_zero(re) && nv_is_zero(im)
+    );
+    let coeff_zero =
+        (ec.is_zero() && mc.is_none()) || mc == Some(0.0) || complex_zero;
+    if coeff_zero {
+        if args.iter().any(|a| contains_undetermined(a, &i.t)) {
+            i.message("Times", "indet");
+            return Ok(Expr::Sym(sys.indeterminate));
+        }
         return Ok(Expr::int_i64(0));
-    }
-    if let Some(m) = mc {
-        if m == 0.0 {
-            return Ok(Expr::int_i64(0));
-        }
-    }
-    if let (Some(re), Some(im)) = (&c_re, &c_im) {
-        let z = Expr::cnum(re.clone(), im.clone());
-        if crate::expr::same_q(&z, &Expr::int_i64(0)) {
-            return Ok(Expr::int_i64(0));
-        }
     }
 
     let mut out: Vec<Expr> = Vec::new();
@@ -230,19 +264,17 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
             out.push(Expr::rat(ec.clone()));
         }
     }
-    for (base, ee, me) in powers {
-        let exp: Expr = match me {
-            Some(m) => Expr::real(m),
-            None => Expr::rat(ee.clone()),
-        };
+    for (base, exp) in powers {
         let one = Expr::int_i64(1);
         if crate::expr::same_q(&exp, &one) {
             out.push(base.clone());
+        } else if is_numeric_zero(&exp) {
+            // base^0 is 1: the factor contributes nothing (x * x^-1 -> 1).
+            continue;
         } else {
             out.push(Expr::node(Expr::Sym(power_id), vec![base.clone(), exp]));
         }
     }
-    let _ = others;
     if out.is_empty() {
         return Ok(Expr::int_i64(1));
     }
@@ -252,40 +284,22 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
     Ok(Expr::node(Expr::Sym(times_id), out))
 }
 
-fn push_power(p: &mut Vec<(Expr, Rat, Option<f64>)>, base: &Expr, exp: &Expr) {
-    match exp {
-        Expr::Int(_) | Expr::Rat(_) => {
-            let ee = exp.as_rat_exact().unwrap();
-            for (b, e, m) in p.iter_mut() {
-                if crate::expr::same_q(b, base) {
-                    *e = e.add(&ee);
-                    return;
-                }
-                let _ = &mut *m;
-            }
-            p.push((base.clone(), ee, None));
-        }
-        Expr::Real(v) => {
-            for (b, _, m) in p.iter_mut() {
-                if crate::expr::same_q(b, base) {
-                    *m = Some(m.unwrap_or(0.0) + v);
-                    return;
-                }
-            }
-            p.push((base.clone(), Rat::from_i64(0), Some(*v)));
-        }
-        _ => {
-            // symbolic exponent
-            for (b, _, m) in p.iter_mut() {
-                if crate::expr::same_q(b, base) {
-                    let _ = m;
-                    // identical symbolic exponents accumulate via caller
-                    return;
-                }
-            }
-            p.push((base.clone(), Rat::from_i64(0), None));
+/// Merge `base^exp` into the power list, adding the exponents of equal bases.
+fn push_power(
+    i: &mut Interp,
+    p: &mut Vec<(Expr, Expr)>,
+    base: &Expr,
+    exp: &Expr,
+) -> Result<(), Flow> {
+    for (b, e) in p.iter_mut() {
+        if crate::expr::same_q(b, base) {
+            let sum = Expr::node(Expr::Sym(i.t.sys.plus), vec![e.clone(), exp.clone()]);
+            *e = i.eval(&sum)?;
+            return Ok(());
         }
     }
+    p.push((base.clone(), exp.clone()));
+    Ok(())
 }
 
 // ============================ Power ============================
@@ -298,6 +312,25 @@ fn as_half(e: &Expr) -> Option<()> {
     }
 }
 
+/// A complex number raised to a non-negative integer power.
+fn cnum_int_pow(re: &NumVal, im: &NumVal, n: u64) -> (NumVal, NumVal) {
+    let mut r = NumVal::R(Rat::from_i64(1));
+    let mut i = NumVal::R(Rat::from_i64(0));
+    for _ in 0..n {
+        let nr = nv_sub(&nv_mul(&r, re), &nv_mul(&i, im));
+        let ni = nv_add(&nv_mul(&r, im), &nv_mul(&i, re));
+        r = nr;
+        i = ni;
+    }
+    (r, i)
+}
+
+/// 1 / (re + i·im) = (re - i·im) / (re² + im²).
+fn cnum_recip(re: &NumVal, im: &NumVal) -> (NumVal, NumVal) {
+    let den = nv_add(&nv_mul(re, re), &nv_mul(im, im));
+    (nv_div(re, &den), nv_neg(&nv_div(im, &den)))
+}
+
 pub fn b_power(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         i.message("Power", "argr");
@@ -307,26 +340,31 @@ pub fn b_power(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let exp = &args[1];
     let sys = i.t.sys;
     // Integer powers of a complex number: multiply out (I^2 = -1, (1+I)^2 = 2 I).
+    // Negative powers invert the positive power exactly; recursing through
+    // Power[z, -1] never terminated (1/I overflowed the stack).
     if let (Expr::Cnum(c), Some(n)) = (base, expr_to_int(exp)) {
-        if n >= 0 && n <= 64 {
-            let mut re = NumVal::R(Rat::from_i64(1));
-            let mut im = NumVal::R(Rat::from_i64(0));
-            for _ in 0..n {
-                let (nre, nim) = (
-                    nv_sub(&nv_mul(&re, &c.re), &nv_mul(&im, &c.im)),
-                    nv_add(&nv_mul(&re, &c.im), &nv_mul(&im, &c.re)),
-                );
-                re = nre;
-                im = nim;
-            }
+        if (0..=64).contains(&n) {
+            let (re, im) = cnum_int_pow(&c.re, &c.im, n as u64);
             return Ok(Expr::cnum(re, im));
         }
-        if n < 0 {
-            let pos = b_power(i, &[base.clone(), Expr::int_i64(-n)])?;
-            return b_power(i, &[pos, Expr::int_i64(-1)]);
+        if n < 0 && n >= -64 {
+            let (re, im) = cnum_int_pow(&c.re, &c.im, (-n) as u64);
+            let (rr, ri) = cnum_recip(&re, &im);
+            return Ok(Expr::cnum(rr, ri));
         }
     }
+    let base_inf = is_infinity_like(base, &i.t);
+    let base_indet = is_undetermined(base, &i.t);
     if let Some(e0) = expr_to_int(exp) {
+        if base_inf || base_indet {
+            // Infinity^0 and Indeterminate^anything are indeterminate forms.
+            if e0 == 0 || base_indet {
+                i.message("Power", "indet");
+                return Ok(Expr::Sym(sys.indeterminate));
+            }
+            // Infinity^positive = Infinity, Infinity^negative = 0.
+            return Ok(if e0 > 0 { base.clone() } else { Expr::int_i64(0) });
+        }
         if e0 == 0 {
             if is_numeric_zero(base) {
                 i.message("Power", "indet");
@@ -336,6 +374,19 @@ pub fn b_power(i: &mut Interp, args: &[Expr]) -> EvalRes {
         }
         if e0 == 1 {
             return Ok(base.clone());
+        }
+    }
+    if base_indet {
+        return Ok(Expr::Sym(sys.indeterminate));
+    }
+    if base_inf {
+        if let Some(s) = exp_sign(exp) {
+            if s > 0 {
+                return Ok(base.clone());
+            }
+            if s < 0 {
+                return Ok(Expr::int_i64(0));
+            }
         }
     }
     if crate::expr::same_q(base, &Expr::int_i64(1)) {
@@ -634,18 +685,19 @@ pub fn b_round(i: &mut Interp, args: &[Expr]) -> EvalRes {
     match e {
         Expr::Int(_) => Ok(e.clone()),
         Expr::Rat(r) => {
-            // Round half away from zero.
-            let half = Rat::new(BigInt::one(), BigInt::from_i64(2));
-            let q = if r.is_neg() {
-                let adj = r.add(&half).neg();
-                adj.num.div_mod_floor(&adj.den).0.neg()
-            } else {
-                let adj = r.add(&half);
-                adj.num.div_mod_floor(&adj.den).0
+            // Mathematica rounds ties to the nearest even integer
+            // (Round[1/2] = 0, Round[5/2] = 2), not away from zero.
+            let (q, rem) = r.num.div_mod_floor(&r.den);
+            let two = BigInt::from_i64(2);
+            let twice = rem.mul(&two);
+            let up = match twice.cmp(&r.den) {
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Equal => !q.div_rem(&two).1.is_zero(),
             };
-            Ok(Expr::Int(q))
+            Ok(Expr::Int(if up { q.add(&BigInt::one()) } else { q }))
         }
-        Expr::Real(x) => Ok(Expr::real(x.round())),
+        Expr::Real(x) => Ok(Expr::real(x.round_ties_even())),
         _ => Ok(unevaluated_call(i, "Round", args)),
     }
 }
@@ -902,6 +954,9 @@ pub fn b_range(i: &mut Interp, args: &[Expr]) -> EvalRes {
         let mut out = Vec::new();
         let mut x = lo;
         while if up { x.cmp(&hi) != std::cmp::Ordering::Greater } else { x.cmp(&hi) != std::cmp::Ordering::Less } {
+            if i.timed_out() {
+                return Err(Flow::Abort);
+            }
             out.push(Expr::rat(x.clone()));
             x = x.add(&step);
             if out.len() > LIMIT {
@@ -929,6 +984,9 @@ pub fn b_range(i: &mut Interp, args: &[Expr]) -> EvalRes {
         let mut x = lo;
         let tol = 1e-12 * hi.abs().max(1.0);
         while if step > 0.0 { x <= hi + tol } else { x >= hi - tol } {
+            if i.timed_out() {
+                return Err(Flow::Abort);
+            }
             out.push(Expr::real(x));
             x += step;
             if out.len() > LIMIT {

@@ -563,12 +563,30 @@ pub fn b_matrixpower(i: &mut Interp, args: &[Expr]) -> EvalRes {
         return Ok(unevaluated_call(i, "MatrixPower", args));
     };
     let k = rows.len();
+    if k == 0 || rows.iter().any(|r| r.len() != k) {
+        i.message("MatrixPower", "matsq");
+        return Ok(unevaluated_call(i, "MatrixPower", args));
+    }
+    // A negative power is a power of the inverse. The old loop `while n > 0`
+    // never ran for n < 0, so MatrixPower[m, -1] silently returned the identity.
+    let (base_rows, mut n) = if n < 0 {
+        let inv_id = i.t.intern("Inverse");
+        let inv = eval_call(i, Expr::Sym(inv_id), vec![m.clone()])?;
+        match as_rows(&inv, sys) {
+            Some(r) if r.len() == k && r.iter().all(|row| row.len() == k) => (r, -n),
+            _ => {
+                i.message("MatrixPower", "sing");
+                return Ok(unevaluated_call(i, "MatrixPower", args));
+            }
+        }
+    } else {
+        (rows.clone(), n)
+    };
     // Start from identity
     let mut acc: Vec<Vec<Expr>> = (0..k)
         .map(|r| (0..k).map(|c| Expr::int_i64(if r == c { 1 } else { 0 })).collect())
         .collect();
-    let mut base = rows.clone();
-    let mut n = n;
+    let mut base = base_rows;
     while n > 0 {
         if n & 1 == 1 {
             acc = mat_mul(i, &acc, &base)?;
@@ -700,6 +718,39 @@ fn is_expr_zero(e: &Expr) -> bool {
 /// Exact solutions of c0 + c1 x + ... = 0 (None when no rule applies).
 /// Degrees 1 and 2 use the formula with symbolic coefficients; higher degrees
 /// try rational roots plus deflation, and even-only polynomials use x² = y.
+/// Build a polynomial expression from ascending-power coefficients, for
+/// display only (never evaluated, so a user's value for `var` cannot leak in).
+fn poly_display_expr(sys: crate::expr::Sys, coeffs: &[Expr], var: &Expr) -> Expr {
+    let mut terms: Vec<Expr> = Vec::new();
+    for (k, c) in coeffs.iter().enumerate() {
+        if is_expr_zero(c) {
+            continue;
+        }
+        let pow = if k == 0 {
+            None
+        } else if k == 1 {
+            Some(var.clone())
+        } else {
+            Some(Expr::node(
+                Expr::Sym(sys.power),
+                vec![var.clone(), Expr::int_i64(k as i64)],
+            ))
+        };
+        let term = match pow {
+            None => c.clone(),
+            Some(p) => Expr::node(Expr::Sym(sys.times), vec![c.clone(), p]),
+        };
+        terms.push(term);
+    }
+    if terms.is_empty() {
+        return Expr::int_i64(0);
+    }
+    if terms.len() == 1 {
+        return terms.pop().unwrap();
+    }
+    Expr::node(Expr::Sym(sys.plus), terms)
+}
+
 fn solve_poly_expr(
     i: &mut Interp,
     coeffs: &[Expr],
@@ -724,6 +775,7 @@ fn solve_poly_expr(
         let num = neg_expr(i, c[0].clone())?;
         let inv = Expr::node(Expr::Sym(sys.power), vec![c[1].clone(), Expr::int_i64(-1)]);
         let root = eval_call(i, Expr::Sym(sys.times), vec![num, inv])?;
+        i.step("linear: x = -b/a", &root);
         return Ok(Some(vec![root]));
     }
 
@@ -738,7 +790,7 @@ fn solve_poly_expr(
         let neg4ac = neg_expr(i, fourac)?;
         let disc = eval_call(i, Expr::Sym(sys.plus), vec![b2, neg4ac])?;
         let sqrt_head = i.t.intern("Sqrt");
-        let sq = eval_call(i, Expr::Sym(sqrt_head), vec![disc])?;
+        let sq = eval_call(i, Expr::Sym(sqrt_head), vec![disc.clone()])?;
         let two_a = eval_call(i, Expr::Sym(sys.times), vec![Expr::int_i64(2), a])?;
         let inv2a = Expr::node(Expr::Sym(sys.power), vec![two_a, Expr::int_i64(-1)]);
         let nb = neg_expr(i, b)?;
@@ -747,6 +799,9 @@ fn solve_poly_expr(
         let p2 = eval_call(i, Expr::Sym(sys.plus), vec![nb, nsq])?;
         let r1 = eval_call(i, Expr::Sym(sys.times), vec![inv2a.clone(), p1])?;
         let r2 = eval_call(i, Expr::Sym(sys.times), vec![inv2a, p2])?;
+        i.step("discriminant: b^2 - 4 a c", &disc);
+        let both = Expr::node(Expr::Sym(sys.list), vec![r1.clone(), r2.clone()]);
+        i.step("quadratic formula: (-b +- Sqrt[disc])/(2 a)", &both);
         return Ok(Some(vec![r1, r2]));
     }
 
@@ -759,6 +814,9 @@ fn solve_poly_expr(
             .map(|(_, v)| v.clone())
             .collect();
         let y = Expr::Sym(i.t.intern("$y"));
+        let y_disp = Expr::Sym(i.t.intern("y"));
+        let reduced = poly_display_expr(sys, &even, &y_disp);
+        i.step("even powers: substitute y = x^2", &reduced);
         if let Some(yroots) = solve_poly_expr(i, &even, &y, depth + 1)? {
             let mut out = Vec::new();
             let sqrt_head = i.t.intern("Sqrt");
@@ -768,6 +826,8 @@ fn solve_poly_expr(
                 out.push(s);
                 out.push(ns);
             }
+            let pm = Expr::node(Expr::Sym(sys.list), out.clone());
+            i.step("x = +- Sqrt[y]", &pm);
             return Ok(Some(out));
         }
         return Ok(None);
@@ -795,7 +855,8 @@ fn solve_poly_expr(
         if !rem.iter().all(|x| x.is_zero()) {
             break;
         }
-        out.push(Expr::rat(r));
+        out.push(Expr::rat(r.clone()));
+        i.step("rational root", &Expr::rat(r));
         cur = q;
         while cur.len() > 1 && cur.last().map_or(false, |x| x.is_zero()) {
             cur.pop();
@@ -962,6 +1023,7 @@ pub fn b_solve(i: &mut Interp, args: &[Expr]) -> EvalRes {
         let Some(poly) = eq_poly(i, &eqs[0])? else {
             return Ok(unevaluated_call(i, "Solve", args));
         };
+        i.step("polynomial form", &poly);
         let Some(coeffs) = poly_coeffs_expr(i, &poly, &vars[0])? else {
             return Ok(unevaluated_call(i, "Solve", args));
         };
@@ -973,7 +1035,9 @@ pub fn b_solve(i: &mut Interp, args: &[Expr]) -> EvalRes {
             let rule = rule_var_to(i, &vars[0], r);
             out.push(Expr::node(Expr::Sym(sys.list), vec![rule]));
         }
-        return Ok(Expr::node(Expr::Sym(sys.list), out));
+        let sol = Expr::node(Expr::Sym(sys.list), out);
+        i.step("roots", &sol);
+        return Ok(sol);
     }
     // Linear systems (all equations linear in all vars).
     let mut rows: Vec<Vec<Rat>> = Vec::new();

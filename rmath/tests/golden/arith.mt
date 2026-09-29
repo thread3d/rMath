@@ -33,5 +33,6 @@ GCD[24, 36]
 => 3628800
 Floor[2.7]
 => 2.0
+# Mathematica rounds ties to the nearest even integer (Round[1/2] = 0).
 Round[1/2]
-=> 1
+=> 0

@@ -77,7 +77,9 @@ pub fn d_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
                 for a in &nd.args {
                     parts.push(d_expr(i, a, var)?);
                 }
-                return eval_call(i, Expr::Sym(sys.plus), parts);
+                let res = eval_call(i, Expr::Sym(sys.plus), parts)?;
+                i.step("sum rule", &res);
+                return Ok(res);
             }
             if hid == sys.times && !nd.args.is_empty() {
                 let mut parts = Vec::new();
@@ -92,7 +94,9 @@ pub fn d_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
                     }
                     parts.push(eval_call(i, Expr::Sym(sys.times), one)?);
                 }
-                return eval_call(i, Expr::Sym(sys.plus), parts);
+                let res = eval_call(i, Expr::Sym(sys.plus), parts)?;
+                i.step("product rule", &res);
+                return Ok(res);
             }
             if hid == sys.power && nd.args.len() == 2 {
                 let b = &nd.args[0];
@@ -110,17 +114,21 @@ pub fn d_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
                     )?;
                     let db = d_expr(i, b, var)?;
                     let p1 = eval_call(i, Expr::Sym(sys.power), vec![b.clone(), em1])?;
-                    return eval_call(i, Expr::Sym(sys.times), vec![ex.clone(), p1, db]);
+                    let res = eval_call(i, Expr::Sym(sys.times), vec![ex.clone(), p1, db])?;
+                    i.step("power rule", &res);
+                    return Ok(res);
                 }
                 if b_free {
                     let log_id = i.t.intern("Log");
                     let logb = eval_call(i, Expr::Sym(log_id), vec![b.clone()])?;
                     let dexp = d_expr(i, ex, var)?;
-                    return eval_call(
+                    let res = eval_call(
                         i,
                         Expr::Sym(sys.times),
                         vec![e.clone(), logb, dexp],
-                    );
+                    )?;
+                    i.step("exponential rule", &res);
+                    return Ok(res);
                 }
                 let db2 = d_expr(i, b, var)?;
                 let inv_b = pw(i, b, Expr::int_i64(-1));
@@ -137,18 +145,69 @@ pub fn d_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
                     vec![lg2, dexp2],
                 )?;
                 let inner = eval_call(i, Expr::Sym(sys.plus), vec![db_over_b, dx_log])?;
-                return eval_call(i, Expr::Sym(sys.times), vec![e.clone(), inner]);
+                let res = eval_call(i, Expr::Sym(sys.times), vec![e.clone(), inner])?;
+                i.step("logarithmic differentiation", &res);
+                return Ok(res);
             }
             // Chain rule via the derivative table (single-arg functions).
             if nd.args.len() == 1 {
                 if let Some(df) = derivative_table(i, hid, &nd.args[0]) {
+                    let fname = i.t.name_of(hid).to_string();
                     let inner = d_expr(i, &nd.args[0], var)?;
-                    return eval_call(i, Expr::Sym(sys.times), vec![df, inner]);
+                    let res = eval_call(i, Expr::Sym(sys.times), vec![df, inner])?;
+                    let label = format!("chain rule: d/dx {}", fname);
+                    i.step(&label, &res);
+                    return Ok(res);
                 }
             }
-            Ok(e.clone())
+            // Unknown function of the variable: leave a Derivative expression
+            // rather than returning the function unchanged, which silently
+            // dropped the derivative (D[f[x], x] gave f[x]).
+            unknown_derivative(i, head, &nd.args, var)
         }
     }
+}
+
+/// d/dx f(u1, ..., uk) = Σ_i Derivative[0,..,1,..,0][f][u...] · du_i/dx for an
+/// unknown function head `f`. Returns 0 when no argument depends on `var`.
+fn unknown_derivative(i: &mut Interp, head: &Expr, args: &[Expr], var: &Expr) -> EvalRes {
+    let sys = i.t.sys;
+    let mut any_depends = false;
+    for a in args {
+        if !is_free_of(i, a, var)? {
+            any_depends = true;
+        }
+    }
+    if !any_depends {
+        return Ok(Expr::int_i64(0));
+    }
+    let mut terms: Vec<Expr> = Vec::new();
+    for (pos, arg) in args.iter().enumerate() {
+        if is_free_of(i, arg, var)? {
+            continue;
+        }
+        let darg = d_expr(i, arg, var)?;
+        if same_q(&darg, &Expr::int_i64(0)) {
+            continue;
+        }
+        let multi: Vec<Expr> = if args.len() == 1 {
+            vec![Expr::int_i64(1)]
+        } else {
+            (0..args.len())
+                .map(|j| Expr::int_i64(if j == pos { 1 } else { 0 }))
+                .collect()
+        };
+        let dspec = Expr::node(Expr::Sym(sys.derivativet), multi);
+        let df = Expr::node(dspec, vec![head.clone()]);
+        let applied = Expr::node(df, args.to_vec());
+        terms.push(eval_call(i, Expr::Sym(sys.times), vec![applied, darg])?);
+    }
+    if terms.is_empty() {
+        return Ok(Expr::int_i64(0));
+    }
+    let res = eval_call(i, Expr::Sym(sys.plus), terms)?;
+    i.step("derivative of an unknown function", &res);
+    Ok(res)
 }
 
 /// d/dy f(y) for known functions, at argument y (already evaluated).
@@ -431,11 +490,10 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
     if is_free_of(i, e, var)? {
         return eval_call(i, Expr::Sym(sys.times), vec![e.clone(), var.clone()]);
     }
-    // Recognisable special-function antiderivatives first.
-    if let Some(anti) = special_antiderivative(i, e, var) {
-        return Ok(anti);
-    }
-    // Linearity over Plus.
+    // Linearity over Plus first: a sum is integrated term by term, which always
+    // terminates. The heuristic rules below (by parts, arc forms) can otherwise
+    // match a whole sum and recurse without progress — Integrate[-3 x^2 + 5 x^3, x]
+    // used to hang this way.
     if let Some((h, args)) = e.parts() {
         if h.is_symbol(sys.plus) {
             let mut parts = Vec::new();
@@ -444,6 +502,26 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
             }
             return eval_call(i, Expr::Sym(sys.plus), parts);
         }
+    }
+    // Recognisable special-function antiderivatives first.
+    if let Some(anti) = special_antiderivative(i, e, var) {
+        i.step("special function antiderivative", &anti);
+        return Ok(anti);
+    }
+    // x^n f(x) by parts, x^n Log[x], and the 1/quadratic arc forms.
+    if let Some(v) = by_parts(i, e, var, depth)? {
+        i.step("integration by parts", &v);
+        return Ok(v);
+    }
+    if let Some(anti) = log_power_antiderivative(i, e, var)? {
+        i.step("x^n Log[x] rule", &anti);
+        return Ok(anti);
+    }
+    if let Some(v) = quadratic_antiderivative(i, e, var)? {
+        i.step("arc form", &v);
+        return Ok(v);
+    }
+    if let Some((h, args)) = e.parts() {
         // Constant factor.
         if h.is_symbol(sys.times) {
             let mut consts: Vec<Expr> = Vec::new();
@@ -471,15 +549,29 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
             let inner = integrate_rec(i, &rest, var, depth + 1)?;
             return eval_call(i, Expr::Sym(sys.times), vec![c, inner]);
         }
-        // x^n
+        // x^a for any exponent a free of x (x^n, Sqrt[x], 1/x, ...), plus
+        // 1/(b + a x). The old code forced every exponent through
+        // `expr_to_int(...).unwrap_or(-1)`, so Integrate[x^n, x] and
+        // Integrate[Sqrt[x], x] silently returned Log[x].
         if h.is_symbol(sys.power) && args.len() == 2 {
-            let n = crate::builtins::core::expr_to_int(&args[1]).unwrap_or(-1);
             if same_q(&args[0], var) {
-                return power_rule(i, var, n);
+                let ex = &args[1];
+                if !is_free_of(i, ex, var)? {
+                    return Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]));
+                }
+                let np1 = eval_call(i, Expr::Sym(sys.plus), vec![ex.clone(), Expr::int_i64(1)])?;
+                if crate::builtins::num::is_numeric_zero(&np1) {
+                    let log_id = i.t.intern("Log");
+                    return eval_call(i, Expr::Sym(log_id), vec![var.clone()]);
+                }
+                let p = eval_call(i, Expr::Sym(sys.power), vec![var.clone(), np1.clone()])?;
+                let inv = pw(i, &np1, Expr::int_i64(-1));
+                return eval_call(i, Expr::Sym(sys.times), vec![inv, p]);
             }
             // 1/(a x + b): Power[linear, -1]
-            if n == -1 {
-                if let Some((la, lb)) = linear_form(i, &args[0], var)? {
+            let n_is_minus_one = matches!(&args[1], Expr::Int(k) if k.to_i64() == Some(-1));
+            if n_is_minus_one {
+                if let Some((la, _)) = linear_form(i, &args[0], var)? {
                     if la != 0 {
                         let log_id = i.t.intern("Log");
                         let lg = eval_call(i, Expr::Sym(log_id), vec![args[0].clone()])?;
@@ -538,7 +630,153 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
             }
         }
     }
+    // Rational functions: split into partial fractions and integrate those
+    // (apart_expr records the "partial fractions" step itself).
+    if let Some(apart) = crate::builtins::poly::apart_expr(i, e, var)? {
+        if !same_q(&apart, e) {
+            return integrate_rec(i, &apart, var, depth + 1);
+        }
+    }
     Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]))
+}
+
+/// `x^n * {Sin, Cos, Exp}[x]` by integration by parts, n a positive integer.
+/// Constants free of the variable are carried through.
+fn by_parts(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> Result<Option<Expr>, Flow> {
+    let sys = i.t.sys;
+    let Some((h, args)) = e.parts() else {
+        return Ok(None);
+    };
+    if !h.is_symbol(sys.times) {
+        return Ok(None);
+    }
+    let mut n: Option<i64> = None;
+    let mut fname: Option<String> = None;
+    let mut consts: Vec<Expr> = Vec::new();
+    for a in args {
+        if same_q(a, var) {
+            n = Some(1);
+            continue;
+        }
+        if let Some((ph, pa)) = a.parts() {
+            if ph.is_symbol(sys.power) && pa.len() == 2 && same_q(&pa[0], var) {
+                if let Some(k) = crate::builtins::core::expr_to_int(&pa[1]) {
+                    if k >= 1 {
+                        n = Some(k);
+                        continue;
+                    }
+                }
+                return Ok(None);
+            }
+            if pa.len() == 1 && same_q(&pa[0], var) {
+                if let Some(id) = ph.sym_id() {
+                    let name = i.t.name_of(id).to_string();
+                    if name == "Sin" || name == "Cos" || name == "Exp" {
+                        if fname.is_some() {
+                            return Ok(None);
+                        }
+                        fname = Some(name);
+                        continue;
+                    }
+                }
+            }
+        }
+        if is_free_of(i, a, var)? {
+            consts.push(a.clone());
+            continue;
+        }
+        return Ok(None);
+    }
+    let (Some(n), Some(name)) = (n, fname) else {
+        return Ok(None);
+    };
+    let f_anti = match name.as_str() {
+        "Sin" => neg_app(i, "Cos", var),
+        "Cos" => app(i, "Sin", var),
+        _ => app(i, "Exp", var),
+    };
+    // ∫ x^n f = x^n F - n ∫ x^(n-1) F.
+    let xn = pw(i, var, Expr::int_i64(n));
+    let xn_f = eval_call(i, Expr::Sym(sys.times), vec![xn, f_anti.clone()])?;
+    let nm1 = pw(i, var, Expr::int_i64(n - 1));
+    let inner_integrand = eval_call(i, Expr::Sym(sys.times), vec![nm1, f_anti])?;
+    let inner = integrate_rec(i, &inner_integrand, var, depth + 1)?;
+    let neg_n_inner = eval_call(
+        i,
+        Expr::Sym(sys.times),
+        vec![Expr::int_i64(-n), inner],
+    )?;
+    let bracket = eval_call(i, Expr::Sym(sys.plus), vec![xn_f, neg_n_inner])?;
+    if consts.is_empty() {
+        return Ok(Some(bracket));
+    }
+    let c = eval_call(i, Expr::Sym(sys.times), consts)?;
+    Ok(Some(eval_call(i, Expr::Sym(sys.times), vec![c, bracket])?))
+}
+
+/// `1/(c0 + c2 x^2) -> ArcTan`, and `1/Sqrt[c0 - a x^2] -> ArcSin`.
+fn quadratic_antiderivative(
+    i: &mut Interp,
+    e: &Expr,
+    var: &Expr,
+) -> Result<Option<Expr>, Flow> {
+    let sys = i.t.sys;
+    let Some((h, args)) = e.parts() else {
+        return Ok(None);
+    };
+    if !h.is_symbol(sys.power) || args.len() != 2 {
+        return Ok(None);
+    }
+    // Normalise Power[Power[den, 1/2], -1] to (den, -1/2).
+    let (den, exp) = if let Some((ih, ia)) = args[0].parts() {
+        if ih.is_symbol(sys.power) && ia.len() == 2 && same_q(&args[1], &Expr::int_i64(-1)) {
+            let ne = neg1(i, ia[1].clone());
+            (ia[0].clone(), i.eval(&ne)?)
+        } else {
+            (args[0].clone(), args[1].clone())
+        }
+    } else {
+        (args[0].clone(), args[1].clone())
+    };
+    let Some(c) = crate::builtins::poly::poly_coeffs(i, &den, var)? else {
+        return Ok(None);
+    };
+    if c.len() != 3 || !c[1].is_zero() {
+        return Ok(None);
+    }
+    let (c0, c2) = (c[0].clone(), c[2].clone());
+    if same_q(&exp, &Expr::int_i64(-1)) {
+        if c0.is_zero() || c2.is_zero() || c0.is_neg() || c2.is_neg() {
+            return Ok(None);
+        }
+        let den_sqrt = rat_sqrt_expr(i, &c0.mul(&c2))?;
+        let ratio_sqrt = rat_sqrt_expr(i, &c2.div(&c0))?;
+        let arg = eval_call(i, Expr::Sym(sys.times), vec![var.clone(), ratio_sqrt])?;
+        let atan = app(i, "ArcTan", &arg);
+        let inv = Expr::node(Expr::Sym(sys.power), vec![den_sqrt, Expr::int_i64(-1)]);
+        return Ok(Some(eval_call(i, Expr::Sym(sys.times), vec![inv, atan])?));
+    }
+    let is_minus_half =
+        matches!(&exp, Expr::Rat(r) if r.num.to_i64() == Some(-1) && r.den.to_i64() == Some(2));
+    if is_minus_half {
+        if c0.is_zero() || !c2.is_neg() {
+            return Ok(None);
+        }
+        let a = c2.clone().neg();
+        let a_sqrt = rat_sqrt_expr(i, &a)?;
+        let ratio_sqrt = rat_sqrt_expr(i, &a.div(&c0))?;
+        let arg = eval_call(i, Expr::Sym(sys.times), vec![var.clone(), ratio_sqrt])?;
+        let asin = app(i, "ArcSin", &arg);
+        let inv = Expr::node(Expr::Sym(sys.power), vec![a_sqrt, Expr::int_i64(-1)]);
+        return Ok(Some(eval_call(i, Expr::Sym(sys.times), vec![inv, asin])?));
+    }
+    Ok(None)
+}
+
+/// `Sqrt[r]` as an evaluated expression (exact when the root is exact).
+fn rat_sqrt_expr(i: &mut Interp, r: &Rat) -> Result<Expr, Flow> {
+    let e = Expr::node(Expr::Sym(i.t.intern("Sqrt")), vec![Expr::rat(r.clone())]);
+    i.eval(&e)
 }
 
 /// `[x^n Log[x] dx` in closed form, for integer n >= 0.
@@ -553,9 +791,17 @@ fn log_power_antiderivative(
         return Ok(None);
     }
     let log_id = i.t.intern("Log");
-    let (p_part, log_part) = if args[1].sym_id() == Some(log_id) {
+    // Log[x] is a Node, so compare its head symbol, not sym_id() of the node.
+    let is_log_of_var = |e: &Expr| -> bool {
+        if let Some((lh, la)) = e.parts() {
+            lh.sym_id() == Some(log_id) && la.len() == 1 && same_q(&la[0], var)
+        } else {
+            false
+        }
+    };
+    let (p_part, log_part) = if is_log_of_var(&args[1]) {
         (&args[0], &args[1])
-    } else if args[0].sym_id() == Some(log_id) {
+    } else if is_log_of_var(&args[0]) {
         (&args[1], &args[0])
     } else {
         return Ok(None);
@@ -596,7 +842,9 @@ fn power_rule(i: &mut Interp, var: &Expr, n: i64) -> EvalRes {
     let sys = i.t.sys;
     if n == -1 {
         let log_id = i.t.intern("Log");
-        return eval_call(i, Expr::Sym(log_id), vec![var.clone()]);
+        let res = eval_call(i, Expr::Sym(log_id), vec![var.clone()])?;
+        i.step("log rule", &res);
+        return Ok(res);
     }
     let np1 = Expr::int_i64(n + 1);
     let p = eval_call(i, Expr::Sym(sys.power), vec![var.clone(), np1.clone()])?;
@@ -604,10 +852,31 @@ fn power_rule(i: &mut Interp, var: &Expr, n: i64) -> EvalRes {
         Expr::Sym(sys.power),
         vec![np1.clone(), Expr::int_i64(-1)],
     );
-    eval_call(i, Expr::Sym(sys.times), vec![inv, p])
+    let res = eval_call(i, Expr::Sym(sys.times), vec![inv, p])?;
+    i.step("power rule", &res);
+    Ok(res)
 }
 
-/// Returns (a, b) with arg = a*var + b when arg is linear (integer a,b).
+/// Coefficient of `var` when `e` is `k*var` or `var`; None otherwise.
+fn linear_term(i: &mut Interp, e: &Expr, var: &Expr) -> Option<i64> {
+    if same_q(e, var) {
+        return Some(1);
+    }
+    if let Some((h, a)) = e.parts() {
+        if h.is_symbol(i.t.sys.times) && a.len() == 2 {
+            if same_q(&a[1], var) {
+                return crate::builtins::core::expr_to_int(&a[0]);
+            }
+            if same_q(&a[0], var) {
+                return crate::builtins::core::expr_to_int(&a[1]);
+            }
+        }
+    }
+    None
+}
+
+/// Returns (a, b) with arg = a*var + b when arg is linear (integer a, b).
+/// Handles either canonical order of the sum (`x + 1` and `1 + 2 x`).
 fn linear_form(i: &mut Interp, arg: &Expr, var: &Expr) -> Result<Option<(i64, i64)>, Flow> {
     if same_q(arg, var) {
         return Ok(Some((1, 0)));
@@ -617,23 +886,16 @@ fn linear_form(i: &mut Interp, arg: &Expr, var: &Expr) -> Result<Option<(i64, i6
         _ => {
             if let Some((h, hargs)) = arg.parts() {
                 if h.is_symbol(i.t.sys.times) && hargs.len() == 2 {
-                    let ca = crate::builtins::core::expr_to_int(&hargs[0]).unwrap_or(1);
-                    if same_q(&hargs[1], var) {
-                        return Ok(Some((ca, 0)));
+                    if let Some(k) = linear_term(i, arg, var) {
+                        return Ok(Some((k, 0)));
                     }
                 }
                 if h.is_symbol(i.t.sys.plus) && hargs.len() == 2 {
-                    if let Some((h2, a2)) = hargs[0].parts() {
-                        if h2.is_symbol(i.t.sys.times) && a2.len() == 2 && same_q(&a2[1], var) {
-                            let ca = crate::builtins::core::expr_to_int(&a2[0]).unwrap_or(1);
-                            if let Some(cb) = crate::builtins::core::expr_to_int(&hargs[1]) {
-                                return Ok(Some((ca, cb)));
+                    for (t, c) in [(&hargs[0], &hargs[1]), (&hargs[1], &hargs[0])] {
+                        if let Some(k) = linear_term(i, t, var) {
+                            if let Some(cb) = crate::builtins::core::expr_to_int(c) {
+                                return Ok(Some((k, cb)));
                             }
-                        }
-                    }
-                    if let Some(cb) = crate::builtins::core::expr_to_int(&hargs[1]) {
-                        if same_q(&hargs[0], var) {
-                            return Ok(Some((1, cb)));
                         }
                     }
                 }
@@ -727,10 +989,15 @@ fn series_at(i: &mut Interp, f: &Expr, v: &Expr, x0: &Expr, n: usize) -> EvalRes
         )?;
         coeffs.push(c);
     }
+    // SeriesData's coefficient list is indexed from `nmin`, so drop the leading
+    // zeros: the list holds c_nmin, c_{nmin+1}, ... (consumers add `nmin` to the
+    // list index). Keeping the leading zeros here made
+    // Normal[Series[Sin[x], {x, 0, 5}]] start at x^2 instead of x.
     let nmin = coeffs
         .iter()
         .position(|c| !same_q(c, &Expr::int_i64(0)))
         .unwrap_or(0);
+    let coeffs: Vec<Expr> = coeffs.into_iter().skip(nmin).collect();
     Ok(Expr::node(
         Expr::Sym(i.t.intern("SeriesData")),
         vec![
@@ -799,6 +1066,111 @@ pub fn b_normal(i: &mut Interp, args: &[Expr]) -> EvalRes {
     Ok(e.clone())
 }
 
+/// Split `f` into (numerator, denominator) when it is a quotient: `a/b`,
+/// `a b^-1`, `a b^-2`, ... Returns None for anything else.
+fn quotient_parts(i: &mut Interp, f: &Expr) -> Option<(Expr, Expr)> {
+    let sys = i.t.sys;
+    let (h, args) = f.parts()?;
+    if h.is_symbol(sys.power) && args.len() == 2 {
+        if matches!(&args[1], Expr::Int(n) if n.to_i64() == Some(-1)) {
+            return Some((Expr::int_i64(1), args[0].clone()));
+        }
+        return None;
+    }
+    if !h.is_symbol(sys.times) {
+        return None;
+    }
+    let mut num: Vec<Expr> = Vec::new();
+    let mut den: Vec<Expr> = Vec::new();
+    for a in args {
+        if let Some((ph, pargs)) = a.parts() {
+            if ph.is_symbol(sys.power) && pargs.len() == 2 {
+                if let Some(k) = crate::builtins::core::expr_to_int(&pargs[1]) {
+                    if k < 0 {
+                        den.push(Expr::node(
+                            Expr::Sym(sys.power),
+                            vec![pargs[0].clone(), Expr::int_i64(-k)],
+                        ));
+                        continue;
+                    }
+                }
+            }
+        }
+        num.push(a.clone());
+    }
+    if den.is_empty() {
+        return None;
+    }
+    let num_e = match num.len() {
+        0 => Expr::int_i64(1),
+        1 => num[0].clone(),
+        _ => Expr::node(Expr::Sym(sys.times), num),
+    };
+    let den_e = if den.len() == 1 {
+        den[0].clone()
+    } else {
+        Expr::node(Expr::Sym(sys.times), den)
+    };
+    Some((num_e, den_e))
+}
+
+/// Does `e` contain Power[base, exponent] with both base and exponent
+/// depending on the limit variable? At an infinite limit such a form can hide
+/// an indeterminate case that naive substitution erases: (1 + 1/x)^x would
+/// substitute to 1^Infinity = 1, but its limit is E.
+fn power_with_var_exponent(i: &mut Interp, e: &Expr, var: &Expr) -> Result<bool, Flow> {
+    if let Some((h, args)) = e.parts() {
+        if h.is_symbol(i.t.sys.power) && args.len() == 2 {
+            if !is_free_of(i, &args[0], var)? && !is_free_of(i, &args[1], var)? {
+                return Ok(true);
+            }
+        }
+        for a in args {
+            if power_with_var_exponent(i, a, var)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// l'Hôpital's rule for a 0/0 quotient. Returns None when the form does not
+/// resolve, so the caller can stay unevaluated rather than report a number.
+fn lhopital_limit(i: &mut Interp, f: &Expr, v: &Expr, a: &Expr) -> Result<Option<Expr>, Flow> {
+    let sys = i.t.sys;
+    let Some((mut num, mut den)) = quotient_parts(i, f) else {
+        return Ok(None);
+    };
+    for _ in 0..8 {
+        let nv = subst_var(i, &num, v, a)?;
+        let dv = subst_var(i, &den, v, a)?;
+        let n_zero = crate::builtins::num::is_numeric_zero(&nv)
+            || crate::builtins::num::is_undetermined(&nv, &i.t);
+        let d_zero = crate::builtins::num::is_numeric_zero(&dv)
+            || crate::builtins::num::is_undetermined(&dv, &i.t);
+        if n_zero && d_zero {
+            num = d_expr(i, &num, v)?;
+            den = d_expr(i, &den, v)?;
+            continue;
+        }
+        // Evaluate the ratio of the differentiated parts AT the limit point:
+        // returning it still in x would give Cos[x] instead of Cos[0] = 1.
+        let ratio = Expr::node(
+            Expr::Sym(sys.times),
+            vec![
+                num.clone(),
+                Expr::node(Expr::Sym(sys.power), vec![den.clone(), Expr::int_i64(-1)]),
+            ],
+        );
+        let q = subst_var(i, &ratio, v, a)?;
+        if !crate::builtins::num::contains_undetermined(&q, &i.t) {
+            return Ok(Some(q));
+        }
+        return Ok(None);
+    }
+    Ok(None)
+}
+
 pub fn b_limit(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         i.message("Limit", "argr");
@@ -813,24 +1185,56 @@ pub fn b_limit(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let v = i.eval(&hargs[0])?;
     let a = i.eval(&hargs[1])?;
     let f = i.eval(&args[0])?;
-    let direct = subst_var(i, &f, &v, &a)?;
-    let indet = direct.is_symbol(i.t.sys.indeterminate)
-        || direct.is_symbol(i.t.sys.complexinfinity)
-        || direct.is_symbol(i.t.sys.infinity);
-    if !indet {
+    // Direct substitution and l'Hôpital probing deliberately evaluate forms
+    // such as 0/0; those messages belong to the search, not the answer, and
+    // must not surface under an otherwise clean Limit result.
+    let saved = i.messages.len();
+    let result = limit_core(i, &f, &v, &a, args);
+    i.messages.truncate(saved);
+    result
+}
+
+fn limit_core(i: &mut Interp, f: &Expr, v: &Expr, a: &Expr, args: &[Expr]) -> EvalRes {
+    let sys = i.t.sys;
+    let a_is_inf = a.is_symbol(sys.infinity) || a.is_symbol(sys.complexinfinity);
+    let direct = subst_var(i, f, v, a)?;
+    let dangerous = a_is_inf && power_with_var_exponent(i, f, v)?;
+    let direct_clean = !crate::builtins::num::contains_undetermined(&direct, &i.t);
+    if direct_clean && !dangerous {
+        i.step("direct substitution", &direct);
         return Ok(direct);
     }
-    // Series to order 4; the first nonzero coefficient decides.
-    let s = series_at(i, &f, &v, &a, 4)?;
-    if let Some((h, hargs)) = s.parts() {
-        if h.is_symbol(i.t.intern("SeriesData")) && hargs.len() == 6 {
-            let coeffs = hargs[2].node_args();
-            match coeffs.iter().position(|c| !same_q(c, &Expr::int_i64(0))) {
-                Some(0) => return Ok(coeffs[0].clone()),
-                Some(_) => return Ok(Expr::Sym(i.t.sys.indeterminate)),
-                None => return Ok(Expr::int_i64(0)),
+    // At infinity a bare Infinity is a legitimate limit (x, x^2, ...).
+    if a_is_inf
+        && !dangerous
+        && (direct.is_symbol(sys.infinity) || direct.is_symbol(sys.complexinfinity))
+    {
+        i.step("limit at infinity", &direct);
+        return Ok(direct);
+    }
+    // 0/0 and relatives: l'Hôpital. The old series-only path silently returned
+    // 0 for Limit[Sin[x]/x, x -> 0].
+    if let Some(q) = lhopital_limit(i, f, v, a)? {
+        i.step("l'Hopital (0/0)", &q);
+        return Ok(q);
+    }
+    // Taylor series at a finite point: the lowest non-zero coefficient.
+    if !crate::builtins::num::contains_undetermined(a, &i.t) {
+        let s = series_at(i, f, v, a, 4)?;
+        if let Some((sh, shargs)) = s.parts() {
+            if sh.is_symbol(i.t.intern("SeriesData")) && shargs.len() == 6 {
+                let coeffs = shargs[2].node_args();
+                let nmin = shargs[3].to_i64_pub().unwrap_or(0);
+                if nmin > 0 || coeffs.is_empty() {
+                    let z = Expr::int_i64(0);
+                    i.step("series expansion", &z);
+                    return Ok(z);
+                }
+                i.step("series expansion", &coeffs[0]);
+                return Ok(coeffs[0].clone());
             }
         }
     }
+    // No trustworthy answer: stay unevaluated rather than invent one.
     Ok(unevaluated_call(i, "Limit", args))
 }

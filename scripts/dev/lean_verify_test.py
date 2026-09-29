@@ -46,6 +46,18 @@ BATTERY = [
     # definite integrals (intervalIntegral.integral_pow)
     ("Integrate[x^2, {x, 0, 1}]", "1/3", "verified"),
     ("Integrate[x^3, {x, 0, 2}]", "4", "verified"),
+    # indefinite integrals: proved by differentiating the antiderivative
+    ("Integrate[x^2, x]", "1/3 x^3", "verified"),
+    ("Integrate[Sin[x], x]", "-Cos[x]", "verified"),
+    ("Integrate[Exp[x], x]", "Exp[x]", "verified"),
+    # Solve, including nested radicals closed by `rmath_radical`
+    ("Solve[x^2 - 2 == 0, x]", "{{x -> Sqrt[2]}, {x -> -Sqrt[2]}}", "verified"),
+    ("Solve[x^4 - 5 x^2 + 4 == 0, x]",
+     "{{x -> 1}, {x -> -1}, {x -> 2}, {x -> -2}}", "verified"),
+    ("Solve[x^4 + x^2 - 1 == 0, x]",
+     "{{x -> Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 + Sqrt[5])]}, "
+     "{x -> Sqrt[1/2 (-1 - Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 - Sqrt[5])]}}",
+     "verified"),
     # must NOT be accepted
     ("1/2 + 1/3", "2/3", "unproved"),
     ("2 + 2", "5", "unproved"),
@@ -56,6 +68,14 @@ BATTERY = [
     ("GCD[24, 36]", "12", "cannot verify"),
 ]
 
+# `N[roots]` for a Solve case: the bridge drops the roots with an imaginary part.
+# `Solve[x^4+x^2-1==0, x]` has two real roots and two non-real ones.
+NUMERIC = {
+    "Solve[x^4 + x^2 - 1 == 0, x]":
+        "{{x -> 0.786151}, {x -> -0.786151}, "
+        "{x -> 7.78887*^-17 + 1.27202 I}, {x -> -7.78887*^-17 + -1.27202 I}}",
+}
+
 
 def main():
     if not lean.available():
@@ -63,7 +83,9 @@ def main():
         return 0
     ok = bad = 0
     for lhs, rhs, want in BATTERY:
-        r = lean.verify(lhs, rhs, timeout=600)
+        result_form = rhs if lean.is_solve(lhs) else None
+        r = lean.verify(lhs, rhs, timeout=600, result_form=result_form,
+                        numeric=NUMERIC.get(lhs))
         got = r.get("outcome")
         good = got == want
         ok += good

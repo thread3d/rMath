@@ -108,6 +108,16 @@ demo-gen:
 lean-test:
 	@python3 $(ROOT)/scripts/dev/lean_translation_test.py
 
+# Benchmark the Lean bridge over the golden files and the demo: translation by
+# default (fast); `make lean-bench BENCH=--verify` also runs Lean per claim.
+lean-bench:
+	@python3 $(ROOT)/scripts/dev/lean_bench.py $(BENCH)
+
+# Random + invariant correctness oracle over the algebra surface (dev only).
+# `make oracle ORACLE="-n 200 --seed 7"` for a longer run.
+oracle:
+	@python3 $(ROOT)/scripts/dev/oracle_test.py $(ORACLE)
+
 # Check that every TeX string the demo produces parses in KaTeX.
 #   make texcheck            # loads demo/demo.mt
 #   make texcheck FILE=other.mt

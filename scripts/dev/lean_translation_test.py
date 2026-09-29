@@ -91,6 +91,80 @@ def main():
                 or (binder_part and binder_part not in code)):
             failures.append("%s: unexpected proof term/proposition\n     %s\n     %s"
                             % (lhs, code, prop))
+    # Display wrappers (Steps/Trace) are transparent to the Lean bridge: a
+    # `Steps[...]` cell is checked by the expression it derives, not by the
+    # Step list (which has no Lean translation).
+    for text, want in [
+        ("Steps[D[Sin[x]^2, x]]", "D[Sin[x]^2, x]"),
+        ("Trace[1 + 1]", "1 + 1"),
+        ("Steps[Solve[x^4 + x^2 - 1 == 0, x]]", "Solve[x^4 + x^2 - 1 == 0, x]"),
+        ("D[Sin[x]^2, x]", None),
+        ("Steps[]", None),
+    ]:
+        got = lean.unwrap_display(text)
+        if got != want:
+            failures.append("unwrap_display(%r) = %r, want %r" % (text, got, want))
+    try:
+        code, _, _, _ = lean.calculus_statement("D[Sin[x]^2, x]", "2 Cos[x] Sin[x]")
+        if code is None or ".pow" not in code:
+            failures.append("unwrapped Steps derivative did not translate: %r" % code)
+    except ValueError as e:
+        failures.append("unwrapped Steps derivative refused: %s" % e)
+
+    # Stage 2 (Lean coverage): indefinite integrals are checked by
+    # differentiating the antiderivative, finite sums/produce expand, and
+    # Collect-like heads keep only the argument whose value they preserve.
+    try:
+        _, prop, _, _ = lean.calculus_statement("Integrate[x^2, x]", "1/3 x^3")
+        if "deriv" not in prop:
+            failures.append("antiderivative statement has no deriv: %s" % prop)
+    except ValueError as e:
+        failures.append("antiderivative refused: %s" % e)
+    for lhs, rhs, want in [("Sum[i, {i, 1, 4}]", "10", " + "),
+                           ("Product[i, {i, 1, 4}]", "24", " * "),
+                           ("Collect[x + x^2, x]", "x + x^2", "+")]:
+        _, prop, _, _ = lean.statement(lhs, rhs)
+        if want not in prop:
+            failures.append("%s did not translate as expected: %s" % (lhs, prop))
+
+    # Solve roots are checked by substitution; non-real roots are dropped
+    # (Lean's `Real.sqrt` of a negative is 0, so those would be false claims).
+    for solve_text, roots, numeric, want in [
+        ("Solve[x^2 - 3 x + 2 == 0, x]", "{{x -> 2}, {x -> 1}}",
+         "{{x -> 2.0}, {x -> 1.0}}", 2),
+        ("Solve[x^4 + x^2 - 1 == 0, x]",
+         "{{x -> Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 + Sqrt[5])]}, "
+         "{x -> Sqrt[1/2 (-1 - Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 - Sqrt[5])]}}",
+         "{{x -> 0.786151}, {x -> -0.786151}, "
+         "{x -> 7.78887*^-17 + 1.27202 I}, {x -> -7.78887*^-17 + -1.27202 I}}", 2),
+    ]:
+        code, prop, _, _ = lean.solve_statement(solve_text, roots, numeric=numeric)
+        got = prop.count("\u2227") + 1
+        if got != want:
+            failures.append("%s: %d substituted roots, want %d" % (solve_text, got, want))
+    if lean.solve_statement("1 + 1", "{{x -> 2}}") is not None:
+        failures.append("solve_statement on a non-Solve input should return None")
+
+    # Bug report 20260927-163001: OutputForm juxtaposition without spaces
+    # (`2x^2-2`) is valid rMath but is not valid Python as written.
+    for text, want in [
+        ("2x^2 - 2", "2*x**2 - 2"),
+        ("Factor[2x^2-2]", "(2*x**2-2)"),
+        ("2(x+1)(x-1)", "2*(x+1)*(x-1)"),
+        ("Log2[x]", "Log2(x)"),
+        ("x2", "x2"),
+    ]:
+        got = lean._rmath_to_python(text)
+        if got != want:
+            failures.append("_rmath_to_python(%r) = %r, want %r" % (text, got, want))
+    # all-complex roots are checked over ℂ (backlog item 3), not refused.
+    _, prop, ty, _ = lean.solve_statement("Solve[x^2 + 1 == 0, x]",
+                                          "{{x -> I}, {x -> -I}}",
+                                          numeric="{{x -> 1.0 I}, {x -> -1.0 I}}")
+    if ty != "\u2102" or "Complex.I" not in prop:
+        failures.append("Solve[x^2 + 1 == 0, x]: expected a \u2102 claim, got %s / %s"
+                        % (ty, prop))
+
     # a quotient-shaped claim with no side condition available must still refuse
     try:
         lean.calculus_statement("D[Abs[x], x]", "1")

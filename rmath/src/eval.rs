@@ -19,6 +19,9 @@ pub enum Flow {
     Continue,
     /// Return[value?] — caught by function application and the top level.
     Return(Option<Expr>),
+    /// Abort[] / TimeConstrained timeout — caught by TimeConstrained and
+    /// Check, reported as `$Aborted` at the top level.
+    Abort,
     /// Fatal abort (e.g. recursion limit).
     Halt(String),
 }
@@ -57,6 +60,18 @@ pub struct Interp {
     pub messages: Vec<(String, String)>,
     pub rec_limit: usize,
     pub iter_limit: usize,
+    /// Wall-clock deadline for `TimeConstrained`; checked in the eval loop.
+    pub deadline: Option<std::time::Instant>,
+    /// Suppress all messages (Off[]) ...
+    pub messages_off: bool,
+    /// ... or just those from these function names (Off[f]).
+    pub off_names: Vec<String>,
+    /// Assumptions pushed by Assuming[...] for Simplify.
+    pub assumptions: Vec<Expr>,
+    /// Active derivation recorder (`Steps`/`Trace`); None when not recording.
+    pub steps: Option<Vec<(String, Expr)>>,
+    /// Active general evaluation trace (`Trace`, and the `Steps` fallback).
+    pub eval_trace: Option<Vec<Expr>>,
 }
 
 impl Interp {
@@ -74,6 +89,12 @@ impl Interp {
             messages: Vec::new(),
             rec_limit: 4096,
             iter_limit: 200_000,
+            deadline: None,
+            messages_off: false,
+            off_names: Vec::new(),
+            assumptions: Vec::new(),
+            steps: None,
+            eval_trace: None,
         };
         i.setup_system();
         i
@@ -113,6 +134,14 @@ impl Interp {
         let ii = self.t.intern("I");
         self.t.data[ii].attrs |= A_PROTECTED | crate::expr::A_CONSTANT;
         self.t.data[ii].own = Some(OwnValue::Set(iv));
+        // $Assumptions defaults to True; Simplify consults it (and Assuming).
+        let assum = self.t.intern("$Assumptions");
+        self.t.data[assum].own = Some(OwnValue::Set(Expr::Sym(sys.r#true)));
+        // $Version is now typable (leading $ lexes) and reports the version.
+        let ver = self.t.intern("$Version");
+        self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
+            "rMath 0.1.0 (stand-alone Mathematica-style system, Rust)",
+        )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
             let id = self.t.intern(def.name);
@@ -126,15 +155,51 @@ impl Interp {
 
     // ---------- messages ----------
     pub fn message(&mut self, name: &str, tag: &str) {
+        if self.messages_off {
+            return;
+        }
+        if !self.off_names.is_empty() {
+            let full = format!("{}::{}", name, tag);
+            if self.off_names.iter().any(|n| *n == name || *n == full) {
+                return;
+            }
+        }
         let text = crate::builtins::message_text(tag, name);
         self.messages.push((format!("{}::{}", name, tag), text));
     }
 
     // ---------- evaluation ----------
+
+    /// Record one derivation step, if a recorder is active.
+    pub fn step(&mut self, label: &str, e: &Expr) {
+        if let Some(v) = self.steps.as_mut() {
+            v.push((label.to_string(), e.clone()));
+        }
+    }
+
+    pub fn recording(&self) -> bool {
+        self.steps.is_some()
+    }
+
+    /// True (and clears the deadline) once a `TimeConstrained` deadline has
+    /// passed. Long-running built-in loops call this too.
+    pub fn timed_out(&mut self) -> bool {
+        if let Some(dl) = self.deadline {
+            if std::time::Instant::now() >= dl {
+                self.deadline = None;
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn eval(&mut self, e0: &Expr) -> EvalRes {
         let mut cur = e0.clone();
         let mut count = 0usize;
         loop {
+            if self.timed_out() {
+                return Err(Flow::Abort);
+            }
             count += 1;
             if count > self.iter_limit {
                 self.message("$IterationLimit", "itlim");
@@ -153,6 +218,11 @@ impl Interp {
             let (next, changed) = r?;
             if !changed {
                 return Ok(next);
+            }
+            if let Some(tr) = self.eval_trace.as_mut() {
+                if tr.len() < 2000 {
+                    tr.push(next.clone());
+                }
             }
             cur = next;
         }
@@ -451,13 +521,36 @@ impl Interp {
         args: &[Expr],
     ) -> EvalRes {
         let def = &crate::builtins::BUILTINS[idx];
+        let name = def.name;
+        // Central arity guard: a call with too few arguments is reported and
+        // left unevaluated rather than reaching an implementation that would
+        // index past the end of `args` (which used to panic and abort the
+        // whole process, losing the session).
+        let min = crate::builtins::min_args(name);
+        if args.len() < min {
+            self.message(name, "argr");
+            return Ok(Expr::node(Expr::Sym(sym_id), args.to_vec()));
+        }
         // Listable threading for numeric/list functions.
         if has(attrs, A_LISTABLE) && args.iter().any(|a| a.is_list(&self.t)) {
             if let Some(res) = self.thread_listable(sym_id, args)? {
                 return Ok(res);
             }
         }
-        (def.f)(self, args)
+        let f = def.f;
+        // Backstop: any panic inside a built-in becomes an unevaluated call plus
+        // a message, instead of tearing down the kernel.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self, args))) {
+            Ok(r) => r,
+            Err(payload) => {
+                let detail = panic_text(&payload);
+                self.messages.push((
+                    format!("{}::panic", name),
+                    format!("internal error while evaluating {}: {}", name, detail),
+                ));
+                Ok(Expr::node(Expr::Sym(sym_id), args.to_vec()))
+            }
+        }
     }
 
     /// Thread f over List arguments (Listable). None if threading impossible.
@@ -535,6 +628,17 @@ impl Interp {
             Err(Flow::Return(v)) => Ok(v.unwrap_or(Expr::Sym(sys.null))),
             Err(e) => Err(e),
         }
+    }
+}
+
+/// Human-readable text for a panic payload caught by `call_builtin`.
+fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unexpected internal panic".to_string()
     }
 }
 
@@ -728,6 +832,42 @@ mod tests {
         assert!(msgs.is_empty(), "aliases are silent: {:?}", msgs);
         let (text, _) = eval_str("Sinc[0]");
         assert_eq!(text, "1");
+    }
+
+    #[test]
+    fn arity_guard_reports_instead_of_panicking() {
+        // First[] used to index past the end of args and abort the whole
+        // process. The central guard reports it and leaves the call alone.
+        let (text, msgs) = eval_str("First[]");
+        assert_eq!(text, "First[]");
+        assert!(
+            msgs.iter().any(|m| m.contains("wrong number of arguments")),
+            "expected an argr message, got {:?}",
+            msgs
+        );
+        let (text, _) = eval_str("Take[x]");
+        assert_eq!(text, "Take[x]");
+        // A well-formed call still works.
+        let (text, _) = eval_str("First[{7, 8}]");
+        assert_eq!(text, "7");
+    }
+
+    fn messages_for(i: &mut super::Interp, src: &str) -> usize {
+        i.messages.clear();
+        let e = crate::parser::parse_input(&mut i.t, src).unwrap();
+        let _ = i.eval(&e);
+        i.messages.len()
+    }
+
+    #[test]
+    fn off_on_and_quiet_suppress_messages() {
+        let mut i = super::Interp::new();
+        assert!(messages_for(&mut i, "1/0") > 0, "1/0 should message");
+        assert_eq!(messages_for(&mut i, "Off[Power]; 1/0"), 0);
+        assert!(messages_for(&mut i, "On[Power]; 1/0") > 0);
+        assert_eq!(messages_for(&mut i, "Quiet[1/0]"), 0);
+        assert_eq!(messages_for(&mut i, "Off[]; 1/0"), 0);
+        assert!(messages_for(&mut i, "On[]; 1/0") > 0);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 use crate::eval::{subst_syms, EvalRes, Flow, Interp};
 use crate::expr::{has, same_q, A_PROTECTED, DownRule, Expr, OwnValue};
 use crate::pattern::match_top;
+use std::time::{Duration, Instant};
 
 pub fn sym_(i: &mut Interp, name: &str) -> Expr {
     Expr::Sym(i.t.intern(name))
@@ -115,18 +116,17 @@ pub fn expr_to_int(e: &Expr) -> Option<i64> {
 }
 
 /// Parse iterator specs (evaluating bounds) for Table/Sum/Product/Do.
-pub fn build_iters(i: &mut Interp, specs: &[Expr]) -> Result<Vec<Iter>, Flow> {
+/// Returns Ok(None) when a spec is not a concrete integer/range/list iterator
+/// (the caller then leaves the expression unevaluated instead of aborting).
+pub fn build_iters(i: &mut Interp, specs: &[Expr]) -> Result<Option<Vec<Iter>>, Flow> {
     let mut out = Vec::new();
     for spec in specs {
         match parse_iter(i, spec)? {
             Some(it) => out.push(it),
-            None => {
-                i.message("Iterator", "itform");
-                return Err(Flow::Halt("bad iterator".to_string()));
-            }
+            None => return Ok(None),
         }
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 fn parse_iter(i: &mut Interp, spec: &Expr) -> Result<Option<Iter>, Flow> {
@@ -241,16 +241,10 @@ pub fn b_do(i: &mut Interp, args: &[Expr]) -> EvalRes {
         i.message("Do", "argr");
         return Ok(unevaluated_call(i, "Do", args));
     }
-    let mut iters = Vec::new();
-    for spec in &args[1..] {
-        match parse_iter(i, spec)? {
-            Some(it) => iters.push(it),
-            None => {
-                i.message("Do", "itform");
-                return Ok(unevaluated_call(i, "Do", args));
-            }
-        }
-    }
+    let Some(iters) = build_iters(i, &args[1..])? else {
+        i.message("Do", "itform");
+        return Ok(unevaluated_call(i, "Do", args));
+    };
     let mut env: Vec<(usize, Expr)> = Vec::new();
     let mut body = args[0].clone();
     let _ = run_iters(i, &iters, &mut env, &body, &mut |i, sub| match i.eval(sub) {
@@ -473,6 +467,129 @@ pub fn b_return(i: &mut Interp, args: &[Expr]) -> EvalRes {
     }
     let v = i.eval(&args[0])?;
     Err(Flow::Return(Some(v)))
+}
+
+// ---------- error control ----------
+
+/// Quiet[expr] — evaluate expr, discarding any messages it generates.
+pub fn b_quiet(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.is_empty() {
+        i.message("Quiet", "argr");
+        return Ok(unevaluated_call(i, "Quiet", args));
+    }
+    let saved = i.messages.len();
+    let r = i.eval(&args[0]);
+    i.messages.truncate(saved);
+    r
+}
+
+/// Check[expr, failexpr] — failexpr if expr generated a message or was aborted.
+pub fn b_check(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() < 2 {
+        i.message("Check", "argr");
+        return Ok(unevaluated_call(i, "Check", args));
+    }
+    let saved = i.messages.len();
+    match i.eval(&args[0]) {
+        Ok(v) => {
+            if i.messages.len() > saved {
+                i.eval(&args[1])
+            } else {
+                Ok(v)
+            }
+        }
+        Err(Flow::Abort) => i.eval(&args[1]),
+        Err(e) => Err(e),
+    }
+}
+
+fn name_of_arg(i: &Interp, a: &Expr) -> Option<String> {
+    match a {
+        Expr::Sym(id) => Some(i.t.name_of(*id).to_string()),
+        Expr::Str(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// Off[] switches every message off; Off[f, ...] just those from f.
+pub fn b_off(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.is_empty() {
+        i.messages_off = true;
+        return Ok(Expr::Sym(i.t.sys.null));
+    }
+    for a in args {
+        if a.is_symbol(i.t.sys.all) {
+            i.messages_off = true;
+        } else if let Some(name) = name_of_arg(i, a) {
+            if !i.off_names.iter().any(|n| *n == name) {
+                i.off_names.push(name);
+            }
+        }
+    }
+    Ok(Expr::Sym(i.t.sys.null))
+}
+
+/// On[] restores every message; On[f, ...] restores those from f.
+pub fn b_on(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.is_empty() {
+        i.messages_off = false;
+        i.off_names.clear();
+        return Ok(Expr::Sym(i.t.sys.null));
+    }
+    for a in args {
+        if a.is_symbol(i.t.sys.all) {
+            i.messages_off = false;
+            i.off_names.clear();
+        } else if let Some(name) = name_of_arg(i, a) {
+            i.off_names.retain(|n| *n != name);
+        }
+    }
+    Ok(Expr::Sym(i.t.sys.null))
+}
+
+/// Abort[] — unwind the current evaluation; the top level reports `$Aborted`.
+pub fn b_abort(_i: &mut Interp, _args: &[Expr]) -> EvalRes {
+    Err(Flow::Abort)
+}
+
+/// Step[label, expr] — one held step of a derivation (see Steps/Trace).
+pub fn b_step(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    let id = i.t.intern("Step");
+    Ok(Expr::node(Expr::Sym(id), args.to_vec()))
+}
+
+/// TimeConstrained[expr, t] — evaluate expr, aborting after t seconds.
+/// TimeConstrained[expr, t, fallback] returns fallback on timeout.
+pub fn b_timeconstrained(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() < 2 {
+        i.message("TimeConstrained", "argr");
+        return Ok(unevaluated_call(i, "TimeConstrained", args));
+    }
+    let tv = i.eval(&args[1])?;
+    let secs = match &tv {
+        Expr::Int(n) => n.to_f64(),
+        Expr::Rat(r) => r.to_f64(),
+        Expr::Real(x) => *x,
+        _ => {
+            i.message("TimeConstrained", "argr");
+            return Ok(unevaluated_call(i, "TimeConstrained", args));
+        }
+    };
+    let prev = i.deadline;
+    i.deadline = Some(Instant::now() + Duration::from_secs_f64(secs.max(0.0)));
+    let r = i.eval(&args[0]);
+    i.deadline = prev;
+    match r {
+        Ok(v) => Ok(v),
+        Err(Flow::Abort) => {
+            if args.len() >= 3 {
+                i.eval(&args[2])
+            } else {
+                Ok(Expr::Sym(i.t.intern("$Aborted")))
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 // ---------- rules ----------

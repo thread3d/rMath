@@ -38,3 +38,7 @@ lean/*.olean
 lean/Debug*.lean
 lean/RMathVerify.lean
 lean/RMathCheck.lean
+
+# notebook autosaved session
+.rmath-session.json
+notebook-*.mt

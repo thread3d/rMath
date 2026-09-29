@@ -49,6 +49,13 @@ pub fn nv_sub(a: &NumVal, b: &NumVal) -> NumVal {
     }
 }
 
+pub fn nv_div(a: &NumVal, b: &NumVal) -> NumVal {
+    match (a, b) {
+        (NumVal::R(x), NumVal::R(y)) => NumVal::R(x.div(y)),
+        _ => NumVal::F(nv_f64(a) / nv_f64(b)),
+    }
+}
+
 pub fn nv_neg(a: &NumVal) -> NumVal {
     match a {
         NumVal::R(r) => NumVal::R(r.clone().neg()),
@@ -82,6 +89,31 @@ pub fn is_numeric_zero(e: &Expr) -> bool {
         Expr::Real(x) => *x == 0.0,
         _ => false,
     }
+}
+
+/// `Infinity` or `ComplexInfinity` (the two directed-infinities this kernel
+/// models as symbols).
+pub fn is_infinity_like(e: &Expr, t: &SymbolTable) -> bool {
+    matches!(e, Expr::Sym(id) if *id == t.sys.infinity || *id == t.sys.complexinfinity)
+}
+
+/// `Indeterminate` itself.
+pub fn is_undetermined(e: &Expr, t: &SymbolTable) -> bool {
+    e.is_symbol(t.sys.indeterminate)
+}
+
+/// Does the expression mention `Infinity`, `ComplexInfinity`, or
+/// `Indeterminate` anywhere? Arithmetic must not silently treat these as
+/// ordinary terms (`0 * Infinity`, `Infinity - Infinity`, ...).
+pub fn contains_undetermined(e: &Expr, t: &SymbolTable) -> bool {
+    if is_infinity_like(e, t) || is_undetermined(e, t) {
+        return true;
+    }
+    if let Expr::Node(nd) = e {
+        return contains_undetermined(&nd.head, t)
+            || nd.args.iter().any(|a| contains_undetermined(a, t));
+    }
+    false
 }
 
 pub fn exp_sign(e: &Expr) -> Option<i32> {

@@ -590,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc func menuStandardForm() { runJS("setForm('standard')") }
     @objc func menuTraditionalForm() { runJS("setForm('traditional')") }
     @objc func menuToggleForm() { runJS("toggleForm()") }
+    @objc func menuToggleSteps() { runJS("toggleSteps()") }
     @objc func menuFunctionList() { runJS("showHelp(true)") }
     @objc func menuToggleBrackets() { runJS("toggleBrackets()") }
     @objc func menuFocusInput() { runJS("focusInput()") }
@@ -795,6 +796,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         evalMenu.addItem(.separator())
         addItem(evalMenu, "Reset Kernel", #selector(menuResetKernel), "r",
                 [.command, .option], target: self)
+        evalMenu.addItem(.separator())
+        addItem(evalMenu, "Show Steps", #selector(menuToggleSteps), "d",
+                [.command, .shift], target: self)
         evalItem.submenu = evalMenu
 
         // --- Format

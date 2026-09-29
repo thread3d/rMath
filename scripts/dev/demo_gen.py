@@ -26,6 +26,9 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
+from rmathpy.notebook import demo_expression  # noqa: E402
+
 DEMO = os.path.join(ROOT, "demo/demo.mt")
 KERNEL = os.path.join(ROOT, "rmath/target/release/rmath")
 
@@ -38,7 +41,7 @@ UNCHANGED_OK = {
     "SinIntegral[Infinity]", "Gamma[0]",
 }
 # Deliberate demonstrations of error handling: these *should* produce messages.
-MESSAGES_OK = {"1/0", "0/0"}
+MESSAGES_OK = {"1/0", "0/0", "0*Infinity", "Infinity - Infinity"}
 
 
 class Kernel:
@@ -96,6 +99,11 @@ def main():
         if m:
             examples += 1
             expr = m.group("expr")
+            # The notebook's Open loads the labelled line as `expr`, so the
+            # printed form must be recoverable (this is what gives the demo
+            # Out lines when it is opened).
+            if demo_expression(line) != expr.strip():
+                problems.append((line_no, expr, "not convertible for Open"))
             # Run the line as the file would (side effects, printing) ...
             k.eval(line)
             # ... then inspect the expression's own result in context.

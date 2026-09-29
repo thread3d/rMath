@@ -83,7 +83,7 @@ instead of the native app).
 
 ### Demonstration file
 
-`demo/demo.mt` is a tour of the kernel: **339 verified examples and 75 statements
+`demo/demo.mt` is a tour of the kernel: **389 verified examples and 79 statements
 in 25 sections**
 (arithmetic, complex numbers, elementary and special functions, Unicode input,
 patterns, rules, scoping, lists, functional programming, algebra, polynomials,
@@ -95,27 +95,40 @@ taken from `Names[]`, ending with a plot.
 Every example is re-executed against the kernel, **in context** (statement by
 statement in one session, exactly as the notebook's Open does), by
 `make demo-gen` — so an example that stops evaluating is reported rather than
-left in the file as a lie. Load it with `Get["demo/demo.mt"]` (in the app:
-**File ▸ Open…**, which loads each statement as its own cell).
+left in the file as a lie. Load it with `Get["demo/demo.mt"]`, which prints each
+labelled step; in the app, **File ▸ Open…** loads each statement as its own
+cell and turns a labelled example `Print["  <expr>  =  ", <expr>]` into the
+bare `<expr>`, so every result gets an `Out[n]=` line.
 
 ### Notebook interface
 
 The window is a Mathematica-style notebook:
 
 - **Ribbon/toolbar**: Evaluate, Evaluate All, New, Open, Save, Save Last Plot as
-  SVG, Reset Kernel, zoom out/in, Help (all functional).
+  SVG, Reset Kernel, zoom out/in, Standard/Traditional form, Steps, Help (all
+  functional).
 - **Menus** (native): rMath, File, Edit, Insert, Evaluation, Format, Cell,
   Graphics, Palettes, Window, Help — with the usual shortcuts, e.g. ⌘N new,
   ⌘O open, ⌘S save, ⇧⌘S screenshot, ⇧⏎ evaluate, ⇧⌘⏎ evaluate all,
-  ⌥⌘R reset kernel, ⌘+ / ⌘- / ⌘0 zoom, ⌘? help. `rMath --dump-menus` prints
-  the whole tree.
+  ⇧⌘D show steps, ⌥⌘R reset kernel, ⌘+ / ⌘- / ⌘0 zoom, ⌘? help.
+  `rMath --dump-menus` prints the whole tree.
 - **Cells**: every evaluation shows `In[n]:=` and `Out[n]=` labels with a cell
   bracket, inputs and outputs typeset through the kernel's TeX printer
   (StandardForm: square brackets for functions, `\frac` for rationals,
   `\sqrt`, Greek letters, rules as `→`). Plots render inline as SVG.
+- **Copying**: inputs and outputs are typeset, but copying a cell puts its
+  *source* on the clipboard — the input as written, an output as its
+  `InputForm` — so an expression can be pasted back without a fraction losing
+  its `/` (`Together[1/x + 1/y]` used to copy as `Together[1x+1y]`). Unicode
+  slashes and minus signs from rendered math (`∕ ⁄ −`) are accepted too.
 - **Keyboard**: **Shift+Enter** evaluates (Mathematica convention), **Enter**
   adds a new line to the cell, **Ctrl+Space** completes a function name,
   ↑/↓ walk history.
+- **Persistence**: cell inputs are autosaved (debounced) to
+  `<work dir>/.rmath-session.json`, and replayed on load, so quitting and
+  relaunching the app no longer loses the notebook. Replaying re-evaluates the
+  cells, which also re-establishes any definitions they made. **New** clears the
+  saved session.
 - **Insert/Palettes menus** insert `Pi`, `Infinity`, `Sqrt[`, `Integrate[`,
   `Sum[`, comparison and rule operators, plus ready-made Plot/Table examples.
 - **Typesetting form toggle**: **StandardForm** (default: `Factor[x² - 1]`,
@@ -124,6 +137,13 @@ The window is a Mathematica-style notebook:
   **Standard/Traditional** button in the ribbon; existing cells re-typeset
   instantly (both renderings come back from the kernel, so nothing is
   re-evaluated).
+- **Show steps**: the **Steps** toggle in the ribbon (or **Evaluation ▸ Show
+  Steps**, ⇧⌘D) makes every evaluation also display a derivation under its
+  result — the named operations from the given input to the answer (chain rule,
+  integration by parts, l'Hôpital, partial fractions, Pythagorean identity, …),
+  rendered in the current typesetting form. The kernel records the steps during
+  the same evaluation, so nothing is evaluated twice; the setting is remembered
+  between sessions.
 - **Palettes**: real floating palette windows (⌥⌘1…⌥⌘6 or the **Palettes**
   menu) — Basic Math, Algebra, Calculus, Linear Algebra, Plot, Patterns. They
   stay above the notebook and their buttons insert at the cursor; the math
@@ -211,8 +231,55 @@ omega | simp | decide | rfl`, so only a tactic that *closes* the goal counts:
 | `Sqrt[2]^2 = 2`, `Sin[Pi/6] = 1/2` | verified (over ℝ) |
 | `x^2 >= 0` | verified (`positivity`) |
 | `Integrate[x^2, {x, 0, 1}] = 1/3` | verified (`integral_pow`) — kernel calculus cross-checked |
+| `Integrate[x^2, x] = 1/3 x^3`, `Integrate[Sin[x], x] = -Cos[x]`, `Integrate[1/x, x] = Log[x]` | verified — an indefinite integral is checked by differentiating the antiderivative (`deriv F = f`) |
 | `D[x^3 + Sin[x], x]`, `D[Exp[x^2], x]`, `D[Sin[x]^2, x]`, `D[3 x^4, x]`, `D[Cos[x], x]`, `D[x, x]`, `D[7, x]`, `D[x^2 + 2 x + 1, x]`, `D[1/x, x]`, `D[Sin[x]/x, x]`, `D[Log[x], x]`, `D[Sqrt[x], x]`, `D[Exp[x] Log[x], x]`, `D[Log[x^2 + 1], x]` | verified — the kernel's derivative cross-checked through explicit `HasDerivAt` wiring (**14 of 14** sampled shapes) |
+| `Solve[x^2 - 3 x + 2 == 0, x]`, `Solve[x^2 - 2 == 0, x]` | verified — every root the kernel returned is substituted back into the equation |
 | `1/2 + 1/3 = 2/3` (false) | **not proved** |
+
+`Steps[...]` and `Trace[...]` are display wrappers, so verifying such a cell
+checks the expression they derive against that expression's own value (the Step
+list itself has no Lean translation). A `Steps[D[Sin[x]^2, x]]` cell therefore
+verifies as the derivative; an inner expression the bridge cannot translate
+(e.g. `Solve`) is reported by its own name.
+
+`Solve[...]` is checked the same way: the kernel finds the roots, and Lean is
+asked the independent question whether each really satisfies the equation.
+Non-real roots are excluded — Lean's `Real.sqrt` of a negative is 0, so a claim
+about them would be false — and an all-complex result is refused; a root needing
+deeper radical reasoning can come back **not proved** rather than verified.
+
+**Automation and trust (Lean backlog).** Generated files inline
+`lean/RMathLemmas.lean`, which defines `rmath_radical` (a best-effort nested
+square-root closer) plus a few `@[simp]` facts; the closing tactic list also
+tries `field_simp`, `norm_cast`, `gcongr`, `simp_all`, `aesop` and `grind`. Every
+claim is a named `theorem rmath_check` followed by `#print axioms rmath_check`,
+so the panel shows which axioms closed it and a proof that used `sorry` is never
+reported as verified. All-complex `Solve` results are now checked over **ℂ**
+instead of refused. A numeric fuzz cross-check (random values through the kernel)
+downgrades a verdict to *cannot verify* if the two sides disagree, catching
+translation bugs. **Persistence (latency).** `Lean.verify` takes its verdict from
+the persistent LSP server once that server has *calibrated* — it must report a
+known-false claim as an error — reusing one session file so Mathlib loads once:
+**~2–3 s per claim instead of ~10 s**. A check is only conclusive when the
+server signals elaboration completion (`$/lean/fileProgress`); anything
+inconclusive falls back to the one-shot `lake env lean` run, so a missing
+diagnostics batch can never become a verdict. The panel's **Fast check** exposes
+the server's diagnostics directly, and **Find lemmas** searches Loogle. Set
+`RMATH_LEAN_SERVER=0` to force the one-shot path. `make lean-bench` scores
+translation and verification over the golden files and the demo (translation
+coverage is **127 of 734** corpus claims: indefinite integrals, finite sums and
+the `Collect`-like heads are translated now);
+`RMATH_LEAN_HAMMER=1` retries *not proved* goals with external hammers (`duper`,
+`lean_smt`) when the project supplies them.
+
+`rmath_radical` walks the radicals in the goal bottom-up: for each radicand
+`t` (innermost first) it proves `0 ≤ t`, records `(√t)² = t`, then closes the
+goal with `nlinarith`. That is what `√((√5−1)/2)` needs — `0 ≤ (√5−1)/2`
+follows from `(√5)² = 5` and `√5 ≥ 0` — so
+`Solve[x^4 + x^2 - 1 == 0, x]` now verifies over ℝ (its two real roots; the
+two non-real ones are excluded, since Lean's `Real.sqrt` of a negative is 0).
+A radical whose sign is genuinely unprovable makes the tactic fail rather than
+invent a verdict.
 
 Two subtleties worth knowing, both found by testing rather than reasoning:
 
@@ -298,6 +365,7 @@ Requirements and knobs:
 | thinking | a local Ollama streams the model's thinking as `reasoning`, while the harness adapter reads `reasoning_content`, so nothing appeared until the final answer. rMath starts a small stdlib proxy (`rmathpy/ollama_proxy.py`) that renames that one field, and routes harness runs through it with a per-run `--patch` overlay (the settings document outranks the environment, so the overlay also disables that row for the run). Set `RMATH_NO_THINKING_PROXY=1` to keep the direct endpoint. |
 | endpoint | resolved in this order: `$DEEPSEEK_BASE_URL`, the keyfile's `DEEPSEEK_BASE_URL`, then **a local Ollama (`http://localhost:11434/v1`) if one answers**, else `https://api.deepseek.com`. For a local endpoint the key is a placeholder, since Ollama ignores it. The panel header shows the resolved endpoint and its source. |
 | harness settings | `$DSH_HOME/settings.yaml` is shared by every profile: point the route at Ollama with `llm-deepseek: {baseURL: http://localhost:11434/v1}` and choose a model Ollama actually serves with `agent-default-model: {provider: deepseek-official, model: …}` (currently `ornith-1.5:35b`, a local reasoning model). The adapter POSTs to `<baseURL>/chat/completions`, so the `/v1` suffix is required. The panel header shows the endpoint and the model the harness will start on. |
+| model | the panel's **Model** menu lists the models the resolved endpoint advertises (and the local Ollama's) and remembers your choice in `~/Library/Application Support/rMath/model`. It is applied with a per-run `--patch` overlay, so your `settings.yaml` is never modified; choosing "(default model)" clears it and falls back to `agent-default-model`. |
 | note on local models | a local model needs tool calling for agent runs; `ornith-1.5:35b` does (verified: it listed `demo/` from the file system). Expect minutes per run rather than seconds. |
 | profile | `RMATH_DSH_PROFILE` (default `headless`) |
 | workspace | `RMATH_HARNESS_ROOT` (default: this repository) |
@@ -335,6 +403,7 @@ restart that app. Note that restarting Terminal ends the current agent session.
 |---------|--------------|
 | `make build` / `make release` | build the kernel (debug / release) |
 | `make test` | unit tests + golden end-to-end suite |
+| `make oracle` | random + invariant correctness oracle over the algebra surface (`ORACLE="-n 200 --seed 7"` for a longer run) — independent of the kernel's own simplifier |
 | `make repl` | interactive kernel REPL (`Quit[]` or Ctrl-D exits) |
 | `make eval E='D[Sin[x]^2, x]'` | one-shot evaluation |
 | `make demo` | evaluate `demo/demo.mt` headlessly |
@@ -348,6 +417,17 @@ restart that app. Note that restarting Terminal ends the current agent session.
 | `make shot` | render the notebook/app page to PNG via WebKit (no permissions needed) |
 | `make svg2png IN=… OUT=…` | convert an SVG plot to PNG with `rsvg-convert` |
 | `make clean` | remove Rust build artifacts |
+
+`make oracle` is the correctness net: it feeds random expressions to the kernel
+and checks each operation's invariants numerically (`Expand[Factor[p]] = p`,
+every `Solve` root satisfies its equation, `D[Integrate[f]] = f`, and `Cancel` /
+`Apart` must be finite at a removed root). Because it does not use the kernel's
+own simplifier, it catches plausible-but-wrong answers and evaluation loops. It
+found three real bugs: `canon_cmp` compared `Int`/`Rat` in the same direction
+for both argument orders, so the Orderless sort was not antisymmetric and some
+`Integrate` calls looped until `$IterationLimit`; `Cancel` was a straight alias
+for `Together` and cancelled nothing; and `Apart` of a polynomial returned an
+unevaluated `Apart` head.
 
 Port can be changed with `make notebook-bg PORT=9000`. Note that this Rust
 toolchain was installed with `--no-modify-path`, so `cargo` lives at
@@ -407,14 +487,28 @@ k.eval("x = 5; x^2")["result"]       # "25"
 - **Evaluation**: standard evaluation with `HoldAll`-family attributes,
   `Sequence` splicing, `Unevaluated`, `Evaluate` in held args, ordered
   down-values (specific rules first), up-value-free v1, `Module`/`Block`/`With`
-  scoping, `Catch`/`Throw`, `Break`/`Continue`/`Return`.
+  scoping, `Catch`/`Throw`, `Break`/`Continue`/`Return`. Error control:
+  `Quiet`, `Check`, `Off`/`On`, `Abort`, `TimeConstrained`.
+- **Derivations**: `Steps[expr]` returns the derivation of a result as a list of
+  `Step[label, expr]` — named operations from the given input to the answer.
+  It is instrumented for `D`, `Integrate`, `Limit`, `Simplify`, `Apart`,
+  `Factor` and `Solve` (e.g. "chain rule: d/dx Sin", "integration by parts",
+  "l'Hôpital (0/0)", "partial fractions", "Pythagorean identity"; `Solve` shows
+  the polynomial form, an even-power substitution `y = x^2`, the discriminant,
+  the quadratic formula and rational roots), and falls back to `Trace[expr]`,
+  the successive evaluation forms, for anything else.
 - **Algebra**: `Expand`, `ExpandAll`, `Together`, `Cancel` (v1 = Together),
-  `Collect`, `Factor` (content + rational roots), `Coefficient(s)`,
-  `CoefficientList`, `Exponent`, `Variables`, `PolynomialQuotient[Remainder]`,
-  `PolynomialGCD` (univariate).
-- **Calculus**: `D` (all elementary chain rules), `Integrate` (polynomials,
-  powers, linear-arg trig/exp/log/sqrt, definite integrals),
-  `Series` → `SeriesData`, `Normal`, `Limit` (series-based).
+  `Apart` (partial fractions, distinct linear factors), `Collect`, `Factor`
+  (content + rational roots), `Coefficient(s)`, `CoefficientList`, `Exponent`,
+  `Variables`, `PolynomialQuotient[Remainder]`, `PolynomialGCD` (univariate),
+  and `Simplify`/`FullSimplify` with `Assuming`/`$Assumptions`.
+- **Calculus**: `D` (elementary chain rules, and `Derivative` for unknown
+  functions), `Integrate` (polynomials, powers incl. `Sqrt`, `1/(a x + b)`,
+  rational functions via partial fractions, `x^n Sin/Cos/Exp` by parts,
+  `x^n Log[x]`, `1/(c0 + c2 x^2)` → `ArcTan`, `1/Sqrt[c0 - c2 x^2]` → `ArcSin`,
+  the special-function cases, and definite integrals),
+  `Series` → `SeriesData`, `Normal`, `Limit` (l'Hôpital for 0/0 forms, with a
+  series fallback; unresolved limits stay unevaluated).
 - **Linear algebra**: `Det`, `Inverse`, `Transpose`, `Dot`, `IdentityMatrix`,
   `DiagonalMatrix`, `MatrixPower`, `RowReduce`, `MatrixRank`, `LinearSolve`.
 - **Solving**: `Solve` (linear systems, quadratic/cubic-with-rational-roots),
@@ -423,8 +517,11 @@ k.eval("x = 5; x^2")["result"]       # "25"
 - **Lists/functional**: `Table`, `Map`, `Apply`, `MapAll`, `MapThread`,
   `Thread`, `Select`, `Cases`, `Count`, `Position`, `Sort[By]`, `Reverse`,
   `Join`, `Append[To]`, `Take`, `Drop`, `Flatten`, `Union`,
-  `Intersection`, `Complement`, `Total`, `Sum`, `Product`, `Range`, `Nest`,
-  `NestList`, `Fold`, `FixedPoint`, `Sow`/`Reap`.
+  `Intersection`, `Complement`, `Total`, `Sum`, `Product` (symbolic closed
+  forms for polynomials, geometric series, factorials and the Basel sums),
+  `Range`, `Nest`, `NestList`, `Fold`, `FixedPoint`, `Sow`/`Reap`, plus
+  `Array`, `ConstantArray`, `Partition`, `Accumulate`, `Differences`,
+  `Ordering`, `TakeWhile`, `DeleteCases`, `Riffle`.
 - **Numbers/predicates**: `PrimeQ`, `Prime`, `EvenQ`, `OddQ`, `NumberQ`,
   `NumericQ`, `AtomQ`, `Head`, `Length`, `MatchQ`, `FreeQ`, `MemberQ`,
   `SameQ`, `Equal`, ordering relations, `Abs`, `Sign`, `Floor`, `Ceiling`,
@@ -434,9 +531,11 @@ k.eval("x = 5; x^2")["result"]       # "25"
   a `Graphics[...]` structure that the notebook renders as styled SVG
   (axes, ticks, labels, clipped curves, asymptote splitting).
 - **Strings/system**: `StringJoin`, `StringLength`, `StringTake/Drop`,
-  `Characters`, `ToString`, `ToExpression`, `Attributes`, `SetAttributes`,
-  `Clear[All]`, `Definition`, `Names`, `SeedRandom`, `Random*`,
-  `AbsoluteTiming`, `Print`, `Sow`/`Reap`.
+  `StringSplit`, `StringReplace`, `StringMatchQ`, `StringContainsQ`,
+  `Characters`, `ToString`, `ToExpression`, association access (`Keys`,
+  `Values`, `Lookup`, `KeyExistsQ`), `Piecewise`, `Attributes`,
+  `SetAttributes`, `Clear[All]`, `Definition`, `Names`, `SeedRandom`,
+  `Random*`, `AbsoluteTiming`, `Print`, `Sow`/`Reap`.
 
 ## Known limitations (v1)
 
@@ -445,14 +544,21 @@ k.eval("x = 5; x^2")["result"]       # "25"
 - `Cancel` = `Together` (multivariate rational GCD is not implemented).
 - `Solve` covers linear systems (unique solutions), quadratics, and cubics
   with rational roots; multivariate nonlinear systems stay unevaluated.
-- `Eigenvalues` only for 2×2 matrices.
-- Symbolic `Sum`/`Product` are not computed in closed form.
-- Up-values (`f /: g[f[x]] = ...` parse but are not applied).
-- `Integrate` covers polynomials, `1/(a x + b)`, sums, constant factors, the
-  elementary functions with linear arguments, and the special cases
-  `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`, `Exp[-x^2]`
-  (integration by parts, partial fractions and trigonometric substitution are
-  not implemented, so e.g. `Integrate[x Sin[x], x]` stays unevaluated).
+- `Eigenvalues`/`Eigenvectors` are not implemented (an earlier note here
+  claimed 2×2 support; there is none).
+- Symbolic `Sum`/`Product` cover constants, polynomials in the index up to
+  degree 4, geometric series (finite and infinite), factorials and the Basel
+  sums `Sum[1/n^2]`/`Sum[1/n^4]`; general symbolic summation and `NSum` are
+  not implemented. Anything unrecognised stays unevaluated.
+- Up-values (`f /: g[f[x]] = ...`) parse but are not applied.
+- `Integrate` covers polynomials, `1/(a x + b)`, sums, constant factors,
+  rational functions that split into distinct linear factors (via `Apart`),
+  `x^n Sin/Cos/Exp` and `x^n Log[x]` by parts, the arc-tangent/arc-sine forms
+  of `1/quadratic`, the elementary functions with linear arguments, and the
+  special cases `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`,
+  `1/Log[x]`, `Exp[-x^2]` (trigonometric substitution, repeated-factor partial
+  fractions and irreducible quadratics are not implemented, so e.g.
+  `Integrate[1/(x^3 + x), x]` stays unevaluated).
 - Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
   `SinhIntegral`, `CoshIntegral`, `ExpIntegralEi`, `LogIntegral`, `Sinc`
   (machine-precision numeric evaluation, exact values at 0/±Infinity, and
@@ -487,7 +593,7 @@ fixpoint (bounded by `$IterationLimit`/`$RecursionLimit`).
 
 ```
 cd rmath
-cargo test            # 32 unit tests + ~70 end-to-end golden cases
+cargo test            # 53 unit tests + ~345 end-to-end golden cases
 ```
 
 ## License

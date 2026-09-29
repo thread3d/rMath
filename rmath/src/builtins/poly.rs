@@ -391,8 +391,35 @@ pub fn b_together(i: &mut Interp, args: &[Expr]) -> EvalRes {
 }
 
 pub fn b_cancel(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    // v1: Cancel = Together (multivariate GCD cancellation is a later step).
-    b_together(i, args)
+    if args.len() != 1 {
+        return b_together(i, args);
+    }
+    // Combine into one fraction, then reduce N/D by their univariate polynomial
+    // GCD. `Cancel` used to be a straight alias for `Together`, so
+    // Cancel[(x^2-9)/(x-3)] came back unchanged instead of 3+x.
+    let combined = b_together(i, args)?;
+    let (num, den) = together_parts(i, &combined)?;
+    let var = {
+        let mut vars = vars_of(i, &num)?;
+        vars.extend(vars_of(i, &den)?);
+        match vars.into_iter().next() {
+            Some(v) => v,
+            None => return Ok(combined),
+        }
+    };
+    let (Some(cn), Some(cd)) = (poly_coeffs(i, &num, &var)?, poly_coeffs(i, &den, &var)?) else {
+        return Ok(combined);
+    };
+    let Some((qn, qd)) = cancel_coeffs(&cn, &cd) else {
+        return Ok(combined);
+    };
+    let n = coeffs_to_expr(i, &qn, &var)?;
+    let d = coeffs_to_expr(i, &qd, &var)?;
+    if same_q(&d, &Expr::int_i64(1)) {
+        return Ok(n);
+    }
+    let inv = Expr::node(Expr::Sym(i.t.sys.power), vec![d, Expr::int_i64(-1)]);
+    eval_call(i, Expr::Sym(i.t.sys.times), vec![n, inv])
 }
 
 // ============================ Collect ============================
@@ -500,7 +527,15 @@ pub fn b_factor(i: &mut Interp, args: &[Expr]) -> EvalRes {
         factors.push(Expr::Int(content.clone()));
     }
     // Rational root search: p/q with p | c0.num, q | clead.num.
-    let mut work: Vec<Rat> = coeffs.clone();
+    // The content must be divided out first, or the leftover constant (which is
+    // the content itself) is multiplied in a second time: 2x²-2 came out as
+    // 4(x-1)(x+1) instead of 2(x-1)(x+1).
+    let mut work: Vec<Rat> = if all_int && !content.is_one() {
+        let content_rat = Rat::new(content.clone(), BigInt::from_i64(1));
+        coeffs.iter().map(|x| x.div(&content_rat)).collect()
+    } else {
+        coeffs.clone()
+    };
     loop {
         if work.len() < 2 {
             break;
@@ -554,7 +589,9 @@ pub fn b_factor(i: &mut Interp, args: &[Expr]) -> EvalRes {
         rest = eval_call(i, Expr::Sym(i.t.sys.plus), vec![rest, term])?;
     }
     factors.push(rest);
-    eval_call(i, Expr::Sym(i.t.sys.times), factors)
+    let r = eval_call(i, Expr::Sym(i.t.sys.times), factors)?;
+    i.step("factorization", &r);
+    Ok(r)
 }
 
 pub fn divisors64(v: i64) -> Vec<i64> {
@@ -572,6 +609,140 @@ pub fn divisors64(v: i64) -> Vec<i64> {
     }
     out.sort();
     out
+}
+
+// ============================ Apart (distinct linear factors) ============================
+
+fn poly_deriv(c: &[Rat]) -> Vec<Rat> {
+    if c.len() <= 1 {
+        return vec![Rat::from_i64(0)];
+    }
+    let mut out = Vec::with_capacity(c.len() - 1);
+    for (k, ck) in c.iter().enumerate().skip(1) {
+        out.push(ck.mul(&Rat::from_i64(k as i64)));
+    }
+    out
+}
+
+/// Split off rational roots; returns (root, multiplicity) and the leftover
+/// polynomial (constant when the split was complete).
+fn split_linear_factors(mut work: Vec<Rat>) -> (Vec<(Rat, usize)>, Vec<Rat>) {
+    let mut roots: Vec<(Rat, usize)> = Vec::new();
+    // An x factor shows as a zero constant term and the p/q search misses it.
+    while work.len() > 1 && work[0].is_zero() {
+        work.remove(0);
+        if let Some(slot) = roots.iter_mut().find(|(x, _)| *x == Rat::from_i64(0)) {
+            slot.1 += 1;
+        } else {
+            roots.push((Rat::from_i64(0), 1));
+        }
+    }
+    loop {
+        if work.len() < 2 {
+            break;
+        }
+        let c0n = work[0].num.clone().abs().to_i64().unwrap_or(1);
+        let cln = work[work.len() - 1].num.clone().to_i64().unwrap_or(1).max(1);
+        let mut root: Option<Rat> = None;
+        'outer: for p in divisors64(c0n) {
+            for q in divisors64(cln) {
+                for s in [1i64, -1] {
+                    let r = Rat::new(BigInt::from_i64(s * p), BigInt::from_i64(q));
+                    if horner(&work, &r).is_zero() {
+                        root = Some(r);
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let Some(r) = root else { break };
+        work = synth_div(&work, &r);
+        if let Some(slot) = roots.iter_mut().find(|(x, _)| *x == r) {
+            slot.1 += 1;
+        } else {
+            roots.push((r, 1));
+        }
+    }
+    (roots, work)
+}
+
+/// Partial fractions for a rational function whose denominator splits into
+/// distinct linear factors over the rationals. None when that does not apply
+/// (repeated factors, irreducible quadratics, non-rational input).
+pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, Flow> {
+    let (num_e, den_e) = together_parts(i, e)?;
+    let Some(num) = poly_coeffs(i, &num_e, var)? else {
+        return Ok(None);
+    };
+    let Some(den) = poly_coeffs(i, &den_e, var)? else {
+        return Ok(None);
+    };
+    if den.len() < 2 {
+        // The denominator is a constant: the input is already a polynomial, so
+        // "apart" is the identity. Returning it makes Apart[x^2+1, x] = x^2+1
+        // instead of an unevaluated Apart head (and lets Apart remove a common
+        // factor through the Together step before this point).
+        if den.len() == 1 && den[0].cmp(&Rat::from_i64(1)) == std::cmp::Ordering::Equal {
+            return Ok(Some(num_e));
+        }
+        return Ok(None);
+    }
+    let Some((quo, rem)) = poly_div(&num, &den) else {
+        return Ok(None);
+    };
+    let (roots, leftover) = split_linear_factors(den.clone());
+    if leftover.len() > 1 || roots.is_empty() || roots.iter().any(|(_, m)| *m != 1) {
+        return Ok(None);
+    }
+    let dprime = poly_deriv(&den);
+    let mut terms: Vec<Expr> = Vec::new();
+    let q_expr = coeffs_to_expr(i, &quo, var)?;
+    if !same_q(&q_expr, &Expr::int_i64(0)) {
+        terms.push(q_expr);
+    }
+    for (r, _) in &roots {
+        // Cover-up rule for a simple root: A = N(r) / D'(r).
+        let a = horner(&rem, r).div(&horner(&dprime, r));
+        if a.is_zero() {
+            continue;
+        }
+        let lin = Expr::node(
+            Expr::Sym(i.t.sys.plus),
+            vec![var.clone(), Expr::rat(Rat::from_i64(0).sub(r))],
+        );
+        let term = Expr::node(
+            Expr::Sym(i.t.sys.times),
+            vec![
+                Expr::rat(a),
+                Expr::node(Expr::Sym(i.t.sys.power), vec![lin, Expr::int_i64(-1)]),
+            ],
+        );
+        terms.push(i.eval(&term)?);
+    }
+    if terms.is_empty() {
+        return Ok(Some(Expr::int_i64(0)));
+    }
+    let out = if terms.len() == 1 {
+        terms.pop().unwrap()
+    } else {
+        Expr::node(Expr::Sym(i.t.sys.plus), terms)
+    };
+    let r = i.eval(&out)?;
+    i.step("partial fractions", &r);
+    Ok(Some(r))
+}
+
+pub fn b_apart(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() != 2 {
+        i.message("Apart", "argr");
+        return Ok(unevaluated_call(i, "Apart", args));
+    }
+    let e = i.eval(&args[0])?;
+    let var = i.eval(&args[1])?;
+    match apart_expr(i, &e, &var)? {
+        Some(v) => Ok(v),
+        None => Ok(unevaluated_call(i, "Apart", args)),
+    }
 }
 
 // ============================ polynomial division ============================
@@ -708,4 +879,51 @@ pub fn b_polynomialgcd(i: &mut Interp, args: &[Expr]) -> EvalRes {
         return coeffs_to_expr(i, &x, &var);
     }
     Ok(coeffs_to_expr(i, &y, &var)?)
+}
+
+fn div_coeffs(c: &[Rat], d: &Rat) -> Vec<Rat> {
+    let mut out: Vec<Rat> = c.iter().map(|x| x.div(d)).collect();
+    trim(&mut out);
+    out
+}
+
+/// Reduce N/D by their univariate GCD, returning the reduced coefficient lists.
+pub fn cancel_coeffs(a: &[Rat], b: &[Rat]) -> Option<(Vec<Rat>, Vec<Rat>)> {
+    if a.is_empty() || b.is_empty() {
+        return None;
+    }
+    let mut x = a.to_vec();
+    let mut y = b.to_vec();
+    while y.iter().any(|c| !c.is_zero()) {
+        let (_, r) = poly_div(&x, &y)?;
+        if r.is_empty() {
+            break;
+        }
+        x = y;
+        y = r;
+    }
+    let mut g = if y.is_empty() { x } else { y };
+    trim(&mut g);
+    if g.is_empty() {
+        return None;
+    }
+    if g.len() == 1 {
+        let lead = g[0].clone();
+        return Some((div_coeffs(a, &lead), div_coeffs(b, &lead)));
+    }
+    // A monic GCD keeps the reduced forms monic, so Cancel[(x^2-1)/(x^2+2x+1)]
+    // reads (-1+x)/(1+x) rather than (1/2-1/2x)/(-1/2-1/2x).
+    let lead = g[g.len() - 1].clone();
+    if lead.cmp(&Rat::from_i64(1)) != std::cmp::Ordering::Equal {
+        g = div_coeffs(&g, &lead);
+    }
+    let (qa, _) = poly_div(a, &g)?;
+    let (qb, _) = poly_div(b, &g)?;
+    // Cancel the numeric content too, so the denominator is monic:
+    // (6x^2-6)/(2x-2) reduces to 3+3x rather than 1/2 (6+6x).
+    let dlead = qb[qb.len() - 1].clone();
+    if dlead.cmp(&Rat::from_i64(1)) != std::cmp::Ordering::Equal {
+        return Some((div_coeffs(&qa, &dlead), div_coeffs(&qb, &dlead)));
+    }
+    Some((qa, qb))
 }

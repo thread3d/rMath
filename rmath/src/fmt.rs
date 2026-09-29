@@ -209,6 +209,17 @@ fn output_into(t: &SymbolTable, e: &Expr, out: &mut String) {
             // Operator forms
             if let Expr::Sym(id) = &nd.head {
                 let sys = t.sys;
+                // Derivation step: `label: expr` (an empty label prints just expr).
+                if nd.args.len() == 2 && t.name_of(*id) == "Step" {
+                    if let Expr::Str(label) = &nd.args[0] {
+                        if !label.is_empty() {
+                            out.push_str(label);
+                            out.push_str(": ");
+                        }
+                    }
+                    output_into(t, &nd.args[1], out);
+                    return;
+                }
                 if *id == sys.plus && !nd.args.is_empty() {
                     let mut first = true;
                     for a in &nd.args {
@@ -256,14 +267,16 @@ fn output_into(t: &SymbolTable, e: &Expr, out: &mut String) {
                     if neg {
                         out.push('-');
                     }
-                    if numer.is_empty() && !denom.is_empty() {
-                        out.push('1');
-                    }
                     let numer: Vec<Expr> = numer
                         .iter()
                         .filter(|a| !same_q(a, &Expr::int_i64(1)))
                         .cloned()
                         .collect();
+                    // A numerator of just 1 must still be printed: otherwise
+                    // `Times[-1, 1]` prints as a bare `-` (and `-1/x` as `-/x`).
+                    if numer.is_empty() {
+                        out.push('1');
+                    }
                     for (k, a) in numer.iter().enumerate() {
                         if k > 0 {
                             out.push(' ');
