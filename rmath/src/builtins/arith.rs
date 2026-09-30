@@ -649,6 +649,7 @@ pub fn b_abs(i: &mut Interp, args: &[Expr]) -> EvalRes {
         Expr::Int(n) => Ok(Expr::Int(n.clone().abs())),
         Expr::Rat(r) => Ok(Expr::rat(r.clone().abs())),
         Expr::Real(x) => Ok(Expr::real(x.abs())),
+        Expr::BigReal(b) => Ok(Expr::BigReal(Box::new(b.abs()))),
         Expr::Cnum(c) => {
             // Exact: Sqrt[re^2 + im^2] simplified when perfect.
             let (re, im) = (&c.re, &c.im);
@@ -955,10 +956,20 @@ pub fn b_n(i: &mut Interp, args: &[Expr]) -> EvalRes {
             }
         }
     }
-    let e = i.eval(&args[0])?;
+    // `N` holds its argument, so the raw form is still available. Prefer the
+    // evaluated form (`Sin[Pi]` is exactly 0, `Pi^Pi` stays symbolic), and fall
+    // back to the raw form when ordinary evaluation already collapsed an exact
+    // call to a machine real (`Sin[1]`, `Log[2]`) at the requested precision.
+    let raw = args[0].clone();
+    let e = i.eval(&raw)?;
     if let Some(prec) = want_prec {
         if let Some(v) = crate::builtins::num::big_real_eval(&e, &i.t, prec) {
             return Ok(v);
+        }
+        if !crate::expr::same_q(&e, &raw) {
+            if let Some(v) = crate::builtins::num::big_real_eval(&raw, &i.t, prec) {
+                return Ok(v);
+            }
         }
         i.message("N", "meprec");
     }

@@ -53,6 +53,16 @@ pub fn min_bigreal_prec(e: &Expr) -> Option<usize> {
 /// Returns None for anything needing a machine transcendental; the caller then
 /// falls back to `f64` and reports `N::meprec`.
 pub fn big_real_eval(e: &Expr, t: &SymbolTable, prec: usize) -> Option<Expr> {
+    // Thread over lists, like N does.
+    if let Some((h, args)) = e.parts() {
+        if h.is_symbol(t.sys.list) {
+            let mut out = Vec::with_capacity(args.len());
+            for a in args {
+                out.push(big_real_eval(a, t, prec)?);
+            }
+            return Some(Expr::node(Expr::Sym(t.sys.list), out));
+        }
+    }
     Some(Expr::BigReal(Box::new(to_big(e, t, prec)?)))
 }
 
@@ -168,6 +178,8 @@ pub fn num_val(e: &Expr) -> Option<NumVal> {
         Expr::Int(n) => Some(NumVal::R(Rat { num: n.clone(), den: BigInt::one() })),
         Expr::Rat(r) => Some(NumVal::R(r.clone())),
         Expr::Real(x) => Some(NumVal::F(*x)),
+        // A machine fallback for functions that have no bigfloat path.
+        Expr::BigReal(b) => Some(NumVal::F(b.to_f64())),
         _ => None,
     }
 }
@@ -470,10 +482,29 @@ fn same_q_pub(a: &Expr, b: &Expr) -> bool {
 /// Is the expression numeric (numbers or constant symbols)?
 pub fn is_numeric_expr(i: &crate::eval::Interp, e: &Expr) -> bool {
     match e {
-        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_) => true,
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::BigReal(_) | Expr::Cnum(_) => true,
         Expr::Sym(id) => crate::expr::has(i.t.attrs(*id), A_CONSTANT),
         _ => false,
     }
+}
+
+/// Exact comparison when either side is a BigReal; None when neither is (the
+/// caller then uses the machine path).
+pub fn big_cmp(
+    t: &SymbolTable,
+    a: &Expr,
+    b: &Expr,
+) -> Option<std::cmp::Ordering> {
+    if !contains_bigreal(a) && !contains_bigreal(b) {
+        return None;
+    }
+    let mut prec = 20usize;
+    for e in [a, b] {
+        if let Some(p) = min_bigreal_prec(e) {
+            prec = prec.max(p);
+        }
+    }
+    Some(to_big(a, t, prec)?.cmp(&to_big(b, t, prec)?))
 }
 
 /// Full machine-precision evaluation of an expression.

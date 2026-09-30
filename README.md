@@ -544,15 +544,14 @@ k.eval("x = 5; x^2")["result"]       # "25"
 
 ## Known limitations (v1)
 
-- `N[expr, prec]` above machine precision uses the arbitrary-precision decimal
-  for exact numbers, `Pi`/`E`/`Degree`, `+ - * /`, integer and rational powers,
-  `Sqrt`, and anything that stays symbolic — `N[Pi, 50]`, `N[1/3, 40]`,
-  `N[Sqrt[2], 50]`, `N[Pi^Pi, 30]`, `N[Exp[Pi], 30]` all give `prec` real
-  digits. The elementary functions have arbitrary-precision implementations,
-  but the kernel eagerly evaluates exact numeric calls such as `Sin[1]` or
-  `Log[2]` to machine precision *before* `N` sees them, so `N[Sin[1], 40]`
-  still reports `N::meprec` and falls back; an `f64` input cannot regain
-  precision either.
+- `N[expr, prec]` above machine precision is evaluated with the
+  arbitrary-precision decimal for exact numbers, `Pi`/`E`/`Degree`, `+ - * /`,
+  integer and rational powers, `Sqrt`, the elementary functions and anything
+  that stays symbolic — `N[Pi, 50]`, `N[1/3, 40]`, `N[Sqrt[2], 50]`,
+  `N[Sin[1], 40]`, `N[Log[2], 40]`, `N[ArcTan[1], 40]`, `N[Pi^Pi, 30]` all
+  give `prec` real digits, and it threads over lists. A symbolic argument
+  (`N[Sin[x], 40]`) and an `f64` input (`N[1.5, 40]`, which cannot regain
+  precision) still report `N::meprec` and fall back to machine precision.
 - `Cancel` cancels common factors of a univariate rational function;
   multivariate rational GCD is not implemented, so a multivariate `Cancel`
   falls back to `Together`.
@@ -609,7 +608,7 @@ fixpoint (bounded by `$IterationLimit`/`$RecursionLimit`).
 
 ```
 cd rmath
-cargo test            # 60 unit tests + 395 end-to-end golden cases
+cargo test            # 60 unit tests + 408 end-to-end golden cases
 ```
 
 The Rust suite also includes a deterministic **fuzz** pass (`tests/fuzz.rs`:

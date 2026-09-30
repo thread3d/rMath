@@ -5,6 +5,7 @@ use crate::builtins::num::num_val;
 use crate::builtins::num::nv_f64;
 use crate::eval::{sort_cmp, EvalRes, Interp};
 use crate::expr::{canon_cmp, same_q, Expr};
+use std::cmp::Ordering;
 use std::time::Instant;
 
 pub fn bool_e(i: &crate::eval::Interp, v: bool) -> Expr {
@@ -14,29 +15,36 @@ pub fn bool_e(i: &crate::eval::Interp, v: bool) -> Expr {
 // ---------- comparisons ----------
 
 pub fn b_less(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    cmp_chain(i, args, |d| d > 0.0, "Less")
+    cmp_chain(i, args, |o| o == Ordering::Less, "Less")
 }
 pub fn b_greater(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    cmp_chain(i, args, |d| d < 0.0, "Greater")
+    cmp_chain(i, args, |o| o == Ordering::Greater, "Greater")
 }
 pub fn b_lessequal(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    cmp_chain(i, args, |d| d >= 0.0, "LessEqual")
+    cmp_chain(i, args, |o| o != Ordering::Greater, "LessEqual")
 }
 pub fn b_greaterequal(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    cmp_chain(i, args, |d| d <= 0.0, "GreaterEqual")
+    cmp_chain(i, args, |o| o != Ordering::Less, "GreaterEqual")
 }
 
-fn cmp_chain(i: &mut Interp, args: &[Expr], ok: fn(f64) -> bool, name: &str) -> EvalRes {
-    let mut vals = Vec::new();
-    for a in args {
-        match num_val(a) {
-            Some(n) => vals.push(nv_f64(&n)),
-            None => return Ok(unevaluated_call(i, name, args)),
-        }
+/// Compare two values: exactly when either is a BigReal, else at machine
+/// precision. None when they are not both numeric.
+fn cmp_pair(i: &Interp, a: &Expr, b: &Expr) -> Option<Ordering> {
+    if let Some(o) = crate::builtins::num::big_cmp(&i.t, a, b) {
+        return Some(o);
     }
-    for w in vals.windows(2) {
-        if !ok(w[1] - w[0]) {
-            return Ok(bool_e(i, false));
+    nv_f64(&num_val(a)?).partial_cmp(&nv_f64(&num_val(b)?))
+}
+
+fn cmp_chain(i: &mut Interp, args: &[Expr], ok: fn(Ordering) -> bool, name: &str) -> EvalRes {
+    for w in args.windows(2) {
+        match cmp_pair(i, &w[0], &w[1]) {
+            Some(o) => {
+                if !ok(o) {
+                    return Ok(bool_e(i, false));
+                }
+            }
+            None => return Ok(unevaluated_call(i, name, args)),
         }
     }
     Ok(bool_e(i, true))
@@ -45,6 +53,9 @@ fn cmp_chain(i: &mut Interp, args: &[Expr], ok: fn(f64) -> bool, name: &str) -> 
 pub fn b_equal(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         return Ok(unevaluated_call(i, "Equal", args));
+    }
+    if let Some(o) = crate::builtins::num::big_cmp(&i.t, &args[0], &args[1]) {
+        return Ok(bool_e(i, o == Ordering::Equal));
     }
     if let (Some(a), Some(b)) = (num_val(&args[0]), num_val(&args[1])) {
         return Ok(bool_e(i, nv_f64(&a) == nv_f64(&b)));
@@ -58,6 +69,9 @@ pub fn b_equal(i: &mut Interp, args: &[Expr]) -> EvalRes {
 pub fn b_unequal(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         return Ok(unevaluated_call(i, "Unequal", args));
+    }
+    if let Some(o) = crate::builtins::num::big_cmp(&i.t, &args[0], &args[1]) {
+        return Ok(bool_e(i, o != Ordering::Equal));
     }
     if let (Some(a), Some(b)) = (num_val(&args[0]), num_val(&args[1])) {
         return Ok(bool_e(i, nv_f64(&a) != nv_f64(&b)));

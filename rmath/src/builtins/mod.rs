@@ -126,7 +126,7 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("FreeQ", A_HOLDALL, "`FreeQ[e, patt]`", b_freeq),
     builtin!("MemberQ", A_HOLDALL, "`MemberQ[list, patt]`", b_memberq),
     // numerics
-    builtin!("N", 0, "`N[expr]`", b_n),
+    builtin!("N", A_HOLDALL, "`N[expr]`", b_n),
     builtin!("Abs", A_LISTABLE, "`Abs[x]`", b_abs),
     builtin!("Sign", A_LISTABLE, "`Sign[x]`", b_sign),
     builtin!("Floor", A_LISTABLE, "`Floor[x]`", b_floor),

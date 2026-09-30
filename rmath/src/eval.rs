@@ -1249,8 +1249,16 @@ mod tests {
         assert!(text.starts_with("4.14159265358979323846264338327950"), "{text}");
         let (text, _) = eval_str("N[Sqrt[2], 30]");
         assert!(text.starts_with("1.41421356237309504880168872421"), "{text}");
-        // A shape that needs a machine transcendental is still reported.
-        let (_, msgs) = eval_str("N[Sin[1], 50]");
+        // Elementary functions are evaluated at precision too (N holds its
+        // argument, so `Sin[1]` is still exact when the bigfloat path runs).
+        let (text, msgs) = eval_str("N[Sin[1], 40]");
+        assert_eq!(text, "0.8414709848078965066525023216302989996226");
+        assert!(msgs.is_empty(), "{:?}", msgs);
+        // An f64 input cannot regain precision, and a symbolic argument cannot
+        // be evaluated numerically; both are reported rather than guessed.
+        let (_, msgs) = eval_str("N[1.5, 50]");
+        assert!(msgs.iter().any(|m| m.contains("precision")), "{:?}", msgs);
+        let (_, msgs) = eval_str("N[Sin[x], 50]");
         assert!(msgs.iter().any(|m| m.contains("precision")), "{:?}", msgs);
         // Machine precision and below stay quiet; a bad precision is refused.
         assert!(eval_str("N[Pi]").1.is_empty());
