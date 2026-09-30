@@ -811,15 +811,36 @@ fn monomial_exponents(t: &SymbolTable, vars: &[Expr], e: &Expr) -> Option<Vec<i6
                 }
                 Some(acc)
             } else if nd.head.is_symbol(t.sys.power) && nd.args.len() == 2 {
-                let base = nd.args[0].sym_id()?;
-                let k = vars.iter().position(|v| v.is_symbol(base))?;
-                let n = crate::builtins::core::expr_to_int(&nd.args[1])?;
-                if n < 0 {
+                if let Some(base) = nd.args[0].sym_id() {
+                    if let Some(k) = vars.iter().position(|v| v.is_symbol(base)) {
+                        // A power of a variable: non-negative integer exponents
+                        // only (negative powers are not polynomial monomials).
+                        let n = crate::builtins::core::expr_to_int(&nd.args[1])?;
+                        if n < 0 {
+                            return None;
+                        }
+                        let mut v = zeros();
+                        v[k] = n;
+                        return Some(v);
+                    }
+                    // A constant base (`Pi^k`, `E^x`) is a coefficient.
+                    if has(t.attrs(base), crate::expr::A_CONSTANT) {
+                        return Some(zeros());
+                    }
                     return None;
                 }
-                let mut v = zeros();
-                v[k] = n;
-                Some(v)
+                // A numeric base (`2^k`, `Sqrt[2]` = `2^(1/2)`) is a coefficient.
+                if matches!(
+                    nd.args[0],
+                    Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_)
+                ) {
+                    return Some(zeros());
+                }
+                None
+            } else if t.get("Exp").map_or(false, |id| nd.head.is_symbol(id)) {
+                // `Exp[x]` is `E^x`: a coefficient for the polynomial order, so
+                // `-Exp[x] + Exp[x] x` (not `Exp[x] x - Exp[x]`).
+                Some(zeros())
             } else {
                 None
             }
@@ -847,8 +868,40 @@ fn plus_cmp(t: &SymbolTable, vars: &[Expr], a: &Expr, b: &Expr) -> Ordering {
         (Some(x), Some(y)) => cmp_exponents(&x, &y),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
-        (None, None) => canon_cmp(t, a, b),
+        (None, None) => {
+            // Mathematica puts a term carrying a positive power of a variable
+            // before one that does not: `-x Cos[x] + Sin[x]`, `x Sin[x] + Cos[x]`.
+            // Negative powers and functions of the variable do not count, which
+            // keeps partial fractions and `D[Sin[x]/x]` in their own order.
+            let pa = has_positive_var_power(t, vars, a);
+            let pb = has_positive_var_power(t, vars, b);
+            match (pa, pb) {
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                _ => canon_cmp(t, a, b),
+            }
+        }
     }
+}
+
+/// True when `e` has a multiplicative factor that is a variable or a positive
+/// integer power of one. `Sin[x]` and `1/x` do not count; `x`, `x^2` do.
+fn has_positive_var_power(t: &SymbolTable, vars: &[Expr], e: &Expr) -> bool {
+    if let Some((h, args)) = e.parts() {
+        if h.is_symbol(t.sys.times) {
+            return args.iter().any(|f| has_positive_var_power(t, vars, f));
+        }
+        if h.is_symbol(t.sys.power) && args.len() == 2 {
+            if let Some(id) = args[0].sym_id() {
+                if vars.iter().any(|v| v.is_symbol(id)) {
+                    return crate::builtins::core::expr_to_int(&args[1]).map_or(false, |n| n > 0);
+                }
+            }
+        }
+        // A function application (Sin[x], Log[1 + x], …) is not a variable power.
+        return false;
+    }
+    e.sym_id().map_or(false, |id| vars.iter().any(|v| v.is_symbol(id)))
 }
 
 /// A `Times` factor's ordering key: the base name and exponent of a variable or
@@ -975,6 +1028,30 @@ fn seq_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
     Ordering::Equal
 }
 
+/// Mathematica's string collation: a case-insensitive dictionary order first,
+/// with the lowercase spelling of a letter before its uppercase form. This is
+/// what makes `Sort[{"cat", "fish", "catfish", "Cat"}]` come out as
+/// `{"cat", "Cat", "catfish", "fish"}` rather than in byte order.
+fn str_cmp(a: &str, b: &str) -> Ordering {
+    // Primary pass: case-insensitive dictionary order over the whole string.
+    let lower = |s: &str| -> Vec<char> { s.chars().flat_map(|c| c.to_lowercase()).collect() };
+    match lower(a).cmp(&lower(b)) {
+        Ordering::Equal => {}
+        o => return o,
+    }
+    // Only when they tie ignoring case does the case decide: lowercase first.
+    for (x, y) in a.chars().zip(b.chars()) {
+        if x.is_uppercase() != y.is_uppercase() {
+            return if x.is_uppercase() {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            };
+        }
+    }
+    a.cmp(b)
+}
+
 /// Mathematica's canonical order for `Sort` (an approximation of its `Order`):
 /// numbers by value (exact and machine together), numeric-valued expressions,
 /// monomials by base name and degree, sums by length then parts, then anything
@@ -1000,7 +1077,10 @@ pub fn sort_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
             _ => canon_cmp(t, a, b),
         },
         3 => a.list_len().cmp(&b.list_len()).then_with(|| seq_cmp(t, a, b)),
-        _ => canon_cmp(t, a, b),
+        _ => match (a, b) {
+            (Expr::Str(x), Expr::Str(y)) => str_cmp(x, y),
+            _ => canon_cmp(t, a, b),
+        },
     }
 }
 

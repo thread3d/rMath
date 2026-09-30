@@ -11,15 +11,15 @@ Integrate[1/Sqrt[4-x^2], x]
 => ArcSin[1/2 x]
 
 Integrate[x Sin[x], x]
-=> Sin[x] - x Cos[x]
+=> -x Cos[x] + Sin[x]
 Integrate[x Cos[x], x]
-=> Cos[x] + x Sin[x]
+=> x Sin[x] + Cos[x]
 Integrate[x Exp[x], x]
 => -Exp[x] + Exp[x] x
 Integrate[x^2 Exp[x], x]
-=> -2 (-Exp[x] + Exp[x] x) + Exp[x] x^2
+=> Exp[x] x^2 - 2 (-Exp[x] + Exp[x] x)
 Integrate[2 x Sin[x], x]
-=> 2 (Sin[x] - x Cos[x])
+=> 2 (-x Cos[x] + Sin[x])
 
 Integrate[x Log[x], x]
 => -1/4 x^2 + 1/2 x^2 Log[x]

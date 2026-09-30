@@ -7,7 +7,7 @@ Steps[D[x^3 + Sin[x], x]]
 => {Given: D[x^3 + Sin[x], x], power rule: 3 x^2, chain rule: d/dx Sin: Cos[x], sum rule: 3 x^2 + Cos[x], Result: 3 x^2 + Cos[x]}
 
 Steps[Integrate[x Sin[x], x]]
-=> {Given: Integrate[x Sin[x], x], integration by parts: Sin[x] - x Cos[x], Result: Sin[x] - x Cos[x]}
+=> {Given: Integrate[x Sin[x], x], integration by parts: -x Cos[x] + Sin[x], Result: -x Cos[x] + Sin[x]}
 Steps[Integrate[1/(x^2 - 1), x]]
 => {Given: Integrate[1/(x^2 - 1), x], partial fractions: -1/2/(1 + x) + 1/2/(-1 + x), Result: -1/2 Log[1 + x] + 1/2 Log[-1 + x]}
 

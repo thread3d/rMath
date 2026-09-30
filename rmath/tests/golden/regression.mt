@@ -245,6 +245,21 @@ Sort[{a + b + c, a + b, a + c}]
 Ordering[{y, x^2, x + y, y^3}]
 => {2, 1, 4, 3}
 
+# --- String collation: case-insensitive first, lowercase before uppercase ---
+Sort[{"cat", "fish", "catfish", "Cat"}]
+=> {"cat", "Cat", "catfish", "fish"}
+Sort[{"aa", "abb", "ba", "b", "aaa"}]
+=> {"aa", "aaa", "abb", "b", "ba"}
+
+# --- Plus: a term with a positive power of a variable precedes a bare function,
+#     while E^x counts as a coefficient (so `-E^x + E^x x`) ---
+Integrate[x Sin[x], x]
+=> -x Cos[x] + Sin[x]
+Integrate[x Exp[x], x]
+=> -Exp[x] + Exp[x] x
+Sqrt[2] + x
+=> Sqrt[2] + x
+
 # --- Part with a list of indices (the `list[[Ordering[list]]]` idiom) ---
 {a, b, c}[[{3, 1, 2}]]
 => {c, a, b}
