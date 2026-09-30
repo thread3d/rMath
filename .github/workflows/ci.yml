@@ -6,22 +6,32 @@ on:
   pull_request:
 
 jobs:
-  test:
-    name: kernel, front end and bridge
+  rust:
+    name: Rust kernel (unit + golden + fuzz)
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The Rust toolchain is preinstalled on ubuntu-latest and the crate has no
+      # dependencies, so a plain `cargo` is enough (no toolchain action/cache).
+      - name: cargo test
+        run: cargo test --manifest-path rmath/Cargo.toml
+
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor (`ast.unparse`); 3.12 is what CI should already see.
+        python: ["3.9", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
 
-      # The Rust toolchain is preinstalled on ubuntu-latest and the crate has no
-      # dependencies, so a plain `cargo` is enough (no toolchain action/cache).
-      - name: Rust unit tests + golden suite
-        run: cargo test --manifest-path rmath/Cargo.toml
-
-      - name: Build the kernel (release; used by the integration tests)
+      - name: Build the kernel (release; used by the oracle)
         run: cargo build --manifest-path rmath/Cargo.toml --release
 
       - name: Python unit tests (front end + Lean bridge helpers)

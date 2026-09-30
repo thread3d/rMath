@@ -144,10 +144,13 @@ class HttpRouting(unittest.TestCase):
         with urllib.request.urlopen(self.url(path), timeout=5) as r:
             return r.status, json.load(r)
 
-    def post(self, path, body):
+    def post(self, path, body, extra_headers=None):
+        headers = {"Content-Type": "application/json"}
+        if extra_headers:
+            headers.update(extra_headers)
         req = urllib.request.Request(
             self.url(path), data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
+            headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.load(r)
 
@@ -182,6 +185,13 @@ class HttpRouting(unittest.TestCase):
             self.get("/nope")
         self.assertEqual(cm.exception.code, 404)
 
+    def test_index_page_is_served(self):
+        with urllib.request.urlopen(self.url("/"), timeout=5) as r:
+            status, body = r.status, r.read().decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn("<!DOCTYPE html>", body)
+        self.assertIn("</html>", body)
+
     def test_malformed_json_does_not_crash_the_server(self):
         req = urllib.request.Request(
             self.url("/api/eval"), data=b"{not json",
@@ -190,6 +200,77 @@ class HttpRouting(unittest.TestCase):
             body = json.load(r)
         # An unparseable body becomes {} and evaluates the empty input.
         self.assertIn("result", body)
+
+    # ---- cross-site / DNS-rebinding guard ---------------------------------
+    def test_same_origin_post_is_allowed(self):
+        _, body = self.post("/api/eval", {"input": "1+1"},
+                            {"Origin": "http://127.0.0.1:%d" % self.port})
+        self.assertEqual(body["result"], "42")
+
+    def test_localhost_origin_on_the_same_port_is_allowed(self):
+        _, body = self.post("/api/eval", {"input": "1+1"},
+                            {"Origin": "http://localhost:%d" % self.port})
+        self.assertEqual(body["result"], "42")
+
+    def test_no_origin_is_allowed_for_non_browser_clients(self):
+        # This is what `curl -X POST /api/eval` does.
+        _, body = self.post("/api/eval", {"input": "1+1"})
+        self.assertEqual(body["result"], "42")
+
+    def test_cross_site_origin_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/api/eval", {"input": "1+1"}, {"Origin": "http://evil.example"})
+        self.assertEqual(cm.exception.code, 403)
+
+    def test_opaque_origin_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/api/eval", {"input": "1+1"}, {"Origin": "null"})
+        self.assertEqual(cm.exception.code, 403)
+
+    def test_origin_on_another_port_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/api/eval", {"input": "1+1"},
+                      {"Origin": "http://127.0.0.1:%d" % (self.port + 1)})
+        self.assertEqual(cm.exception.code, 403)
+
+    def test_sec_fetch_cross_site_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/api/eval", {"input": "1+1"}, {"Sec-Fetch-Site": "cross-site"})
+        self.assertEqual(cm.exception.code, 403)
+
+    def test_foreign_host_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/api/eval", {"input": "1+1"}, {"Host": "evil.example"})
+        self.assertEqual(cm.exception.code, 403)
+
+    def test_get_with_foreign_host_is_refused(self):
+        req = urllib.request.Request(self.url("/api/health"),
+                                     headers={"Host": "evil.example"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(cm.exception.code, 403)
+
+
+class SplitHost(unittest.TestCase):
+    def test_plain_host(self):
+        self.assertEqual(notebook._split_host("127.0.0.1:8787"), ("127.0.0.1", "8787"))
+        self.assertEqual(notebook._split_host("localhost"), ("localhost", ""))
+
+    def test_bracketed_ipv6(self):
+        self.assertEqual(notebook._split_host("[::1]:8787"), ("::1", "8787"))
+        self.assertEqual(notebook._split_host("[::1]"), ("::1", ""))
+
+    def test_empty(self):
+        self.assertEqual(notebook._split_host(""), ("", ""))
+
+
+class IndexPage(unittest.TestCase):
+    def test_index_html_reads_the_static_file(self):
+        # The page lives in rmathpy/static/notebook.html, not a string literal.
+        html = notebook.index_html()
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("</html>", html)
+        self.assertIs(notebook.index_html(), html)  # cached, not re-read
 
 
 if __name__ == "__main__":

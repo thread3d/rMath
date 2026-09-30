@@ -543,8 +543,11 @@ k.eval("x = 5; x^2")["result"]       # "25"
 
 ## Known limitations (v1)
 
-- Machine-precision `N[expr, prec]`: the precision argument is currently
-  ignored (arbitrary-precision floats are planned via a decimal bigfloat).
+- Machine-precision `N[expr, prec]`: reals are stored as `f64`, so a precision
+  above machine precision cannot be honoured. `N[Pi, 50]` now reports
+  `N::meprec` and returns a machine-precision result instead of silently
+  ignoring the request (arbitrary-precision floats are planned via a decimal
+  bigfloat).
 - `Cancel` cancels common factors of a univariate rational function;
   multivariate rational GCD is not implemented, so a multivariate `Cancel`
   falls back to `Together`.
@@ -600,21 +603,28 @@ fixpoint (bounded by `$IterationLimit`/`$RecursionLimit`).
 
 ```
 cd rmath
-cargo test            # 53 unit tests + 362 end-to-end golden cases
+cargo test            # 54 unit tests + 378 end-to-end golden cases
 ```
 
-The Python front end has its own unit tests — the notebook server's routing and
-helpers, the SVG renderer, path/tool resolution, the harness configuration and
-the Lean bridge's translation helpers. They need no Lean, no network and no
-running server:
+The Rust suite also includes a deterministic **fuzz** pass (`tests/fuzz.rs`:
+token soup, mutated valid expressions and a grammar-based generator, asserting
+no panic and a bounded evaluation) and **ordering property** tests
+(`tests/ordering.rs`: the comparators are total orders and every printed result
+re-parses to itself).
+
+The Python front end has its own unit tests — the notebook server's routing,
+helpers and served page, the SVG renderer, path/tool resolution, the harness
+configuration and the Lean bridge's translation helpers. They need no Lean, no
+network and no running server:
 
 ```
 make py-test          # python3 -m unittest discover -s tests
 ```
 
 `make check` is the fast, dependency-free set CI runs: `make test`,
-`make py-test`, `make oracle` and `make lean-test`. The workflow lives in
-`.github/workflows/ci.yml`.
+`make py-test`, `make oracle` and `make lean-test`. The workflow
+(`.github/workflows/ci.yml`) runs the kernel suite on Linux and the Python
+suites against Python 3.9, 3.11 and 3.12.
 
 ## License
 

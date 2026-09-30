@@ -851,32 +851,174 @@ fn plus_cmp(t: &SymbolTable, vars: &[Expr], a: &Expr, b: &Expr) -> Ordering {
     }
 }
 
-/// (base name, exponent) of a factor that is a variable or a power of one.
-fn var_factor_key(t: &SymbolTable, e: &Expr) -> Option<(String, i64)> {
-    match e {
-        Expr::Sym(id) => Some((t.name_of(*id).to_string(), 1)),
-        Expr::Node(nd) => {
-            if nd.head.is_symbol(t.sys.power) && nd.args.len() == 2 {
-                let id = nd.args[0].sym_id()?;
-                let n = crate::builtins::core::expr_to_int(&nd.args[1])?;
-                Some((t.name_of(id).to_string(), n))
-            } else {
-                None
+/// A `Times` factor's ordering key: the base name and exponent of a variable or
+/// power. `Exp[u]` is `E^u` in Mathematica's canonical order, so it keys on
+/// base `E` with `u` as its exponent.
+struct FactorKey {
+    name: String,
+    exp: i64,
+    exp_expr: Expr,
+}
+
+fn factor_key(t: &SymbolTable, e: &Expr) -> Option<FactorKey> {
+    if let Expr::Sym(id) = e {
+        return Some(FactorKey {
+            name: t.name_of(*id).to_string(),
+            exp: 1,
+            exp_expr: Expr::int_i64(1),
+        });
+    }
+    if let Expr::Node(nd) = e {
+        if let Some(exp_id) = t.get("Exp") {
+            if nd.head.is_symbol(exp_id) && nd.args.len() == 1 {
+                return Some(FactorKey {
+                    name: "E".to_string(),
+                    exp: 0,
+                    exp_expr: nd.args[0].clone(),
+                });
             }
         }
+        if nd.head.is_symbol(t.sys.power) && nd.args.len() == 2 {
+            let base = nd.args[0].sym_id()?;
+            let name = t.name_of(base).to_string();
+            return Some(match crate::builtins::core::expr_to_int(&nd.args[1]) {
+                Some(n) => FactorKey { name, exp: n, exp_expr: nd.args[1].clone() },
+                None => FactorKey { name, exp: 0, exp_expr: nd.args[1].clone() },
+            });
+        }
+    }
+    None
+}
+
+/// True for a factor that is a number: a numeric atom, a constant symbol, or a
+/// Plus/Times/Power (or numeric function) built only from numbers. `Sqrt[2]` is
+/// a coefficient, so it sorts before variables like `2` does.
+fn is_numeric_value(t: &SymbolTable, e: &Expr) -> bool {
+    match e {
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_) => true,
+        Expr::Sym(id) => has(t.attrs(*id), crate::expr::A_CONSTANT),
+        Expr::Node(nd) => {
+            let structural = nd.head.is_symbol(t.sys.plus)
+                || nd.head.is_symbol(t.sys.times)
+                || nd.head.is_symbol(t.sys.power)
+                || nd
+                    .head
+                    .sym_id()
+                    .map_or(false, |h| has(t.attrs(h), crate::expr::A_NUMERICFUNCTION));
+            structural && !nd.args.is_empty() && nd.args.iter().all(|a| is_numeric_value(t, a))
+        }
+        Expr::Str(_) => false,
+    }
+}
+
+/// Rank a `Times` factor: numbers, then other numeric-valued factors (`Sqrt[2]`,
+/// `Sin[1]`), then factors with a symbolic base (`x`, `x^2`, `E^x`, `Pi`), then
+/// everything else.
+fn factor_rank(t: &SymbolTable, e: &Expr) -> u8 {
+    match e {
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_) => 0,
+        _ if factor_key(t, e).is_some() => 2,
+        _ if is_numeric_value(t, e) => 1,
+        _ => 3,
+    }
+}
+
+fn cmp_factor_keys(a: &FactorKey, b: &FactorKey, t: &SymbolTable) -> Ordering {
+    a.name
+        .cmp(&b.name)
+        .then(a.exp.cmp(&b.exp))
+        .then_with(|| canon_cmp(t, &a.exp_expr, &b.exp_expr))
+}
+
+/// Numeric value of a real atom, for comparing exact and machine numbers
+/// together the way `Sort` does.
+fn real_f64(e: &Expr) -> Option<f64> {
+    match e {
+        Expr::Int(_) | Expr::Rat(_) => e.as_rat_exact().map(|r| r.to_f64()),
+        Expr::Real(x) => Some(*x),
         _ => None,
     }
 }
 
-/// Order `Times` factors: numeric and constant atoms stay first (canon_cmp
-/// already ranks them that way), but variable factors compare by their base
-/// name rather than by head, so `x^4 y` prints as Mathematica's `x^4 y` and not
-/// `y x^4` (a bare symbol used to outrank a `Power` node).
-fn times_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
-    match (var_factor_key(t, a), var_factor_key(t, b)) {
-        (Some((na, ea)), Some((nb, eb))) => na.cmp(&nb).then(ea.cmp(&eb)),
+fn number_cmp(a: &Expr, b: &Expr) -> Ordering {
+    match (a.as_rat_exact(), b.as_rat_exact()) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        _ => match (real_f64(a), real_f64(b)) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            _ => Ordering::Equal,
+        },
+    }
+}
+
+fn sort_rank(t: &SymbolTable, e: &Expr) -> u8 {
+    match e {
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_) => 0,
+        _ if factor_key(t, e).is_some() => 2,
+        _ if is_numeric_value(t, e) => 1,
+        Expr::Node(nd) if nd.head.is_symbol(t.sys.plus) => 3,
+        _ => 4,
+    }
+}
+
+/// Compare two nodes part by part (used for equal-length sums).
+fn seq_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
+    let (xa, xb) = match (a.parts(), b.parts()) {
+        (Some((_, xa)), Some((_, xb))) => (xa, xb),
+        _ => return Ordering::Equal,
+    };
+    for (x, y) in xa.iter().zip(xb.iter()) {
+        let c = sort_cmp(t, x, y);
+        if c != Ordering::Equal {
+            return c;
+        }
+    }
+    Ordering::Equal
+}
+
+/// Mathematica's canonical order for `Sort` (an approximation of its `Order`):
+/// numbers by value (exact and machine together), numeric-valued expressions,
+/// monomials by base name and degree, sums by length then parts, then anything
+/// else. This reproduces the documentation's examples — `{y, x^2, x + y, y^3}`
+/// sorts to `{x^2, y, y^3, x + y}` and `{Pi, E, 2, 3, 1, Sqrt[2]}` to
+/// `{1, 2, 3, Sqrt[2], E, Pi}` — while `canon_cmp` (the internal Orderless
+/// order) keeps its specialised `plus_cmp`/`times_cmp` comparators.
+pub fn sort_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
+    let (ra, rb) = (sort_rank(t, a), sort_rank(t, b));
+    if ra != rb {
+        return ra.cmp(&rb);
+    }
+    match ra {
+        0 => {
+            if matches!(a, Expr::Cnum(_)) || matches!(b, Expr::Cnum(_)) {
+                canon_cmp(t, a, b)
+            } else {
+                number_cmp(a, b)
+            }
+        }
+        2 => match (factor_key(t, a), factor_key(t, b)) {
+            (Some(ka), Some(kb)) => cmp_factor_keys(&ka, &kb, t),
+            _ => canon_cmp(t, a, b),
+        },
+        3 => a.list_len().cmp(&b.list_len()).then_with(|| seq_cmp(t, a, b)),
         _ => canon_cmp(t, a, b),
     }
+}
+
+/// Order `Times` factors the way Mathematica prints them: the numeric
+/// coefficient first (`2 x`, `Pi x`, `Sqrt[2] x`), then factors with a symbolic
+/// base by base name and exponent (`x^4 y`, `E^x x^2` — not `y x^4` or
+/// `x^2 E^x`), then everything else canonically.
+fn times_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
+    let (ra, rb) = (factor_rank(t, a), factor_rank(t, b));
+    if ra != rb {
+        return ra.cmp(&rb);
+    }
+    if ra == 2 {
+        if let (Some(ka), Some(kb)) = (factor_key(t, a), factor_key(t, b)) {
+            return cmp_factor_keys(&ka, &kb, t);
+        }
+    }
+    canon_cmp(t, a, b)
 }
 
 impl MatchCtx for Interp {
@@ -1012,5 +1154,25 @@ mod tests {
         assert!(tex.contains("Exp"), "StandardForm keeps Exp: {}", tex);
         let trad = crate::tex::tex_form_as(&i.t, &e, crate::tex::Form::Traditional);
         assert!(trad.contains("\\sin"), "TraditionalForm uses \\sin: {}", trad);
+    }
+
+    #[test]
+    fn n_precision_beyond_machine_precision_is_reported() {
+        // `N[Pi, 50]` used to silently return machine precision; it still does,
+        // but now says so instead of pretending to honour the request.
+        let (text, msgs) = eval_str("N[Pi, 50]");
+        assert_eq!(text, "3.14159");
+        assert!(msgs.iter().any(|m| m.contains("precision")), "{:?}", msgs);
+        // Machine precision and below stay quiet.
+        assert!(eval_str("N[Pi]").1.is_empty());
+        assert!(eval_str("N[Pi, 10]").1.is_empty());
+        // A non-positive or non-integer precision is refused.
+        let (text, msgs) = eval_str("N[Pi, 0]");
+        assert_eq!(text, "N[Pi, 0]");
+        assert!(
+            msgs.iter().any(|m| m.contains("positive integer")),
+            "{:?}",
+            msgs
+        );
     }
 }

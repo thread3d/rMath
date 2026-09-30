@@ -868,6 +868,13 @@ def _calculus(lhs_text):
             return ("indefinite", target, spec.id, None, None)
     if name == "D" and len(body.args) == 2 and isinstance(body.args[1], ast.Name):
         return ("derivative", body.args[0], body.args[1].id, None, None)
+    if name == "D" and len(body.args) == 2 and isinstance(body.args[1], ast.Tuple):
+        # D[f, {x, n}]: the nth derivative.
+        spec = body.args[1].elts
+        if (len(spec) == 2 and isinstance(spec[0], ast.Name)
+                and isinstance(spec[1], ast.Constant)
+                and isinstance(spec[1].value, int) and spec[1].value >= 1):
+            return ("derivative_n", body.args[0], spec[0].id, spec[1].value, None)
     return None
 
 
@@ -907,6 +914,28 @@ def calculus_statement(lhs_text, rhs_text):
             return derivative_statement("D[%s, %s]" % (rhs_text, var), target_text, var)
         except ValueError as e:
             raise ValueError("cannot check this antiderivative: %s" % e)
+    if kind == "derivative_n":
+        # D[f, {x, n}] = g becomes `iteratedDeriv n f x = g`. A pure power (or a
+        # constant multiple of one, or a constant) closes with
+        # `iteratedDeriv_pow`; the remaining arithmetic is finished by `ring`.
+        # Shapes that need `iteratedDeriv_add`/`_mul` side conditions are left
+        # for Lean to reject, so a verdict is never invented.
+        n = a
+        t = Translator(ascribe=True, ty="ℝ")
+        t.vars = {var: None}
+        f = t.expr(target if not isinstance(target, str)
+                   else ast.parse(_rmath_to_python(target), mode="eval"))
+        r = Translator(ascribe=True, ty="ℝ")
+        r.vars = {var: None}
+        g = r.expr(ast.parse(_rmath_to_python(rhs_text), mode="eval"))
+        prop = "iteratedDeriv %d (fun %s : ℝ => %s) %s = %s" % (n, var, f, var, g)
+        tactics = ("norm_num [iteratedDeriv_pow, iteratedDeriv_const_mul, "
+                   "iteratedDeriv_const] | "
+                   "(norm_num [iteratedDeriv_pow, iteratedDeriv_const_mul, "
+                   "iteratedDeriv_const]; ring) | ring_nf")
+        # `autoImplicit false` means the evaluation point must be bound explicitly.
+        return (QUIET + "example (%s : ℝ) : %s := by\n  solve | %s\n"
+                % (var, prop, tactics), prop, "ℝ", [])
     try:
         return derivative_statement(lhs_text, rhs_text, var)
     except ValueError as e:

@@ -338,7 +338,7 @@ pub fn b_ordering(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let v = args[0].node_args();
     let mut idx: Vec<usize> = (0..v.len()).collect();
     let t = &i.t;
-    idx.sort_by(|&a, &b| crate::expr::canon_cmp(t, &v[a], &v[b]));
+    idx.sort_by(|&a, &b| crate::eval::sort_cmp(t, &v[a], &v[b]));
     let out: Vec<Expr> = idx.iter().map(|k| Expr::int_i64((*k + 1) as i64)).collect();
     Ok(list(i, out))
 }

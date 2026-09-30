@@ -15,16 +15,16 @@ Integrate[x Sin[x], x]
 Integrate[x Cos[x], x]
 => Cos[x] + x Sin[x]
 Integrate[x Exp[x], x]
-=> -Exp[x] + x Exp[x]
+=> -Exp[x] + Exp[x] x
 Integrate[x^2 Exp[x], x]
-=> -2 (-Exp[x] + x Exp[x]) + Exp[x] x^2
+=> -2 (-Exp[x] + Exp[x] x) + Exp[x] x^2
 Integrate[2 x Sin[x], x]
 => 2 (Sin[x] - x Cos[x])
 
 Integrate[x Log[x], x]
-=> -1/4 x^2 + 1/2 Log[x] x^2
+=> -1/4 x^2 + 1/2 x^2 Log[x]
 Integrate[x^2 Log[x], x]
-=> -1/9 x^3 + 1/3 Log[x] x^3
+=> -1/9 x^3 + 1/3 x^3 Log[x]
 
 Apart[1/(x^2-1), x]
 => -1/2/(1 + x) + 1/2/(-1 + x)

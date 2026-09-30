@@ -13,7 +13,7 @@ Integrate[Exp[x]/x, x]
 Integrate[1/Log[x], x]
 => LogIntegral[x]
 Integrate[Exp[-x^2], x]
-=> 1/2 Erf[x] Sqrt[Pi]
+=> 1/2 Sqrt[Pi] Erf[x]
 # no rule: stays unevaluated rather than guessing
 Integrate[Sin[x + 1]/x, x]
 => Integrate[Sin[1 + x]/x, x]

@@ -899,6 +899,28 @@ pub fn b_n(i: &mut Interp, args: &[Expr]) -> EvalRes {
         i.message("N", "argr");
         return Ok(unevaluated_call(i, "N", args));
     }
+    if args.len() >= 2 {
+        // `N[expr, prec]`: the kernel stores reals as f64, so a precision above
+        // machine precision cannot be honoured. Rather than silently truncating
+        // (which used to make `N[Pi, 50]` return 6 digits with no hint), report
+        // it and return the machine-precision result.
+        let p = i.eval(&args[1])?;
+        let machine = p
+            .sym_id()
+            .map_or(false, |id| i.t.name_of(id) == "MachinePrecision");
+        match crate::builtins::core::expr_to_int(&p) {
+            Some(n) if n >= 1 => {
+                if n > 16 {
+                    i.message("N", "meprec");
+                }
+            }
+            _ if machine => {}
+            _ => {
+                i.message("N", "prec");
+                return Ok(unevaluated_call(i, "N", args));
+            }
+        }
+    }
     let e = i.eval(&args[0])?;
     Ok(numeric_eval(i, &e))
 }

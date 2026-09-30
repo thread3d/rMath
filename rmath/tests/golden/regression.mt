@@ -209,3 +209,48 @@ Coefficient[x^2, x]
 => 0
 Coefficient[x y, x]
 => y
+
+# --- Times factors: coefficient first, then symbolic bases by name ---
+# A number, a constant symbol, a numeric-valued factor (Sqrt[2]) or E^x all
+# precede the variables; functions follow powers. Previously a bare symbol
+# outranked every node, printing `x Exp[x]` and `Log[x] x^2`.
+Sqrt[2] x
+=> Sqrt[2] x
+2 Pi x
+=> 2 Pi x
+Exp[x] x^2
+=> Exp[x] x^2
+x^2 Log[x]
+=> x^2 Log[x]
+x Cos[x]
+=> x Cos[x]
+Sqrt[Pi] Erf[x]
+=> Sqrt[Pi] Erf[x]
+5 x^4 y
+=> 5 x^4 y
+
+# --- Sort uses Mathematica's canonical order ---
+# Numbers compare by value (exact and machine together); `Sqrt[2]` is a
+# numeric-valued expression, symbols/monomials come next by base and degree,
+# sums by length. Previously Sort used the internal Orderless order, which
+# grouped numbers by exactness and put symbols before every node.
+Sort[{y, x^2, x + y, y^3}]
+=> {x^2, y, y^3, x + y}
+Sort[{Pi, E, 2, 3, 1, Sqrt[2]}]
+=> {1, 2, 3, Sqrt[2], E, Pi}
+Sort[{5.6, 5, 2.3, -1, 4/3, 1}]
+=> {-1, 1, 4/3, 2.3, 5, 5.6}
+Sort[{a + b + c, a + b, a + c}]
+=> {a + b, a + c, a + b + c}
+Ordering[{y, x^2, x + y, y^3}]
+=> {2, 1, 4, 3}
+
+# --- Part with a list of indices (the `list[[Ordering[list]]]` idiom) ---
+{a, b, c}[[{3, 1, 2}]]
+=> {c, a, b}
+{a, b, c}[[{-1, 1}]]
+=> {c, a}
+{{a, b}, {c, d}}[[{2, 1}, 2]]
+=> {d, b}
+{y, x^2, x + y, y^3}[[Ordering[{y, x^2, x + y, y^3}]]]
+=> {x^2, y, y^3, x + y}

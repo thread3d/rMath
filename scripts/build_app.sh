@@ -24,6 +24,8 @@ chmod +x "$RES/rmath"
 
 # Python front end (stdlib only)
 cp "$ROOT"/rmathpy/*.py "$RES/rmathpy/"
+mkdir -p "$RES/rmathpy/static"
+cp "$ROOT"/rmathpy/static/* "$RES/rmathpy/static/"
 cp -R "$ROOT"/rmathpy/katex/dist/katex "$RES/rmathpy/katex/dist/katex"
 
 # Demo files (copied into the user's work dir on first launch)
@@ -51,6 +53,7 @@ elif command -v swiftc >/dev/null 2>&1; then
     SWIFT_ARGS+=(-sdk "$SWIFT_SDK")   # pin an SDK if the default one is stale
   fi
   if CLANG_MODULE_CACHE_PATH="$CACHE" swiftc -O "$ROOT/apps/native/main.swift" \
+       "$ROOT/apps/native/AppDelegate+Reporting.swift" \
        -o "$APP/Contents/MacOS/rMath" \
        -framework Cocoa -framework WebKit "${SWIFT_ARGS[@]}" 2>&1 | tail -20; then
     chmod +x "$APP/Contents/MacOS/rMath"

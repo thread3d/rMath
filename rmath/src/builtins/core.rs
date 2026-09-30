@@ -1078,6 +1078,20 @@ pub fn part_get(i: &mut Interp, e: &Expr, idx: &[Expr]) -> EvalRes {
         }
         return Ok(Expr::node(Expr::Sym(sys.list), out));
     }
+    // A list of indices: `list[[{3, 1, 2}]]` is `{list[[3]], list[[1]], list[[2]]}`,
+    // which is how `list[[Ordering[list]]]` sorts a list.
+    if let Some((h, hargs)) = idx[0].parts() {
+        if h.is_symbol(sys.list) {
+            let mut out = Vec::with_capacity(hargs.len());
+            for k in hargs {
+                let mut sub = Vec::with_capacity(idx.len());
+                sub.push(k.clone());
+                sub.extend_from_slice(&idx[1..]);
+                out.push(part_get(i, e, &sub)?);
+            }
+            return Ok(Expr::node(Expr::Sym(sys.list), out));
+        }
+    }
     let Some(n) = expr_to_int(&idx[0]) else {
         i.message("Part", "ilsmn");
         return Ok(unevaluated_call(i, "Part", &args_of(e, idx)));

@@ -60,6 +60,15 @@ DERIV_CASES = [
     ("D[Sqrt[x], x]", "1/2 1/Sqrt[x]", ".sqrt", "Real.sqrt", "(x ≠ 0)"),
 ]
 
+# Iterated derivatives: D[f, {x, n}] becomes `iteratedDeriv n f x`, proved with
+# `iteratedDeriv_pow` (plus const_mul/const), never a first-derivative claim.
+ITER_CASES = [
+    ("D[x^4, {x, 2}]", "12 x^2", "iteratedDeriv 2"),
+    ("D[x^3, {x, 3}]", "6", "iteratedDeriv 3"),
+    ("D[3 x^4, {x, 2}]", "36 x^2", "iteratedDeriv_pow"),
+    ("D[5, {x, 3}]", "0", "iteratedDeriv"),
+]
+
 
 def main():
     failures = []
@@ -90,6 +99,16 @@ def main():
         if (code is None or term_part not in code or prop_part not in prop
                 or (binder_part and binder_part not in code)):
             failures.append("%s: unexpected proof term/proposition\n     %s\n     %s"
+                            % (lhs, code, prop))
+
+    for lhs, rhs, want in ITER_CASES:
+        try:
+            code, prop, _, _ = lean.calculus_statement(lhs, rhs)
+        except ValueError as e:
+            failures.append("%s: %s" % (lhs, e))
+            continue
+        if code is None or "iteratedDeriv" not in prop or want not in (prop + code):
+            failures.append("%s: unexpected iterated-derivative statement\n     %s\n     %s"
                             % (lhs, code, prop))
     # Display wrappers (Steps/Trace) are transparent to the Lean bridge: a
     # `Steps[...]` cell is checked by the expression it derives, not by the

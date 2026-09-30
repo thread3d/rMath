@@ -109,6 +109,20 @@ class CalculusStatements(unittest.TestCase):
         self.assertIn("deriv", prop)
         self.assertIn("Real.sin", prop)
 
+    def test_iterated_derivative_uses_iteratedderiv(self):
+        code, prop, ty, _ = lean.calculus_statement("D[x^4, {x, 2}]", "12 x^2")
+        self.assertEqual(ty, "ℝ")
+        self.assertIn("iteratedDeriv 2", prop)
+        self.assertIn("iteratedDeriv_pow", code)
+
+    def test_iterated_derivative_is_recognised_by_calculus(self):
+        found = lean._calculus("D[x^4, {x, 2}]")
+        self.assertIsNotNone(found)
+        kind, _target, var, n, _ = found
+        self.assertEqual((kind, var, n), ("derivative_n", "x", 2))
+        # `n` must be a positive integer literal.
+        self.assertIsNone(lean._calculus("D[x^4, {x, n}]"))
+
     def test_none_for_a_non_calculus_claim(self):
         self.assertIsNone(lean.calculus_statement("1/2 + 1/3", "5/6"))
 

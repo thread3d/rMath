@@ -3,7 +3,7 @@
 use crate::builtins::core::{expr_to_int, unevaluated_call};
 use crate::builtins::num::num_val;
 use crate::builtins::num::nv_f64;
-use crate::eval::{EvalRes, Interp};
+use crate::eval::{sort_cmp, EvalRes, Interp};
 use crate::expr::{canon_cmp, same_q, Expr};
 use std::time::Instant;
 
@@ -659,7 +659,7 @@ pub fn b_sort(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let list = i.eval(&args[0])?;
     let mut v: Vec<Expr> = list.node_args();
     let t = &i.t;
-    v.sort_by(|a, b| canon_cmp(t, a, b));
+    v.sort_by(|a, b| sort_cmp(t, a, b));
     Ok(Expr::node(Expr::Sym(i.t.sys.list), v))
 }
 
@@ -674,7 +674,7 @@ pub fn b_sortby(i: &mut Interp, args: &[Expr]) -> EvalRes {
         keyed.push((i.eval(&call)?, x.clone()));
     }
     let t = &i.t;
-    keyed.sort_by(|a, b| canon_cmp(t, &a.0, &b.0));
+    keyed.sort_by(|a, b| sort_cmp(t, &a.0, &b.0));
     let out: Vec<Expr> = keyed.into_iter().map(|(_, x)| x).collect();
     Ok(Expr::node(Expr::Sym(i.t.sys.list), out))
 }
