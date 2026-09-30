@@ -609,7 +609,7 @@ fixpoint (bounded by `$IterationLimit`/`$RecursionLimit`).
 
 ```
 cd rmath
-cargo test            # 59 unit tests + 390 end-to-end golden cases
+cargo test            # 60 unit tests + 395 end-to-end golden cases
 ```
 
 The Rust suite also includes a deterministic **fuzz** pass (`tests/fuzz.rs`:
