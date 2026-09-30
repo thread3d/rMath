@@ -230,6 +230,7 @@ fn tex_into(t: &SymbolTable, e: &Expr, form: Form, out: &mut String) {
             }
         }
         Expr::Real(x) => out.push_str(&tex_real(*x)),
+        Expr::BigReal(b) => out.push_str(&b.to_string()),
         Expr::Str(s) => {
             // Text mode: only LaTeX specials need escaping. A double quote is
             // literal (escaping it as \" would be an accent command, which

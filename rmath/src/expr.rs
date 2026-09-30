@@ -3,6 +3,7 @@
 //! expressions `head[args...]`, plus the symbol table with attributes,
 //! own-values, down-values and built-in dispatch.
 
+use crate::bigfloat::BigFloat;
 use crate::bigint::BigInt;
 use crate::rational::Rat;
 use std::cmp::Ordering;
@@ -89,6 +90,8 @@ pub enum Expr {
     Int(BigInt),
     Rat(Rat),
     Real(f64),
+    /// Arbitrary-precision decimal (`N[expr, prec]`).
+    BigReal(Box<BigFloat>),
     Str(Rc<str>),
     Sym(SymId),
     Cnum(Box<CNum>),
@@ -112,6 +115,7 @@ impl Hash for Expr {
                 r.den.hash(h);
             }
             Expr::Real(x) => x.to_bits().hash(h),
+            Expr::BigReal(x) => x.hash(h),
             Expr::Str(s) => s.hash(h),
             Expr::Sym(i) => i.hash(h),
             Expr::Cnum(c) => c.hash(h),
@@ -229,6 +233,7 @@ impl Expr {
             Expr::Int(_) => Expr::Sym(t.sys.integer),
             Expr::Rat(_) => Expr::Sym(t.sys.rational),
             Expr::Real(_) => Expr::Sym(t.sys.real),
+            Expr::BigReal(_) => Expr::Sym(t.sys.real),
             Expr::Str(_) => Expr::Sym(t.sys.string),
             Expr::Sym(_) => Expr::Sym(t.sys.symbol),
             Expr::Cnum(_) => Expr::Sym(t.sys.complex),
@@ -238,6 +243,7 @@ impl Expr {
     pub fn is_number(&self) -> bool {
         match self {
             Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) => true,
+            Expr::BigReal(_) => true,
             Expr::Cnum(_) => true,
             _ => false,
         }
@@ -246,7 +252,7 @@ impl Expr {
         matches!(self, Expr::Int(_) | Expr::Rat(_))
     }
     pub fn is_real_number(&self) -> bool {
-        matches!(self, Expr::Int(_) | Expr::Rat(_) | Expr::Real(_))
+        matches!(self, Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::BigReal(_))
     }
     /// List test used constantly by listable builtins.
     pub fn is_list(&self, t: &SymbolTable) -> bool {
@@ -291,6 +297,7 @@ pub fn same_q(a: &Expr, b: &Expr) -> bool {
         (Expr::Int(x), Expr::Int(y)) => x == y,
         (Expr::Rat(x), Expr::Rat(y)) => x == y,
         (Expr::Real(x), Expr::Real(y)) => x.to_bits() == y.to_bits(),
+        (Expr::BigReal(x), Expr::BigReal(y)) => x == y,
         (Expr::Str(x), Expr::Str(y)) => x == y,
         (Expr::Sym(x), Expr::Sym(y)) => x == y,
         (Expr::Cnum(x), Expr::Cnum(y)) => x == y,
@@ -306,6 +313,7 @@ pub fn canon_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
         match e {
             Expr::Int(_) | Expr::Rat(_) => 0,
             Expr::Real(_) => 1,
+            Expr::BigReal(_) => 1,
             Expr::Cnum(_) => 2,
             Expr::Str(_) => 3,
             Expr::Sym(_) => 4,
@@ -333,6 +341,7 @@ pub fn canon_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
             x.cmp(&ry)
         }
         (Expr::Real(x), Expr::Real(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
+        (Expr::BigReal(x), Expr::BigReal(y)) => x.cmp(y),
         (Expr::Cnum(x), Expr::Cnum(y)) => {
             let (rx, ix) = numval_f64(&x.re, &x.im);
             let (ry, iy) = numval_f64(&y.re, &y.im);

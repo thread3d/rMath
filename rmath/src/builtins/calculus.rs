@@ -57,9 +57,8 @@ fn half() -> Expr {
 pub fn d_expr(i: &mut Interp, e: &Expr, var: &Expr) -> EvalRes {
     let sys = i.t.sys;
     match e {
-        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Str(_) | Expr::Cnum(_) => {
-            Ok(Expr::int_i64(0))
-        }
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::BigReal(_) | Expr::Str(_)
+        | Expr::Cnum(_) => Ok(Expr::int_i64(0)),
         Expr::Sym(_) => {
             if same_q(e, var) {
                 Ok(Expr::int_i64(1))

@@ -477,8 +477,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
 ## What the kernel supports
 
 - **Numbers**: arbitrary-precision integers and exact rationals; machine
-  reals; exact and machine complex numbers. Mixed arithmetic is exact until a
-  real appears, exactly like Mathematica's `Rational`/`Real` semantics.
+  reals; exact and machine complex numbers; and **arbitrary-precision decimal
+  reals** from `N[expr, prec]`. Mixed arithmetic is exact until a real appears,
+  exactly like Mathematica's `Rational`/`Real` semantics.
 - **Syntax**: the Mathematica operator set — `+ - * / ^ . (implicit times)`,
   function application `f[x]`, prefix `f@x`, postfix `x // f`, infix `a~f~b`,
   `Map` `/@`, `Apply` `@@`/`@@@`, `Composition` `@*`, rules `-> :>`,
@@ -543,11 +544,12 @@ k.eval("x = 5; x^2")["result"]       # "25"
 
 ## Known limitations (v1)
 
-- Machine-precision `N[expr, prec]`: reals are stored as `f64`, so a precision
-  above machine precision cannot be honoured. `N[Pi, 50]` now reports
-  `N::meprec` and returns a machine-precision result instead of silently
-  ignoring the request (arbitrary-precision floats are planned via a decimal
-  bigfloat).
+- `N[expr, prec]` above machine precision is evaluated with the
+  arbitrary-precision decimal for exact numbers, `Pi`/`E`/`Degree`, `+ - * /`,
+  integer powers and square roots, so `N[Pi, 50]` gives 50 real digits and
+  `N[Sqrt[2], 50]`, `N[1/3, 40]`, `N[Pi, 50]^2` follow. Shapes that need a
+  transcendental function (`N[Sin[1], 50]`) still report `N::meprec` and fall
+  back to machine precision, and an `f64` input cannot regain precision.
 - `Cancel` cancels common factors of a univariate rational function;
   multivariate rational GCD is not implemented, so a multivariate `Cancel`
   falls back to `Together`.
@@ -582,6 +584,7 @@ k.eval("x = 5; x^2")["result"]       # "25"
 rmath/src/
   bigint.rs     arbitrary-precision integers (base 2^32, no deps)
   rational.rs   exact rationals
+  bigfloat.rs   arbitrary-precision decimals (N[expr, prec])
   json.rs       minimal JSON parser/writer for the RPC
   lexer.rs      Mathematica tokenizer
   parser.rs     recursive-descent parser (full operator precedence)
@@ -603,7 +606,7 @@ fixpoint (bounded by `$IterationLimit`/`$RecursionLimit`).
 
 ```
 cd rmath
-cargo test            # 54 unit tests + 378 end-to-end golden cases
+cargo test            # 59 unit tests + 390 end-to-end golden cases
 ```
 
 The Rust suite also includes a deterministic **fuzz** pass (`tests/fuzz.rs`:

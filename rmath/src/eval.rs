@@ -230,9 +230,8 @@ impl Interp {
 
     fn eval_once(&mut self, e: &Expr) -> Result<(Expr, bool), Flow> {
         match e {
-            Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Str(_) | Expr::Cnum(_) => {
-                Ok((e.clone(), false))
-            }
+            Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::BigReal(_) | Expr::Str(_)
+            | Expr::Cnum(_) => Ok((e.clone(), false)),
             Expr::Sym(id) => {
                 let has_delayed = matches!(&self.t.data[*id].own, Some(OwnValue::SetDelayed(_)));
                 if has_delayed {
@@ -788,7 +787,9 @@ fn collect_free_syms(t: &SymbolTable, e: &Expr, out: &mut Vec<Expr>) {
 fn monomial_exponents(t: &SymbolTable, vars: &[Expr], e: &Expr) -> Option<Vec<i64>> {
     let zeros = || vec![0i64; vars.len()];
     match e {
-        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_) => Some(zeros()),
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::BigReal(_) | Expr::Cnum(_) => {
+            Some(zeros())
+        }
         Expr::Sym(id) => {
             if let Some(k) = vars.iter().position(|v| v.is_symbol(*id)) {
                 let mut v = zeros();
@@ -948,7 +949,7 @@ fn factor_key(t: &SymbolTable, e: &Expr) -> Option<FactorKey> {
 /// a coefficient, so it sorts before variables like `2` does.
 fn is_numeric_value(t: &SymbolTable, e: &Expr) -> bool {
     match e {
-        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_) => true,
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::BigReal(_) | Expr::Cnum(_) => true,
         Expr::Sym(id) => has(t.attrs(*id), crate::expr::A_CONSTANT),
         Expr::Node(nd) => {
             let structural = nd.head.is_symbol(t.sys.plus)
@@ -1237,16 +1238,23 @@ mod tests {
     }
 
     #[test]
-    fn n_precision_beyond_machine_precision_is_reported() {
-        // `N[Pi, 50]` used to silently return machine precision; it still does,
-        // but now says so instead of pretending to honour the request.
+    fn n_above_machine_precision_uses_bigreal() {
+        // Exact shapes are evaluated with the decimal bigfloat, silently.
         let (text, msgs) = eval_str("N[Pi, 50]");
-        assert_eq!(text, "3.14159");
+        assert_eq!(text, "3.1415926535897932384626433832795028841971693993751");
+        assert!(msgs.is_empty(), "{:?}", msgs);
+        let (text, _) = eval_str("N[1/3, 20]");
+        assert_eq!(text, "0.33333333333333333333");
+        let (text, _) = eval_str("N[Pi, 50] + 1");
+        assert!(text.starts_with("4.14159265358979323846264338327950"), "{text}");
+        let (text, _) = eval_str("N[Sqrt[2], 30]");
+        assert!(text.starts_with("1.41421356237309504880168872421"), "{text}");
+        // A shape that needs a machine transcendental is still reported.
+        let (_, msgs) = eval_str("N[Sin[1], 50]");
         assert!(msgs.iter().any(|m| m.contains("precision")), "{:?}", msgs);
-        // Machine precision and below stay quiet.
+        // Machine precision and below stay quiet; a bad precision is refused.
         assert!(eval_str("N[Pi]").1.is_empty());
         assert!(eval_str("N[Pi, 10]").1.is_empty());
-        // A non-positive or non-integer precision is refused.
         let (text, msgs) = eval_str("N[Pi, 0]");
         assert_eq!(text, "N[Pi, 0]");
         assert!(

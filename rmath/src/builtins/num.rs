@@ -1,9 +1,137 @@
 //! Numeric core: NumVal helpers, exact powers, term coefficient extraction,
 //! machine numeric evaluation (N), sign helpers.
 
+use crate::bigfloat::BigFloat;
 use crate::bigint::BigInt;
 use crate::expr::{CNum, Expr, NumVal, SymbolTable, A_CONSTANT};
 use crate::rational::Rat;
+
+/// Does `e` contain an arbitrary-precision real anywhere?
+pub fn contains_bigreal(e: &Expr) -> bool {
+    if matches!(e, Expr::BigReal(_)) {
+        return true;
+    }
+    if let Some((h, args)) = e.parts() {
+        return contains_bigreal(h) || args.iter().any(contains_bigreal);
+    }
+    false
+}
+
+/// Replace every BigReal by its machine value (used when an operation cannot be
+/// done at the requested precision).
+pub fn demote_bigreal(e: &Expr) -> Expr {
+    match e {
+        Expr::BigReal(b) => Expr::real(b.to_f64()),
+        Expr::Node(nd) => Expr::node(
+            demote_bigreal(&nd.head),
+            nd.args.iter().map(demote_bigreal).collect(),
+        ),
+        _ => e.clone(),
+    }
+}
+
+/// The lowest precision among the BigReals in `e` (Mathematica propagates the
+/// least precise operand).
+pub fn min_bigreal_prec(e: &Expr) -> Option<usize> {
+    match e {
+        Expr::BigReal(b) => Some(b.prec),
+        Expr::Node(nd) => {
+            let mut best = min_bigreal_prec(&nd.head);
+            for a in &nd.args {
+                if let Some(q) = min_bigreal_prec(a) {
+                    best = Some(best.map_or(q, |x| x.min(q)));
+                }
+            }
+            best
+        }
+        _ => None,
+    }
+}
+
+/// Evaluate `e` to `prec` significant digits when it is built from exact
+/// numbers, `Pi`/`E`/`Degree`, `+ - * /`, integer powers and square roots.
+/// Returns None for anything needing a machine transcendental; the caller then
+/// falls back to `f64` and reports `N::meprec`.
+pub fn big_real_eval(e: &Expr, t: &SymbolTable, prec: usize) -> Option<Expr> {
+    Some(Expr::BigReal(Box::new(to_big(e, t, prec)?)))
+}
+
+fn to_big(e: &Expr, t: &SymbolTable, prec: usize) -> Option<BigFloat> {
+    match e {
+        Expr::Int(n) => Some(BigFloat::from_bigint(n, prec)),
+        Expr::Rat(r) => Some(BigFloat::from_rat(r, prec)),
+        Expr::BigReal(b) => Some((**b).clone().round_to(prec)),
+        Expr::Real(_) => None, // an f64 cannot gain precision
+        Expr::Sym(id) => match t.name_of(*id) {
+            "Pi" => Some(BigFloat::pi(prec)),
+            "E" => Some(BigFloat::e(prec)),
+            "Degree" => {
+                let p = BigFloat::pi(prec);
+                p.div(&BigFloat::from_i64(180, prec))
+            }
+            _ => None,
+        },
+        Expr::Node(nd) => {
+            let head = nd.head.sym_id()?;
+            if head == t.sys.plus {
+                let mut acc = BigFloat::zero(prec);
+                for a in &nd.args {
+                    acc = acc.add(&to_big(a, t, prec)?);
+                }
+                Some(acc)
+            } else if head == t.sys.times {
+                let mut acc = BigFloat::from_i64(1, prec);
+                for a in &nd.args {
+                    acc = acc.mul(&to_big(a, t, prec)?);
+                }
+                Some(acc)
+            } else if head == t.sys.power && nd.args.len() == 2 {
+                let base = to_big(&nd.args[0], t, prec)?;
+                match &nd.args[1] {
+                    Expr::Int(n) => {
+                        let k = n.to_i64()?;
+                        if k >= 0 {
+                            Some(big_pow(&base, k as u64, prec))
+                        } else {
+                            let d = big_pow(&base, (-k) as u64, prec);
+                            BigFloat::from_i64(1, prec).div(&d)
+                        }
+                    }
+                    // x^(1/2) is Sqrt[x]; anything else is not a BigFloat here.
+                    _ => {
+                        let half = Rat::new(BigInt::from_i64(1), BigInt::from_i64(2));
+                        if nd.args[1].as_rat_exact().map_or(false, |r| r == half) {
+                            base.sqrt(prec)
+                        } else {
+                            None
+                        }
+                    }
+                }
+            } else if t.name_of(head) == "Sqrt" && nd.args.len() == 1 {
+                to_big(&nd.args[0], t, prec)?.sqrt(prec)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Exponentiation by squaring, so `N[2^1000, 30]` is cheap.
+fn big_pow(base: &BigFloat, mut k: u64, prec: usize) -> BigFloat {
+    let mut result = BigFloat::from_i64(1, prec);
+    let mut b = base.clone();
+    while k > 0 {
+        if k & 1 == 1 {
+            result = result.mul(&b);
+        }
+        k >>= 1;
+        if k > 0 {
+            b = b.mul(&b);
+        }
+    }
+    result
+}
 
 pub fn nv_to_expr(n: &NumVal) -> Expr {
     match n {
@@ -331,6 +459,7 @@ pub fn numeric_eval(i: &mut crate::eval::Interp, e: &Expr) -> Expr {
         Expr::Int(n) => Expr::real(n.to_f64()),
         Expr::Rat(r) => Expr::real(r.to_f64()),
         Expr::Real(_) => e.clone(),
+        Expr::BigReal(_) => e.clone(),
         Expr::Cnum(c) => {
             let (re, im) = cnum_f64(c);
             Expr::cnum(NumVal::F(re), NumVal::F(im))

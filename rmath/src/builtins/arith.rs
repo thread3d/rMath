@@ -17,8 +17,36 @@ pub fn eval_int_of(i: &mut Interp, e: &Expr) -> EvalRes {
 
 // ============================ Plus ============================
 
+/// Route an arithmetic operation through the arbitrary-precision evaluator when
+/// an operand is a BigReal. If the shape cannot be evaluated at precision (it
+/// needs a machine transcendental), the BigReals are demoted to f64 and the
+/// normal path handles it, so arithmetic never leaves a BigReal stranded.
+fn bigreal_op(i: &mut Interp, head: usize, args: &[Expr]) -> Option<EvalRes> {
+    use crate::builtins::num::{big_real_eval, contains_bigreal, demote_bigreal, min_bigreal_prec};
+    if !args.iter().any(contains_bigreal) {
+        return None;
+    }
+    let prec = args.iter().filter_map(min_bigreal_prec).min().unwrap_or(20);
+    let call = Expr::node(Expr::Sym(head), args.to_vec());
+    if let Some(v) = big_real_eval(&call, &i.t, prec) {
+        return Some(Ok(v));
+    }
+    let demoted: Vec<Expr> = args.iter().map(demote_bigreal).collect();
+    let sys = i.t.sys;
+    Some(if head == sys.plus {
+        b_plus(i, &demoted)
+    } else if head == sys.times {
+        b_times(i, &demoted)
+    } else {
+        b_power(i, &demoted)
+    })
+}
+
 pub fn b_plus(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let sys = i.t.sys;
+    if let Some(r) = bigreal_op(i, sys.plus, args) {
+        return r;
+    }
     // Infinity is not an ordinary term: `Indeterminate + x` stays
     // Indeterminate, and `Infinity + (-Infinity)` is an indeterminate form.
     // (Previously the two infinities merged to a zero coefficient and the sum
@@ -172,6 +200,9 @@ pub fn b_plus(i: &mut Interp, args: &[Expr]) -> EvalRes {
 
 pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let sys = i.t.sys;
+    if let Some(r) = bigreal_op(i, sys.times, args) {
+        return r;
+    }
     let times_id = sys.times;
     let power_id = sys.power;
     let mut ec = Rat::from_i64(1);
@@ -339,6 +370,9 @@ pub fn b_power(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let base = &args[0];
     let exp = &args[1];
     let sys = i.t.sys;
+    if let Some(r) = bigreal_op(i, sys.power, args) {
+        return r;
+    }
     // Integer powers of a complex number: multiply out (I^2 = -1, (1+I)^2 = 2 I).
     // Negative powers invert the positive power exactly; recursing through
     // Power[z, -1] never terminated (1/I overflowed the stack).
@@ -899,11 +933,11 @@ pub fn b_n(i: &mut Interp, args: &[Expr]) -> EvalRes {
         i.message("N", "argr");
         return Ok(unevaluated_call(i, "N", args));
     }
+    let mut want_prec: Option<usize> = None;
     if args.len() >= 2 {
-        // `N[expr, prec]`: the kernel stores reals as f64, so a precision above
-        // machine precision cannot be honoured. Rather than silently truncating
-        // (which used to make `N[Pi, 50]` return 6 digits with no hint), report
-        // it and return the machine-precision result.
+        // `N[expr, prec]`: prec above machine precision is evaluated with the
+        // arbitrary-precision decimal when the expression supports it; shapes
+        // that need a machine transcendental fall back to f64 and report it.
         let p = i.eval(&args[1])?;
         let machine = p
             .sym_id()
@@ -911,7 +945,7 @@ pub fn b_n(i: &mut Interp, args: &[Expr]) -> EvalRes {
         match crate::builtins::core::expr_to_int(&p) {
             Some(n) if n >= 1 => {
                 if n > 16 {
-                    i.message("N", "meprec");
+                    want_prec = Some(n as usize);
                 }
             }
             _ if machine => {}
@@ -922,6 +956,12 @@ pub fn b_n(i: &mut Interp, args: &[Expr]) -> EvalRes {
         }
     }
     let e = i.eval(&args[0])?;
+    if let Some(prec) = want_prec {
+        if let Some(v) = crate::builtins::num::big_real_eval(&e, &i.t, prec) {
+            return Ok(v);
+        }
+        i.message("N", "meprec");
+    }
     Ok(numeric_eval(i, &e))
 }
 

@@ -20,6 +20,7 @@ fn fullform_into(t: &SymbolTable, e: &Expr, out: &mut String) {
             out.push(']');
         }
         Expr::Real(x) => out.push_str(&format!("{}", x)),
+        Expr::BigReal(b) => out.push_str(&b.to_string()),
         Expr::Str(s) => {
             out.push('"');
             for ch in s.chars() {
@@ -79,6 +80,7 @@ fn input_into(t: &SymbolTable, e: &Expr, _depth: usize, out: &mut String) {
             out.push_str(&r.den.to_string());
         }
         Expr::Real(x) => out.push_str(&format!("{}", x)),
+        Expr::BigReal(b) => out.push_str(&b.to_string()),
         Expr::Str(s) => {
             out.push('"');
             for ch in s.chars() {
@@ -165,6 +167,7 @@ fn output_into(t: &SymbolTable, e: &Expr, out: &mut String) {
             out.push_str(&r.den.to_string());
         }
         Expr::Real(x) => out.push_str(&format_real_out(*x)),
+        Expr::BigReal(b) => out.push_str(&b.to_string()),
         Expr::Str(s) => {
             out.push('"');
             for ch in s.chars() {
