@@ -41,6 +41,12 @@ fn div_round(a: &BigInt, b: &BigInt) -> BigInt {
     }
 }
 
+/// Fixed-point multiply: `(a * b) / 10^w`, truncated. Series are evaluated at a
+/// fixed scale so a term underflows to zero instead of shrinking forever.
+fn fmul(a: &BigInt, b: &BigInt, w: usize) -> BigInt {
+    a.mul(b).div_rem(&pow10(w)).0
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BigFloat {
     pub neg: bool,
@@ -255,13 +261,18 @@ impl BigFloat {
         }
         let prec = self.prec.min(o.prec).max(1);
         let w = prec + 10;
-        let num = self.mag.mul(&pow10(w));
-        let mag = div_round(&num, &o.mag);
+        // Align both operands to a common scale first: scaling the numerator by
+        // 10^w alone loses every digit when the divisor carries more fractional
+        // digits than the dividend (which is what atan's argument reduction does).
+        let s = self.scale.max(o.scale);
+        let a = self.mag.mul(&pow10((s - self.scale) as usize));
+        let b = o.mag.mul(&pow10((s - o.scale) as usize));
+        let mag = div_round(&a.mul(&pow10(w)), &b);
         Some(
             BigFloat {
                 neg: self.neg != o.neg,
                 mag,
-                scale: self.scale - o.scale + w as i64,
+                scale: w as i64,
                 prec,
             }
             .normalize()
@@ -349,6 +360,257 @@ impl BigFloat {
         }
         BigFloat { neg: false, mag: sum, scale: w as i64, prec }.normalize().round_to(prec)
     }
+
+    fn frac(n: i64, d: i64, prec: usize) -> BigFloat {
+        BigFloat::from_rat(&Rat::new(BigInt::from_i64(n), BigInt::from_i64(d)), prec)
+    }
+
+    /// Round to the nearest integer (as a BigFloat).
+    fn round_int(&self, w: usize) -> BigFloat {
+        BigFloat::from_scaled(&self.to_scaled(0), 0, w)
+    }
+
+    pub fn abs(&self) -> BigFloat {
+        let mut r = self.clone();
+        r.neg = false;
+        r
+    }
+
+    /// exp(self): halve the argument, Taylor at a fixed scale, then square back.
+    pub fn exp(&self, prec: usize) -> BigFloat {
+        let w = prec + 16;
+        let scale = pow10(w);
+        let half = scale.div_rem_small(2).0;
+        let mut x = self.to_scaled(w);
+        let mut m = 0u32;
+        while x.clone().abs().cmp(&half) == Ordering::Greater {
+            x = x.div_rem_small(2).0;
+            m += 1;
+            if m > 64 {
+                break;
+            }
+        }
+        let mut term = scale.clone();
+        let mut sum = term.clone();
+        let mut k: u64 = 1;
+        loop {
+            term = term.div_rem(&BigInt::from_u64(k)).0;
+            term = fmul(&term, &x, w);
+            if term.is_zero() {
+                break;
+            }
+            sum = sum.add(&term);
+            k += 1;
+            if k > 100_000 {
+                break;
+            }
+        }
+        for _ in 0..m {
+            sum = fmul(&sum, &sum, w);
+        }
+        BigFloat::from_scaled(&sum, w, prec)
+    }
+
+    /// ln(self) for self > 0: square-root reduction near 1, then the atanh series.
+    pub fn ln(&self, prec: usize) -> Option<BigFloat> {
+        if self.is_zero() || self.neg {
+            return None;
+        }
+        let w = prec + 16;
+        let one = BigFloat::from_i64(1, w);
+        let lo = BigFloat::frac(4, 5, w);
+        let hi = BigFloat::frac(5, 4, w);
+        let mut x = self.clone().round_to(w);
+        let mut k = 0u32;
+        while x.cmp(&hi) == Ordering::Greater || x.cmp(&lo) == Ordering::Less {
+            x = x.sqrt(w)?;
+            k += 1;
+            if k > 200 {
+                break;
+            }
+        }
+        let z = x.sub(&one).div(&x.add(&one))?;
+        let zs = z.to_scaled(w);
+        let z2 = fmul(&zs, &zs, w);
+        let mut term = zs.clone();
+        let mut sum = zs.clone();
+        let mut i: u64 = 3;
+        loop {
+            term = fmul(&term, &z2, w);
+            let t = term.div_rem(&BigInt::from_u64(i)).0;
+            if t.is_zero() {
+                break;
+            }
+            sum = sum.add(&t);
+            i += 2;
+            if i > 100_000 {
+                break;
+            }
+        }
+        // ln(x) = 2 * atanh(z), and each square root contributes another 2.
+        let mut factor = BigInt::from_u64(2);
+        for _ in 0..k {
+            factor = factor.mul_small(2);
+        }
+        Some(BigFloat::from_scaled(&sum.mul(&factor), w, prec))
+    }
+
+    /// Reduce an angle to [-π, π].
+    fn reduce_angle(&self, w: usize) -> BigFloat {
+        let two_pi = BigFloat::pi(w).mul(&BigFloat::from_i64(2, w));
+        match self.div(&two_pi) {
+            Some(q) => self.sub(&q.round_int(w).mul(&two_pi)),
+            None => self.clone(),
+        }
+    }
+
+    pub fn sin(&self, prec: usize) -> BigFloat {
+        let w = prec + 16;
+        let x = self.reduce_angle(w).to_scaled(w);
+        let x2 = fmul(&x, &x, w);
+        let mut term = x.clone();
+        let mut sum = x.clone();
+        let mut k: u64 = 1;
+        loop {
+            let denom = BigInt::from_u64((2 * k) * (2 * k + 1));
+            term = fmul(&term, &x2, w).div_rem(&denom).0.neg();
+            if term.is_zero() {
+                break;
+            }
+            sum = sum.add(&term);
+            k += 1;
+            if k > 100_000 {
+                break;
+            }
+        }
+        BigFloat::from_scaled(&sum, w, prec)
+    }
+
+    pub fn cos(&self, prec: usize) -> BigFloat {
+        let w = prec + 16;
+        let x = self.reduce_angle(w).to_scaled(w);
+        let x2 = fmul(&x, &x, w);
+        let mut term = pow10(w);
+        let mut sum = term.clone();
+        let mut k: u64 = 1;
+        loop {
+            let denom = BigInt::from_u64((2 * k - 1) * (2 * k));
+            term = fmul(&term, &x2, w).div_rem(&denom).0.neg();
+            if term.is_zero() {
+                break;
+            }
+            sum = sum.add(&term);
+            k += 1;
+            if k > 100_000 {
+                break;
+            }
+        }
+        BigFloat::from_scaled(&sum, w, prec)
+    }
+
+    pub fn tan(&self, prec: usize) -> Option<BigFloat> {
+        let w = prec + 16;
+        self.sin(w).div(&self.cos(w)).map(|v| v.round_to(prec))
+    }
+
+    /// atan(self): invert |x| > 1, halve until small, then the series.
+    pub fn atan(&self, prec: usize) -> BigFloat {
+        let w = prec + 16;
+        let one = BigFloat::from_i64(1, w);
+        let neg = self.neg;
+        let mut a = self.abs().round_to(w);
+        let mut invert = false;
+        if a.cmp(&one) == Ordering::Greater {
+            invert = true;
+            a = one.div(&a).unwrap();
+        }
+        let small = BigFloat::frac(1, 10, w);
+        let mut k = 0u32;
+        while a.cmp(&small) == Ordering::Greater {
+            let s = one.add(&a.mul(&a)).sqrt(w).unwrap();
+            a = a.div(&one.add(&s)).unwrap();
+            k += 1;
+            if k > 200 {
+                break;
+            }
+        }
+        let a2 = fmul(&a.to_scaled(w), &a.to_scaled(w), w);
+        let av = a.to_scaled(w);
+        let mut term = av.clone();
+        let mut sum = av.clone();
+        let mut i: u64 = 3;
+        loop {
+            term = fmul(&term, &a2, w).neg();
+            let t = term.div_rem(&BigInt::from_u64(i)).0;
+            if t.is_zero() {
+                break;
+            }
+            sum = sum.add(&t);
+            i += 2;
+            if i > 100_000 {
+                break;
+            }
+        }
+        let mut factor = BigInt::from_u64(1);
+        for _ in 0..k {
+            factor = factor.mul_small(2);
+        }
+        let mut total = sum.mul(&factor);
+        if invert {
+            let half_pi = BigFloat::pi(w).div(&BigFloat::from_i64(2, w)).unwrap();
+            total = half_pi.to_scaled(w).sub(&total);
+        }
+        if neg {
+            total = total.neg();
+        }
+        BigFloat::from_scaled(&total, w, prec)
+    }
+
+    pub fn sinh(&self, prec: usize) -> BigFloat {
+        let w = prec + 16;
+        self.exp(w)
+            .sub(&self.neg().exp(w))
+            .div(&BigFloat::from_i64(2, w))
+            .unwrap()
+            .round_to(prec)
+    }
+
+    pub fn cosh(&self, prec: usize) -> BigFloat {
+        let w = prec + 16;
+        self.exp(w)
+            .add(&self.neg().exp(w))
+            .div(&BigFloat::from_i64(2, w))
+            .unwrap()
+            .round_to(prec)
+    }
+
+    pub fn tanh(&self, prec: usize) -> BigFloat {
+        let w = prec + 16;
+        self.sinh(w).div(&self.cosh(w)).unwrap().round_to(prec)
+    }
+
+    /// `self^o` for `self > 0`, via `exp(o ln self)`.
+    pub fn powf(&self, o: &BigFloat, prec: usize) -> Option<BigFloat> {
+        if self.is_zero() {
+            return Some(if o.is_zero() {
+                BigFloat::from_i64(1, prec)
+            } else {
+                BigFloat::zero(prec)
+            });
+        }
+        if self.neg {
+            return None;
+        }
+        let w = prec + 16;
+        let l = self.ln(w)?;
+        Some(o.clone().round_to(w).mul(&l).exp(prec))
+    }
+}
+
+impl std::fmt::Display for BigFloat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -402,5 +664,28 @@ mod tests {
         assert_eq!(a.cmp(&a.clone()), Ordering::Equal);
         let neg = BigFloat::from_i64(-5, 20);
         assert_eq!(neg.cmp(&a), Ordering::Less);
+    }
+
+    #[test]
+    fn transcendental_digits() {
+        let one = BigFloat::from_i64(1, 50);
+        assert_eq!(one.exp(40).to_string(), "2.718281828459045235360287471352662497757");
+        let two = BigFloat::from_i64(2, 50);
+        assert_eq!(
+            two.ln(40).unwrap().to_string(),
+            "0.6931471805599453094172321214581765680755"
+        );
+        assert_eq!(one.sin(40).to_string(), "0.8414709848078965066525023216302989996226");
+        assert_eq!(one.cos(40).to_string(), "0.5403023058681397174009366074429766037323");
+        assert_eq!(one.atan(40).to_string(), "0.7853981633974483096156608458198757210493");
+        // ln is the inverse of exp, and sin^2 + cos^2 = 1, to working precision.
+        let e2 = BigFloat::from_i64(2, 60).exp(50);
+        let back = e2.ln(50).unwrap();
+        assert!(back.sub(&BigFloat::from_i64(2, 50).round_to(50)).abs().to_string()
+            .starts_with("0.000000000000000000000000000000000000000000000000"));
+        let s = one.sin(50);
+        let c = one.cos(50);
+        let id = s.mul(&s).add(&c.mul(&c)).round_to(40);
+        assert_eq!(id.to_string(), "1.000000000000000000000000000000000000000");
     }
 }

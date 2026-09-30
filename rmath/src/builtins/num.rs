@@ -97,18 +97,41 @@ fn to_big(e: &Expr, t: &SymbolTable, prec: usize) -> Option<BigFloat> {
                             BigFloat::from_i64(1, prec).div(&d)
                         }
                     }
-                    // x^(1/2) is Sqrt[x]; anything else is not a BigFloat here.
+                    // x^(1/2) is Sqrt[x]; a general exact exponent goes through
+                    // exp(e ln x) for a positive base.
                     _ => {
                         let half = Rat::new(BigInt::from_i64(1), BigInt::from_i64(2));
-                        if nd.args[1].as_rat_exact().map_or(false, |r| r == half) {
-                            base.sqrt(prec)
-                        } else {
-                            None
+                        match nd.args[1].as_rat_exact() {
+                            Some(r) if r == half => base.sqrt(prec),
+                            Some(r) => base.powf(&BigFloat::from_rat(&r, prec), prec),
+                            None => {
+                                let e = to_big(&nd.args[1], t, prec)?;
+                                base.powf(&e, prec)
+                            }
                         }
                     }
                 }
-            } else if t.name_of(head) == "Sqrt" && nd.args.len() == 1 {
-                to_big(&nd.args[0], t, prec)?.sqrt(prec)
+            } else if nd.args.len() == 1 {
+                let mut f = || to_big(&nd.args[0], t, prec);
+                match t.name_of(head) {
+                    "Abs" => Some(f()?.abs()),
+                    "Exp" => Some(f()?.exp(prec)),
+                    "Log" => Some(f()?.ln(prec)?),
+                    "Sin" => Some(f()?.sin(prec)),
+                    "Cos" => Some(f()?.cos(prec)),
+                    "Tan" => f()?.tan(prec),
+                    "ArcTan" => Some(f()?.atan(prec)),
+                    "Sinh" => Some(f()?.sinh(prec)),
+                    "Cosh" => Some(f()?.cosh(prec)),
+                    "Tanh" => Some(f()?.tanh(prec)),
+                    "Sqrt" => f()?.sqrt(prec),
+                    _ => None,
+                }
+            } else if nd.args.len() == 2 && t.name_of(head) == "Log" {
+                // Log[b, x] = ln(x) / ln(b)
+                let b = to_big(&nd.args[0], t, prec)?;
+                let x = to_big(&nd.args[1], t, prec)?;
+                x.ln(prec)?.div(&b.ln(prec)?)
             } else {
                 None
             }

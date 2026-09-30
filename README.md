@@ -544,12 +544,15 @@ k.eval("x = 5; x^2")["result"]       # "25"
 
 ## Known limitations (v1)
 
-- `N[expr, prec]` above machine precision is evaluated with the
-  arbitrary-precision decimal for exact numbers, `Pi`/`E`/`Degree`, `+ - * /`,
-  integer powers and square roots, so `N[Pi, 50]` gives 50 real digits and
-  `N[Sqrt[2], 50]`, `N[1/3, 40]`, `N[Pi, 50]^2` follow. Shapes that need a
-  transcendental function (`N[Sin[1], 50]`) still report `N::meprec` and fall
-  back to machine precision, and an `f64` input cannot regain precision.
+- `N[expr, prec]` above machine precision uses the arbitrary-precision decimal
+  for exact numbers, `Pi`/`E`/`Degree`, `+ - * /`, integer and rational powers,
+  `Sqrt`, and anything that stays symbolic — `N[Pi, 50]`, `N[1/3, 40]`,
+  `N[Sqrt[2], 50]`, `N[Pi^Pi, 30]`, `N[Exp[Pi], 30]` all give `prec` real
+  digits. The elementary functions have arbitrary-precision implementations,
+  but the kernel eagerly evaluates exact numeric calls such as `Sin[1]` or
+  `Log[2]` to machine precision *before* `N` sees them, so `N[Sin[1], 40]`
+  still reports `N::meprec` and falls back; an `f64` input cannot regain
+  precision either.
 - `Cancel` cancels common factors of a univariate rational function;
   multivariate rational GCD is not implemented, so a multivariate `Cancel`
   falls back to `Together`.
