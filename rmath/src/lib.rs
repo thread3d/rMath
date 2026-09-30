@@ -1,4 +1,5 @@
 #![allow(unused_mut, unused_variables)]
+pub mod bigfloat;
 pub mod bigint;
 pub mod builtins;
 pub mod eval;
