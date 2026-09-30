@@ -84,7 +84,7 @@ instead of the native app).
 ### Demonstration file
 
 `demo/demo.mt` is a tour of the kernel: **389 verified examples and 79 statements
-in 25 sections**
+in 24 sections**
 (arithmetic, complex numbers, elementary and special functions, Unicode input,
 patterns, rules, scoping, lists, functional programming, algebra, polynomials,
 calculus, equations, linear algebra, strings, logic, control flow, information
@@ -397,12 +397,14 @@ to the app that launched the harness (usually Terminal.app):
 System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording, then
 restart that app. Note that restarting Terminal ends the current agent session.
 
-### Command-line reference### Command-line reference
+### Command-line reference
 
 | Command | What it does |
 |---------|--------------|
 | `make build` / `make release` | build the kernel (debug / release) |
 | `make test` | unit tests + golden end-to-end suite |
+| `make py-test` | Python front-end unit tests (notebook, SVG, paths, harness, Lean translation) |
+| `make check` | the fast CI set: `test` + `py-test` + `oracle` + `lean-test` |
 | `make oracle` | random + invariant correctness oracle over the algebra surface (`ORACLE="-n 200 --seed 7"` for a longer run) — independent of the kernel's own simplifier |
 | `make repl` | interactive kernel REPL (`Quit[]` or Ctrl-D exits) |
 | `make eval E='D[Sin[x]^2, x]'` | one-shot evaluation |
@@ -497,9 +499,11 @@ k.eval("x = 5; x^2")["result"]       # "25"
   the polynomial form, an even-power substitution `y = x^2`, the discriminant,
   the quadratic formula and rational roots), and falls back to `Trace[expr]`,
   the successive evaluation forms, for anything else.
-- **Algebra**: `Expand`, `ExpandAll`, `Together`, `Cancel` (v1 = Together),
+- **Algebra**: `Expand`, `ExpandAll`, `Together`, `Cancel` (cancels common
+  factors, univariate),
   `Apart` (partial fractions, distinct linear factors), `Collect`, `Factor`
-  (content + rational roots), `Coefficient(s)`, `CoefficientList`, `Exponent`,
+  (content + rational roots), `Coefficient(s)` (symbolic coefficients and
+  monomial forms, on unexpanded input), `CoefficientList`, `Exponent`,
   `Variables`, `PolynomialQuotient[Remainder]`, `PolynomialGCD` (univariate),
   and `Simplify`/`FullSimplify` with `Assuming`/`$Assumptions`.
 - **Calculus**: `D` (elementary chain rules, and `Derivative` for unknown
@@ -541,7 +545,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
 
 - Machine-precision `N[expr, prec]`: the precision argument is currently
   ignored (arbitrary-precision floats are planned via a decimal bigfloat).
-- `Cancel` = `Together` (multivariate rational GCD is not implemented).
+- `Cancel` cancels common factors of a univariate rational function;
+  multivariate rational GCD is not implemented, so a multivariate `Cancel`
+  falls back to `Together`.
 - `Solve` covers linear systems (unique solutions), quadratics, and cubics
   with rational roots; multivariate nonlinear systems stay unevaluated.
 - `Eigenvalues`/`Eigenvectors` are not implemented (an earlier note here
@@ -557,8 +563,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   of `1/quadratic`, the elementary functions with linear arguments, and the
   special cases `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`,
   `1/Log[x]`, `Exp[-x^2]` (trigonometric substitution, repeated-factor partial
-  fractions and irreducible quadratics are not implemented, so e.g.
-  `Integrate[1/(x^3 + x), x]` stays unevaluated).
+  fractions, irreducible quadratics and powers of trigonometric functions are
+  not implemented, so e.g. `Integrate[1/(x^3 + x), x]` and
+  `Integrate[Sin[x]^2, x]` stay unevaluated).
 - Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
   `SinhIntegral`, `CoshIntegral`, `ExpIntegralEi`, `LogIntegral`, `Sinc`
   (machine-precision numeric evaluation, exact values at 0/±Infinity, and
@@ -593,9 +600,22 @@ fixpoint (bounded by `$IterationLimit`/`$RecursionLimit`).
 
 ```
 cd rmath
-cargo test            # 53 unit tests + ~345 end-to-end golden cases
+cargo test            # 53 unit tests + 362 end-to-end golden cases
 ```
+
+The Python front end has its own unit tests — the notebook server's routing and
+helpers, the SVG renderer, path/tool resolution, the harness configuration and
+the Lean bridge's translation helpers. They need no Lean, no network and no
+running server:
+
+```
+make py-test          # python3 -m unittest discover -s tests
+```
+
+`make check` is the fast, dependency-free set CI runs: `make test`,
+`make py-test`, `make oracle` and `make lean-test`. The workflow lives in
+`.github/workflows/ci.yml`.
 
 ## License
 
-MIT.
+MIT — see `LICENSE`.

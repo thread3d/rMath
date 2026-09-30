@@ -247,18 +247,76 @@ fn collect_vars(i: &mut Interp, e: &Expr, out: &mut Vec<Expr>) -> Result<(), Flo
 
 // ------------------------ coefficient builtins ------------------------
 
+/// Decompose `form` into `(base, exponent)` factors when it is a monomial:
+/// a symbol, a power with an integer exponent, or a product of those. Returns
+/// None for anything else (a function, a sum, a non-integer power).
+fn monomial_form(i: &Interp, form: &Expr) -> Option<Vec<(Expr, i64)>> {
+    let sys = i.t.sys;
+    let mut out: Vec<(Expr, i64)> = Vec::new();
+    if form.sym_id().is_some() {
+        out.push((form.clone(), 1));
+        return Some(out);
+    }
+    if let Some((h, args)) = form.parts() {
+        if h.is_symbol(sys.power) && args.len() == 2 {
+            let n = crate::builtins::core::expr_to_int(&args[1])?;
+            out.push((args[0].clone(), n));
+            return Some(out);
+        }
+        if h.is_symbol(sys.times) {
+            for f in args {
+                out.extend(monomial_form(i, f)?);
+            }
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// Split a term into variable `(base, exponent)` factors and the remaining
+/// coefficient factors. A factor that is not a symbol or an integer power is a
+/// coefficient (this is what keeps `Sin[x]` out of a coefficient in `x`).
+fn split_term(i: &Interp, t: &Expr, bases: &mut Vec<(Expr, i64)>, coeffs: &mut Vec<Expr>) {
+    let sys = i.t.sys;
+    if let Some((h, args)) = t.parts() {
+        if h.is_symbol(sys.times) {
+            for f in args {
+                split_term(i, f, bases, coeffs);
+            }
+            return;
+        }
+        if h.is_symbol(sys.power) && args.len() == 2 {
+            if let Some(n) = crate::builtins::core::expr_to_int(&args[1]) {
+                bases.push((args[0].clone(), n));
+                return;
+            }
+        }
+    }
+    if t.sym_id().is_some() {
+        bases.push((t.clone(), 1));
+        return;
+    }
+    coeffs.push(t.clone());
+}
+
+/// Coefficient[expr, form] / Coefficient[expr, form, n].
+///
+/// Mathematica semantics: `expr` is expanded first, then each term is matched
+/// by its exact exponent in every part of `form`; the leftover factors are the
+/// coefficient. So `Coefficient[a x + b y + c, x]` is `a`, `Coefficient[x^2, x]`
+/// is `0` (x^2 is not part of x), and `Coefficient[(x+y)^4, x y^3]` is `4`.
+/// Unlike `Exponent`/`CoefficientList`, the coefficient may be symbolic.
 pub fn b_coefficient(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() < 2 || args.len() > 3 {
         i.message("Coefficient", "argr");
         return Ok(unevaluated_call(i, "Coefficient", args));
     }
     let e = i.eval(&args[0])?;
-    let var = i.eval(&args[1])?;
-    let coeffs = match poly_coeffs(i, &e, &var)? {
-        Some(c) => c,
-        None => return Ok(unevaluated_call(i, "Coefficient", args)),
+    let form = i.eval(&args[1])?;
+    let Some(mut want) = monomial_form(i, &form) else {
+        return Ok(unevaluated_call(i, "Coefficient", args));
     };
-    let idx = if args.len() == 3 {
+    let scale = if args.len() == 3 {
         match crate::builtins::core::expr_to_int(&i.eval(&args[2])?) {
             Some(n) => n,
             None => return Ok(unevaluated_call(i, "Coefficient", args)),
@@ -266,9 +324,52 @@ pub fn b_coefficient(i: &mut Interp, args: &[Expr]) -> EvalRes {
     } else {
         1
     };
-    Ok(Expr::rat(
-        coeffs.get(idx.max(0) as usize).cloned().unwrap_or(Rat::from_i64(0)),
-    ))
+    for (_, exp) in want.iter_mut() {
+        *exp *= scale;
+    }
+    let expanded = expand_expr(i, &e)?;
+    let sys = i.t.sys;
+    let terms: Vec<Expr> = match expanded.parts() {
+        Some((h, a)) if h.is_symbol(sys.plus) => a.to_vec(),
+        _ => vec![expanded],
+    };
+    let mut total: Vec<Expr> = Vec::new();
+    for t in &terms {
+        let mut bases = Vec::new();
+        let mut coeffs = Vec::new();
+        split_term(i, t, &mut bases, &mut coeffs);
+        let matches = want.iter().all(|(wb, wexp)| {
+            bases
+                .iter()
+                .filter(|(b, _)| same_q(b, wb))
+                .map(|(_, e)| *e)
+                .sum::<i64>()
+                == *wexp
+        });
+        if !matches {
+            continue;
+        }
+        for (b, e) in &bases {
+            let consumed = want.iter().any(|(wb, wexp)| same_q(b, wb) && wexp == e);
+            if !consumed {
+                coeffs.push(if *e == 1 {
+                    b.clone()
+                } else {
+                    Expr::node(Expr::Sym(sys.power), vec![b.clone(), Expr::int_i64(*e)])
+                });
+            }
+        }
+        let prod = if coeffs.is_empty() {
+            Expr::int_i64(1)
+        } else {
+            i.eval(&Expr::node(Expr::Sym(sys.times), coeffs))?
+        };
+        total.push(prod);
+    }
+    if total.is_empty() {
+        return Ok(Expr::int_i64(0));
+    }
+    i.eval(&Expr::node(Expr::Sym(sys.plus), total))
 }
 
 pub fn b_coefficientlist(i: &mut Interp, args: &[Expr]) -> EvalRes {

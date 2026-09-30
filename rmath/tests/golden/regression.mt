@@ -151,7 +151,7 @@ Factor[4 x^2 - 9]
 Integrate[-3 x^2 + 5 x^3, x]
 => -x^3 + 5/4 x^4
 Integrate[-2 + 4 x - 3 x^2 + 5 x^3 - 6 x^4, x]
-=> -2 x - 6/5 x^5 - x^3 + 5/4 x^4 + 2 x^2
+=> -2 x + 2 x^2 - x^3 + 5/4 x^4 - 6/5 x^5
 
 # --- Cancel must actually cancel (it used to be an alias for Together) ---
 Cancel[(x^2 - 9)/(x - 3)]
@@ -166,3 +166,46 @@ Cancel[(6 x^2 - 6)/(2 x - 2)]
 # --- Apart of a polynomial is the identity, not an unevaluated head ---
 Apart[x^2 + 1, x]
 => 1 + x^2
+
+# --- Plus terms follow Mathematica's polynomial order ---
+# Constants first, then monomials by exponent vector from the last variable to
+# the first (the reverse-lexicographic order the Wolfram docs describe). Terms
+# used to sort alphabetically by head, so `x^2` came before `2 x` and a bare
+# symbol outranked a Power, printing e.g. `1 + x^2 + 2 x`.
+Expand[(x+3)(x+2)]
+=> 6 + 5 x + x^2
+Expand[(1+x)^5]
+=> 1 + 5 x + 10 x^2 + 10 x^3 + 5 x^4 + x^5
+Expand[(x+y)^2 (x-y)^2]
+=> x^4 - 2 x^2 y^2 + y^4
+Expand[(x+y)^5 - (x^5 + y^5)]
+=> 5 x^4 y + 10 x^3 y^2 + 10 x^2 y^3 + 5 x y^4
+Expand[(1+x+y)(2-x)^3]
+=> 8 - 4 x - 6 x^2 + 5 x^3 - x^4 + 8 y - 12 x y + 6 x^2 y - x^3 y
+x^2 + y
+=> x^2 + y
+1 + x + Sin[x]
+=> 1 + x + Sin[x]
+D[x^3 + Sin[x], x]
+=> 3 x^2 + Cos[x]
+
+# --- Coefficient: unexpanded input, symbolic coefficients, monomial forms ---
+# It used to need an explicitly expanded polynomial with numeric coefficients,
+# so `Coefficient[a x + b y + c, x]` and `Coefficient[(x+1)^5, x^3]` stayed
+# unevaluated. Mathematica's exact-exponent rule is kept: x^2 is not part of x.
+Coefficient[(x + 1)^3, x, 2]
+=> 3
+Coefficient[a x + b y + c, x]
+=> a
+Coefficient[a x^3 + b x^2 + c x + d, x, 2]
+=> b
+Coefficient[(x + 2)^2 + (x + 3)^3, x, 0]
+=> 31
+Coefficient[(x + y)^4, x y^3]
+=> 4
+Coefficient[(x + y)(x + 2 y)(3 x + 4 y + 5), x y^2]
+=> 18
+Coefficient[x^2, x]
+=> 0
+Coefficient[x y, x]
+=> y

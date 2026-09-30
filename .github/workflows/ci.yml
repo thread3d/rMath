@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: kernel, front end and bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The Rust toolchain is preinstalled on ubuntu-latest and the crate has no
+      # dependencies, so a plain `cargo` is enough (no toolchain action/cache).
+      - name: Rust unit tests + golden suite
+        run: cargo test --manifest-path rmath/Cargo.toml
+
+      - name: Build the kernel (release; used by the integration tests)
+        run: cargo build --manifest-path rmath/Cargo.toml --release
+
+      - name: Python unit tests (front end + Lean bridge helpers)
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Independent algebra correctness oracle
+        run: python3 scripts/dev/oracle_test.py -n 100 --seed 7
+
+      - name: Lean translation tests (no Lean toolchain needed)
+        run: python3 scripts/dev/lean_translation_test.py

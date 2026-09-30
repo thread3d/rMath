@@ -453,7 +453,22 @@ impl Interp {
         if has(attrs, A_ORDERLESS) && args.len() > 1 {
             let t = &self.t;
             let mut s: Vec<Expr> = args.clone();
-            s.sort_by(|a, b| canon_cmp(t, a, b));
+            if head_id == Some(t.sys.plus) {
+                // Plus uses Mathematica's polynomial ordering (constants first,
+                // then monomials by exponent vector from the last variable to
+                // the first). Other Orderless heads keep the plain canonical
+                // order, so `Times` still prints its numeric coefficient first.
+                let mut vars: Vec<Expr> = Vec::new();
+                for a in &s {
+                    collect_free_syms(t, a, &mut vars);
+                }
+                vars.sort_by(|a, b| canon_cmp(t, a, b));
+                s.sort_by(|a, b| plus_cmp(t, &vars, a, b));
+            } else if head_id == Some(t.sys.times) {
+                s.sort_by(|a, b| times_cmp(t, a, b));
+            } else {
+                s.sort_by(|a, b| canon_cmp(t, a, b));
+            }
             let same = args.len() == s.len()
                 && args.iter().zip(s.iter()).all(|(a, b)| same_q(a, b));
             if !same {
@@ -744,6 +759,124 @@ pub fn subst_syms(t: &SymbolTable, body: &Expr, names: &[usize], vals: &[Expr]) 
         return Expr::node(new_head, new_args);
     }
     body.clone()
+}
+
+/// Free symbols of `e` (argument positions only; heads are not variables), in
+/// discovery order. Used to build the variable list for `Plus` ordering.
+fn collect_free_syms(t: &SymbolTable, e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::Sym(id) => {
+            if !has(t.attrs(*id), crate::expr::A_CONSTANT)
+                && !out.iter().any(|v| matches!(v, Expr::Sym(i) if i == id))
+            {
+                out.push(e.clone());
+            }
+        }
+        Expr::Node(nd) => {
+            for a in &nd.args {
+                collect_free_syms(t, a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The exponent vector of `e` as a monomial in `vars`, or None when `e` is not
+/// a polynomial monomial (so it cannot take part in the polynomial order).
+/// Numeric atoms and constant symbols (Pi, E, …) are coefficients: zero in
+/// every position.
+fn monomial_exponents(t: &SymbolTable, vars: &[Expr], e: &Expr) -> Option<Vec<i64>> {
+    let zeros = || vec![0i64; vars.len()];
+    match e {
+        Expr::Int(_) | Expr::Rat(_) | Expr::Real(_) | Expr::Cnum(_) => Some(zeros()),
+        Expr::Sym(id) => {
+            if let Some(k) = vars.iter().position(|v| v.is_symbol(*id)) {
+                let mut v = zeros();
+                v[k] = 1;
+                Some(v)
+            } else if has(t.attrs(*id), crate::expr::A_CONSTANT) {
+                Some(zeros())
+            } else {
+                None
+            }
+        }
+        Expr::Node(nd) => {
+            if nd.head.is_symbol(t.sys.times) {
+                let mut acc = zeros();
+                for f in &nd.args {
+                    let part = monomial_exponents(t, vars, f)?;
+                    for (a, p) in acc.iter_mut().zip(part.iter()) {
+                        *a += *p;
+                    }
+                }
+                Some(acc)
+            } else if nd.head.is_symbol(t.sys.power) && nd.args.len() == 2 {
+                let base = nd.args[0].sym_id()?;
+                let k = vars.iter().position(|v| v.is_symbol(base))?;
+                let n = crate::builtins::core::expr_to_int(&nd.args[1])?;
+                if n < 0 {
+                    return None;
+                }
+                let mut v = zeros();
+                v[k] = n;
+                Some(v)
+            } else {
+                None
+            }
+        }
+        Expr::Str(_) => None,
+    }
+}
+
+/// Compare the exponent vectors in the reverse variable order (last variable
+/// first), ascending — the order Mathematica uses for `Plus` terms.
+fn cmp_exponents(x: &[i64], y: &[i64]) -> Ordering {
+    for i in (0..x.len().min(y.len())).rev() {
+        match x[i].cmp(&y[i]) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    x.len().cmp(&y.len())
+}
+
+/// Order two `Plus` terms: monomials before non-monomials, monomials by the
+/// reverse-lexicographic exponent rule, everything else by `canon_cmp`.
+fn plus_cmp(t: &SymbolTable, vars: &[Expr], a: &Expr, b: &Expr) -> Ordering {
+    match (monomial_exponents(t, vars, a), monomial_exponents(t, vars, b)) {
+        (Some(x), Some(y)) => cmp_exponents(&x, &y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => canon_cmp(t, a, b),
+    }
+}
+
+/// (base name, exponent) of a factor that is a variable or a power of one.
+fn var_factor_key(t: &SymbolTable, e: &Expr) -> Option<(String, i64)> {
+    match e {
+        Expr::Sym(id) => Some((t.name_of(*id).to_string(), 1)),
+        Expr::Node(nd) => {
+            if nd.head.is_symbol(t.sys.power) && nd.args.len() == 2 {
+                let id = nd.args[0].sym_id()?;
+                let n = crate::builtins::core::expr_to_int(&nd.args[1])?;
+                Some((t.name_of(id).to_string(), n))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Order `Times` factors: numeric and constant atoms stay first (canon_cmp
+/// already ranks them that way), but variable factors compare by their base
+/// name rather than by head, so `x^4 y` prints as Mathematica's `x^4 y` and not
+/// `y x^4` (a bare symbol used to outrank a `Power` node).
+fn times_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {
+    match (var_factor_key(t, a), var_factor_key(t, b)) {
+        (Some((na, ea)), Some((nb, eb))) => na.cmp(&nb).then(ea.cmp(&eb)),
+        _ => canon_cmp(t, a, b),
+    }
 }
 
 impl MatchCtx for Interp {

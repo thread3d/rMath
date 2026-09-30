@@ -3,6 +3,8 @@
 #   make build      build the kernel (debug)
 #   make release    build the kernel (release, used by the notebook)
 #   make test       run the test suite (unit + golden)
+#   make py-test    run the Python front-end unit tests
+#   make check      test + py-test + oracle + lean-test (the fast CI set)
 #   make repl       interactive kernel REPL
 #   make eval E='D[Sin[x]^2, x]'    one-shot evaluation
 #   make demo       evaluate demo/demo.mt headlessly
@@ -19,7 +21,7 @@ PORT   ?= 8787
 BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
-.PHONY: help build release test repl eval demo notebook notebook-bg stop restart clean \
+.PHONY: help build release test py-test check repl eval demo notebook notebook-bg stop restart clean \
         app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-verify demo-gen
 
 help:
@@ -33,6 +35,16 @@ release:
 
 test:
 	cd $(ROOT)/rmath && $(CARGO) test
+
+# Unit tests for the Python front end (notebook server, SVG, paths, harness and
+# the Lean bridge's translation helpers). No Lean, network or running server.
+py-test:
+	cd $(ROOT) && python3 -m unittest discover -s tests
+
+# The fast, dependency-free set CI runs: kernel tests, front-end tests, the
+# independent algebra oracle, and the Lean translation tests.
+check: test py-test oracle lean-test
+	@echo "rMath check: all fast suites passed"
 
 repl: release
 	cd $(ROOT) && $(BIN)

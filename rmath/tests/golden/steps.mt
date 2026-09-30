@@ -4,7 +4,7 @@
 Steps[D[Sin[x]^2, x]]
 => {Given: D[Sin[x]^2, x], chain rule: d/dx Sin: Cos[x], power rule: 2 Cos[x] Sin[x], Result: 2 Cos[x] Sin[x]}
 Steps[D[x^3 + Sin[x], x]]
-=> {Given: D[x^3 + Sin[x], x], power rule: 3 x^2, chain rule: d/dx Sin: Cos[x], sum rule: Cos[x] + 3 x^2, Result: Cos[x] + 3 x^2}
+=> {Given: D[x^3 + Sin[x], x], power rule: 3 x^2, chain rule: d/dx Sin: Cos[x], sum rule: 3 x^2 + Cos[x], Result: 3 x^2 + Cos[x]}
 
 Steps[Integrate[x Sin[x], x]]
 => {Given: Integrate[x Sin[x], x], integration by parts: Sin[x] - x Cos[x], Result: Sin[x] - x Cos[x]}
@@ -26,7 +26,7 @@ Steps[Apart[1/(x^2 - 1), x]]
 Steps[Factor[x^2 - 1]]
 => {Given: Factor[x^2 - 1], factorization: (-1 + x) (1 + x), Result: (-1 + x) (1 + x)}
 Steps[Solve[x^2 - 3 x + 2 == 0, x]]
-=> {Given: Solve[Equal[x^2 - 3 x + 2, 0], x], polynomial form: 2 + x^2 - 3 x, discriminant: b^2 - 4 a c: 1, quadratic formula: (-b +- Sqrt[disc])/(2 a): {2, 1}, roots: {{x -> 2}, {x -> 1}}, Result: {{x -> 2}, {x -> 1}}}
+=> {Given: Solve[Equal[x^2 - 3 x + 2, 0], x], polynomial form: 2 - 3 x + x^2, discriminant: b^2 - 4 a c: 1, quadratic formula: (-b +- Sqrt[disc])/(2 a): {2, 1}, roots: {{x -> 2}, {x -> 1}}, Result: {{x -> 2}, {x -> 1}}}
 # Even-power quartic: substitute y = x^2, solve the quadratic in y, then x = ±Sqrt[y].
 Steps[Solve[x^4 + x^2 - 1 == 0, x]]
 => {Given: Solve[Equal[x^4 + x^2 - 1, 0], x], polynomial form: -1 + x^2 + x^4, even powers: substitute y = x^2: -1 + y + y^2, discriminant: b^2 - 4 a c: 5, quadratic formula: (-b +- Sqrt[disc])/(2 a): {1/2 (-1 + Sqrt[5]), 1/2 (-1 - Sqrt[5])}, x = +- Sqrt[y]: {Sqrt[1/2 (-1 + Sqrt[5])], -Sqrt[1/2 (-1 + Sqrt[5])], Sqrt[1/2 (-1 - Sqrt[5])], -Sqrt[1/2 (-1 - Sqrt[5])]}, roots: {{x -> Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> Sqrt[1/2 (-1 - Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 - Sqrt[5])]}}, Result: {{x -> Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> Sqrt[1/2 (-1 - Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 - Sqrt[5])]}}}

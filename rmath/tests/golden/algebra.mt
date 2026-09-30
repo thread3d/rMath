@@ -1,8 +1,8 @@
 # algebra, calculus, matrices
 Expand[(1+x)^2]
-=> 1 + x^2 + 2 x
+=> 1 + 2 x + x^2
 Expand[(a+b)(c+d)]
-=> a c + a d + b c + b d
+=> a c + b c + a d + b d
 Factor[x^2 + 5x + 6]
 => (2 + x) (3 + x)
 Factor[x^2 - 4]

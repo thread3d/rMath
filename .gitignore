@@ -39,6 +39,10 @@ lean/Debug*.lean
 lean/RMathVerify.lean
 lean/RMathCheck.lean
 
+# Lean exploration scratch (probe files are local, never committed)
+lean/Probe*.lean
+lean/probe*.lean
+
 # notebook autosaved session
 .rmath-session.json
 notebook-*.mt
