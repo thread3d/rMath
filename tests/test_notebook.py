@@ -159,6 +159,28 @@ class HttpRouting(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
 
+    def test_api_index_lists_the_routes_and_mcp(self):
+        status, body = self.get("/api")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["name"], "rMath notebook API")
+        self.assertEqual(body["mcp"]["command"], ["python3", "-m", "rmathpy.mcp"])
+        paths = {e["path"] for e in body["endpoints"]}
+        self.assertIn("/api/eval", paths)
+        self.assertIn("/api/lean/verify", paths)
+        self.assertIn("/api", paths)
+        for endpoint in body["endpoints"]:
+            self.assertIn(endpoint["method"], ("GET", "POST"))
+
+    def test_openapi_document_covers_eval(self):
+        status, body = self.get("/api/openapi.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["openapi"], "3.1.0")
+        self.assertIn("/api/eval", body["paths"])
+        self.assertIn("post", body["paths"]["/api/eval"])
+        schema = body["paths"]["/api/eval"]["post"]["requestBody"]["content"][
+            "application/json"]["schema"]
+        self.assertIn("input", schema["properties"])
+
     def test_names(self):
         _, body = self.get("/api/names")
         self.assertEqual(body["names"], ["Sin", "Cos"])
@@ -271,6 +293,36 @@ class IndexPage(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", html)
         self.assertIn("</html>", html)
         self.assertIs(notebook.index_html(), html)  # cached, not re-read
+
+
+class ApiSpec(unittest.TestCase):
+    """The discovery index and the OpenAPI document come from one table."""
+
+    def test_index_and_openapi_describe_the_same_routes(self):
+        from rmathpy import apispec
+        index = apispec.index(9000)
+        spec = apispec.openapi(9000)
+        self.assertEqual(index["base_url"], "http://127.0.0.1:9000")
+        # Every spec'd API endpoint appears in both documents with its method.
+        for (_m, path, _s, _q, _r, _t, _st) in apispec.ENDPOINTS:
+            self.assertIn(path, spec["paths"], path)
+            self.assertIn(_m.lower(), spec["paths"][path])
+        indexed = {e["path"] for e in index["endpoints"]}
+        self.assertEqual(indexed, {p for (_m, p, _s, _q, _r, _t, _st) in apispec.ENDPOINTS}
+                         | {"/", "/katex/{path}"})
+
+    def test_streaming_endpoint_declares_ndjson(self):
+        from rmathpy import apispec
+        spec = apispec.openapi()
+        responses = spec["paths"]["/api/agent/stream"]["post"]["responses"]
+        self.assertIn("application/x-ndjson", responses["200"]["content"])
+
+    def test_endpoint_requests_are_json_schemas(self):
+        from rmathpy import apispec
+        for (_m, path, _s, request, _r, _t, _st) in apispec.ENDPOINTS:
+            if request is None:
+                continue
+            self.assertEqual(request["type"], "object", path)
 
 
 if __name__ == "__main__":

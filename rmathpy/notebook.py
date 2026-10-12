@@ -216,6 +216,14 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/" or path == "/index.html":
             self._send(200, "text/html; charset=utf-8", index_html().encode("utf-8"))
+        elif path == "/api":
+            # The API describes itself: an agent can discover every route (and
+            # the MCP entry point) without reading this file.
+            from . import apispec
+            self._json(apispec.index(self.server.server_address[1]))
+        elif path == "/api/openapi.json":
+            from . import apispec
+            self._json(apispec.openapi(self.server.server_address[1]))
         elif path == "/api/names":
             with _KERNEL_LOCK:
                 names = get_kernel().names()

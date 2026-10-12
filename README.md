@@ -29,12 +29,15 @@ make release       # build the kernel (release)
 make notebook-bg   # start the web notebook in the background
 make stop          # stop it
 make restart       # stop + start again
+make mcp           # MCP server on stdio (for an MCP client)
 ```
 
 The notebook then runs at **http://127.0.0.1:8787** — open it and evaluate
 cells (Enter evaluates, Shift+Enter inserts a newline, ↑/↓ walk history,
 Ctrl+Space autocompletes). Inputs and outputs are typeset with LaTeX, plots
-render as SVG.
+render as SVG. The same server is a self-describing JSON API (`GET /api`), and
+`make mcp` exposes the kernel over the Model Context Protocol — see
+[HTTP API](#http-api) and [MCP server](#mcp-server-model-context-protocol).
 
 Without `make`:
 
@@ -403,7 +406,7 @@ restart that app. Note that restarting Terminal ends the current agent session.
 |---------|--------------|
 | `make build` / `make release` | build the kernel (debug / release) |
 | `make test` | unit tests + golden end-to-end suite |
-| `make py-test` | Python front-end unit tests (notebook, SVG, paths, harness, Lean translation) |
+| `make py-test` | Python front-end unit tests (notebook + API, MCP, SVG, paths, harness, Lean translation) |
 | `make check` | the fast CI set: `test` + `py-test` + `oracle` + `lean-test` |
 | `make oracle` | random + invariant correctness oracle over the algebra surface (`ORACLE="-n 200 --seed 7"` for a longer run) — independent of the kernel's own simplifier |
 | `make repl` | interactive kernel REPL (`Quit[]` or Ctrl-D exits) |
@@ -412,6 +415,8 @@ restart that app. Note that restarting Terminal ends the current agent session.
 | `make notebook` | notebook server in the foreground (Ctrl-C stops) |
 | `make notebook-bg` | notebook server detached (log: `/tmp/rmath-notebook.log`) |
 | `make stop` / `make restart` | stop / restart the server |
+| `make mcp` | MCP server on stdio (an MCP client launches it) |
+| `make mcp-http` | MCP server over Streamable HTTP (`MCP_PORT=…`, default 8790) |
 | `make app` / `make app-run` | build / build + launch the macOS app (native window) |
 | `make app-install` / `make app-uninstall` | install into `~/Applications` / remove |
 | `make app-stop` | stop the app's server |
@@ -443,12 +448,84 @@ curl -s http://127.0.0.1:8787/api/health
 curl -s -X POST http://127.0.0.1:8787/api/eval -d '{"input":"1 + 2*3"}'
 ```
 
+### HTTP API
+
+The notebook server is also the app's JSON API, and it describes itself:
+
+```bash
+curl -s http://127.0.0.1:8787/api                  # index: every route + the MCP entry point
+curl -s http://127.0.0.1:8787/api/openapi.json     # OpenAPI 3.1
+curl -s http://127.0.0.1:8787/api/names
+```
+
+The route table lives in `rmathpy/apispec.py`; a unit test keeps the discovery
+index and the OpenAPI document in step with each other. The groups:
+
+| Group | Routes |
+|-------|--------|
+| kernel | `GET /api/names`; `POST /api/eval`, `/api/reset`, `/api/split` |
+| files | `POST /api/save`, `/api/open`, `/api/save-svg`, `/api/session`, `/api/autosave` |
+| Lean | `GET /api/lean/status`; `POST /api/lean/check`, `/api/lean/verify`, `/api/lean/search`, `/api/lean/explore` |
+| harness | `GET /api/agent/status`; `POST /api/agent`, `/api/agent/stream` (NDJSON), `/api/agent/cancel`, `/api/agent/key`, `/api/agent/model` |
+
+Bodies and responses are JSON, except `POST /api/agent/stream`, which streams
+newline-delimited JSON events. The server binds to `127.0.0.1` and refuses a
+foreign `Host`/`Origin` (DNS-rebinding and cross-site protection), so a `curl`
+with no browser headers is also a health check.
+
+### MCP server (Model Context Protocol)
+
+`rmathpy/mcp.py` exposes the kernel over MCP, so an agent can do exact
+mathematics as tool calls. Standard library only, matching the rest of the
+front end:
+
+```bash
+make mcp                    # stdio — what an MCP client launches
+make mcp-http               # Streamable HTTP on 127.0.0.1:8790 (MCP_PORT=… to change)
+python3 -m rmathpy mcp      # the same as `make mcp`
+python3 -m rmathpy mcp --http --port 8790
+```
+
+A client configuration is just a command entry (the `cwd` matters when the
+kernel binary is not on `PATH`):
+
+```json
+{
+  "mcpServers": {
+    "rmath": {
+      "command": "python3",
+      "args": ["-m", "rmathpy.mcp"],
+      "cwd": "/path/to/rMath"
+    }
+  }
+}
+```
+
+| Tool | What it does |
+|------|--------------|
+| `rmath_eval` | evaluate rMath statements in one persistent session; returns the In/Out transcript, and an SVG block when the result is graphics |
+| `rmath_plot` | render a graphics expression to SVG (`width`/`height` optional) |
+| `rmath_split` | split a script into top-level statements |
+| `rmath_names` | list the symbols the kernel knows about |
+| `rmath_reset` | clear every user definition |
+| `rmath_help` | a short syntax cheat sheet, for the model to consult |
+| `rmath_lean_check` / `rmath_lean_verify` | type-check a Lean snippet / prove an rMath claim in Mathlib — advertised only when `lake` is found |
+
+The server implements the MCP lifecycle (`initialize` version negotiation,
+`notifications/initialized`, `tools/list`, `tools/call`, `ping`, `resources/list`)
+at protocol revision `2025-11-25`, echoing the client's revision when it is
+supported (down to `2024-11-05`). stdio uses newline-delimited JSON-RPC and
+writes only MCP messages to stdout; Streamable HTTP answers `POST /mcp` in JSON
+response mode and applies the same origin check as the notebook.
+
 ## Components
 
 | Path          | What it is |
 |---------------|------------|
 | `rmath/`      | Rust kernel crate (`lib` + `rmath` binary) |
-| `rmathpy/`    | Python front end: kernel client, SVG renderer, notebook server |
+| `rmathpy/`    | Python front end: kernel client, SVG renderer, notebook server, MCP server |
+| `rmathpy/mcp.py` | MCP server (stdio + Streamable HTTP) over the kernel |
+| `rmathpy/apispec.py` | HTTP API discovery index + OpenAPI 3.1 document |
 | `docs/PROTOCOL.md` | JSON-RPC stdio protocol between front end and kernel |
 | `rmath/tests/golden/` | End-to-end golden tests (`expr` / `=> expected`) |
 
@@ -464,11 +541,12 @@ rmath --version
 ### Python
 
 ```python
-from rmathpy import Kernel
+from rmathpy import Kernel, eval_svg
 
 k = Kernel()
 k.eval("1/2 + 1/3")["result"]        # "5/6"
-k.eval("Plot[Sin[x], {x, 0, 6}]")["svg"]  # rendered SVG
+
+r, svg = eval_svg(k, "Plot[Sin[x], {x, 0, 6}]")   # svg is the rendered plot
 
 k.reset()
 k.eval("x = 5; x^2")["result"]       # "25"

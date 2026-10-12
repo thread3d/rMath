@@ -12,20 +12,24 @@
 #   make notebook-bg   start it in the background
 #   make stop       stop the notebook server
 #   make restart    stop + start in the background
+#   make mcp        run the MCP server (stdio) for an MCP client
+#   make mcp-http   run the MCP server (Streamable HTTP, loopback)
 #   make clean      remove build artifacts
 
 SHELL  := /bin/bash
 ROOT   := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 CARGO  := $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
 PORT   ?= 8787
+MCP_PORT ?= 8790
 BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
 .PHONY: help build release test py-test check repl eval demo notebook notebook-bg stop restart clean \
+        mcp mcp-http \
         app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-verify demo-gen
 
 help:
-	@sed -n '2,16p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
+	@sed -n '2,18p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
 
 build:
 	cd $(ROOT)/rmath && $(CARGO) build
@@ -57,6 +61,14 @@ demo: release
 
 notebook: release
 	cd $(ROOT) && python3 -m rmathpy.notebook --port $(PORT)
+
+# MCP server for agents. `make mcp` speaks the default stdio transport (an MCP
+# client launches it); `make mcp-http` serves Streamable HTTP on loopback.
+mcp: release
+	cd $(ROOT) && python3 -m rmathpy.mcp
+
+mcp-http: release
+	cd $(ROOT) && python3 -m rmathpy.mcp --http --port $(MCP_PORT)
 
 notebook-bg: release
 	@if pgrep -f 'rmathpy.notebook' >/dev/null 2>&1; then \
