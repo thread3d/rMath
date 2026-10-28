@@ -120,3 +120,21 @@ Integrate[Cos[x], {x, 0, Pi/2}]
 => 1
 Integrate[Sin[x], {x, 0, Pi/2}]
 => 1
+
+# GCD and LCM must work on arbitrary-size integers (regression: both read
+# their arguments through a machine-sized conversion, so GCD[2^64, 2^70]
+# stayed unevaluated while every small case worked).
+GCD[2^64, 2^70]
+=> 18446744073709551616
+GCD[2^200 - 1, 2^100 - 1]
+=> 1267650600228229401496703205375
+LCM[6, 10]
+=> 30
+LCM[2^70, 3]
+=> 3541774862152233910272
+GCD[-12, 18]
+=> 6
+GCD[12.0, 18]
+=> 6
+GCD[x, 2]
+=> GCD[x, 2]

@@ -1008,14 +1008,25 @@ pub fn b_quotient(i: &mut Interp, args: &[Expr]) -> EvalRes {
     Ok(unevaluated_call(i, "Quotient", args))
 }
 
+/// The exact integer value of `e` as a BigInt — arbitrary size, unlike
+/// `expr_to_int`, so GCD and LCM do not stop at the machine word. A machine
+/// real counts only when it is integral and fits.
+fn exact_int_value(e: &Expr) -> Option<BigInt> {
+    match e {
+        Expr::Int(n) => Some(n.clone()),
+        Expr::Rat(r) if r.is_int() => Some(r.num.clone()),
+        Expr::Real(x) if x.is_finite() && x.fract() == 0.0 && x.abs() < 9.2e18 => {
+            Some(BigInt::from_i64(*x as i64))
+        }
+        _ => None,
+    }
+}
+
 pub fn b_gcd(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let mut g = BigInt::zero();
     for a in args {
-        match expr_to_int(a) {
-            Some(n) => {
-                let v = BigInt::from_i64(n).abs();
-                g = g.gcd(&v);
-            }
+        match exact_int_value(a) {
+            Some(v) => g = g.gcd(&v.abs()),
             None => return Ok(unevaluated_call(i, "GCD", args)),
         }
     }
@@ -1025,9 +1036,9 @@ pub fn b_gcd(i: &mut Interp, args: &[Expr]) -> EvalRes {
 pub fn b_lcm(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let mut l = BigInt::from_i64(1);
     for a in args {
-        match expr_to_int(a) {
-            Some(n) => {
-                let v = BigInt::from_i64(n).abs();
+        match exact_int_value(a) {
+            Some(v) => {
+                let v = v.abs();
                 if v.is_zero() {
                     return Ok(Expr::int_i64(0));
                 }
