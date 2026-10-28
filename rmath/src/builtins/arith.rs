@@ -1070,13 +1070,53 @@ pub fn b_range(i: &mut Interp, args: &[Expr]) -> EvalRes {
     }
     Ok(unevaluated_call(i, "Range", args))
 }
+/// Chop one numeric component of a complex value: a machine real close to zero
+/// becomes the exact zero, anything else is left as it is.
+fn chop_nv(n: &NumVal, tol: f64) -> NumVal {
+    match n {
+        NumVal::F(f) if f.abs() < tol => NumVal::R(Rat::new(BigInt::zero(), BigInt::one())),
+        other => other.clone(),
+    }
+}
+
+/// Replace approximate numbers that are close to zero by the exact integer 0.
+/// Threads through lists and into the arguments of any expression, the way
+/// Mathematica's Chop does; exact numbers are left alone.
+fn chop_expr(e: &Expr, tol: f64) -> Expr {
+    match e {
+        Expr::Real(x) if x.abs() < tol => Expr::int_i64(0),
+        Expr::Cnum(c) => Expr::cnum(chop_nv(&c.re, tol), chop_nv(&c.im, tol)),
+        Expr::Node(nd) => {
+            let args: Vec<Expr> = nd.args.iter().map(|a| chop_expr(a, tol)).collect();
+            if args == nd.args {
+                e.clone()
+            } else {
+                Expr::node(nd.head.clone(), args)
+            }
+        }
+        _ => e.clone(),
+    }
+}
+
 pub fn b_chop(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
+        i.message("Chop", "argr");
         return Ok(unevaluated_call(i, "Chop", args));
     }
-    match &args[0] {
-        Expr::Real(x) if x.abs() < 1e-10 => Ok(Expr::int_i64(0)),
-        Expr::Int(_) | Expr::Rat(_) => Ok(args[0].clone()),
-        _ => Ok(unevaluated_call(i, "Chop", args)),
-    }
+    let tol = match args.get(1) {
+        None => 1e-10,
+        Some(t) => match num_val(t) {
+            Some(n) => {
+                let v = nv_f64(&n);
+                if v.is_finite() && v > 0.0 {
+                    v
+                } else {
+                    i.message("Chop", "argr");
+                    return Ok(unevaluated_call(i, "Chop", args));
+                }
+            }
+            None => return Ok(unevaluated_call(i, "Chop", args)),
+        },
+    };
+    Ok(chop_expr(&args[0], tol))
 }

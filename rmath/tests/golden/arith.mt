@@ -36,3 +36,24 @@ Floor[2.7]
 # Mathematica rounds ties to the nearest even integer (Round[1/2] = 0).
 Round[1/2]
 => 0
+
+# Chop must return the argument itself, not Chop[<argument>] (regression: every
+# real that was not small enough to become 0 came back wrapped in its own
+# head, so Chop[0.1] printed as Chop[0.1] and Chop[1.0*^-7] as Chop[1.0*^-7]),
+# and it threads through lists and into arguments as Mathematica's does.
+Chop[0.1]
+=> 0.1
+Chop[0.0000001]
+=> 1.0*^-7
+Chop[1.0*^-12]
+=> 0
+Chop[{1.0*^-12, 2.5}]
+=> {0, 2.5}
+Chop[1.0*^-12 + 2.0 I]
+=> 2.0 I
+Chop[0.01, 0.1]
+=> 0
+Chop[1/10000000]
+=> 1/10000000
+Chop[x]
+=> x
