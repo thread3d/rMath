@@ -42,6 +42,87 @@ UNCHANGED_OK = {
 }
 # Deliberate demonstrations of error handling: these *should* produce messages.
 MESSAGES_OK = {"1/0", "0/0", "0*Infinity", "Infinity - Infinity"}
+# Heads that legitimately survive an example that really does evaluate, so the
+# re-spelling check below must not flag them: held forms keep their head by
+# definition, and the algebra examples rewrite the arguments of Power/Times
+# rather than replacing the call.
+HEAD_UNCHANGED_OK = {
+    "Hold", "HoldForm", "HoldComplete", "Power", "Times", "Plus", "List",
+    "Rule", "RuleDelayed", "Graphics", "SeriesData", "Complex",
+}
+
+
+def head_of(text):
+    """The head of an expression written as `Head[...]`, or None for an atom or
+    an operator expression (`x^m x^n` has no written head)."""
+    m = re.match(r"\s*([A-Za-z$][A-Za-z0-9$]*)\s*\[", text)
+    return m.group(1) if m else None
+
+
+def top_level_arity(text):
+    """How many arguments the outermost `Head[...]` has, counted at bracket
+    depth 0 (strings and escapes respected). None when the text is not a call."""
+    depth = 0
+    seen_open = False
+    in_string = False
+    escaped = False
+    count = 0
+    has_content = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            has_content = True
+        elif ch == "[":
+            depth += 1
+            seen_open = True
+        elif ch == "]":
+            depth -= 1
+        elif ch == "," and depth == 1:
+            count += 1
+        elif depth >= 1 and not ch.isspace():
+            has_content = True
+    if not seen_open or depth != 0:
+        return None
+    if count == 0 and not has_content:
+        return 0
+    return count + 1
+
+
+def is_respelling(k, expr, result):
+    """True when the result only re-spells the input: the same head applied to
+    the same number of arguments (`Sin[Pi/6]` -> `Sin[1/6 Pi]`). That is an
+    unevaluated *builtin* whose canonical printer merely reordered the call,
+    and it must be reported like `result == expr` is. A user-defined head
+    (`f[a; b]` -> `f[b]`) is the definition's own answer, not a re-spelling."""
+    h_in = head_of(expr)
+    if h_in is None or h_in in HEAD_UNCHANGED_OK:
+        return False
+    if head_of(result) != h_in:
+        return False
+    a_in, a_out = top_level_arity(expr), top_level_arity(result)
+    if a_in is None or a_in != a_out:
+        return False
+    return is_builtin(k, h_in)
+
+
+def is_builtin(k, head):
+    """Every built-in symbol is Protected, user symbols are not (unless they
+    say so). Asked once per head and remembered."""
+    if head not in _BUILTIN_CACHE:
+        r = k.eval("MemberQ[Attributes[%s], Protected]" % head)
+        _BUILTIN_CACHE[head] = (r.get("result") or "").strip() == "True"
+    return _BUILTIN_CACHE[head]
+
+
+_BUILTIN_CACHE = {}
 
 
 class Kernel:
@@ -114,6 +195,9 @@ def main():
                 problems.append((line_no, expr, "error: %s" % r.get("error", "")))
             elif result == expr.strip() and expr not in UNCHANGED_OK:
                 problems.append((line_no, expr, "unevaluated"))
+            elif result and expr not in UNCHANGED_OK and is_respelling(k, expr, result):
+                problems.append(
+                    (line_no, expr, "re-spelled, not evaluated: %s" % result[:40]))
             elif msgs and expr not in MESSAGES_OK:
                 problems.append((line_no, expr, "messages: " + "; ".join(msgs)[:60]))
         else:
