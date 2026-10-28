@@ -220,7 +220,10 @@ gitignored):
 | | |
 |---|---|
 | install | `elan` at `~/.elan`, toolchain `leanprover/lean4:v4.34.0-rc2` (pinned by `lean/lean-toolchain`, matching Mathlib), Mathlib via `lake exe cache get` |
+| install without a writable `$HOME` | elan is found at `$ELAN_BIN`, then `$ELAN_HOME/bin`, then `<repo>/.elan/bin`, then `~/.elan/bin` — on a machine whose home directory is read-only, `ELAN_HOME=$PWD/.elan` and `MATHLIB_CACHE_DIR=$PWD/.mathlib-cache` keep the ~3 GB toolchain and the ~450 MB download cache inside the repository (both gitignored) |
 | project | `RMATH_LEAN_PROJECT` overrides `lean/` |
+| toolchain | a system `lean`/`lake` of another version cannot build Mathlib at the revision `lean/lake-manifest.json` pins, so the bridge and `make lean-verify` prefer elan's shims (`lake` then runs the version `lean-toolchain` names) |
+| availability | `rmathpy.lean.available()` (and `GET /api/lean/status`, which also reports `elan` and `mathlib`) requires **`lake` and a built `Mathlib.olean`** — `lake` alone parses `import Mathlib` as an unknown module, so every check would fail |
 | tests | `make lean-test` — translation and proof-shape tests, no Lean needed; `make lean-verify` — the real battery (proved *and* rejected claims), slow since Mathlib loads per claim |
 
 **What gets verified.** `Lean.verify` translates the claim to a Lean statement

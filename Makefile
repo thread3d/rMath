@@ -24,6 +24,13 @@ MCP_PORT ?= 8790
 BIN    := $(ROOT)/rmath/target/release/rmath
 LOGFILE ?= /tmp/rmath-notebook.log
 
+# elan runs the toolchain pinned by lean/lean-toolchain. Prefer $ELAN_BIN, then
+# an installation inside the repository (the only writable place when $HOME is
+# read-only), then the conventional ~/.elan — a system-wide lean/lake of another
+# version cannot build Mathlib at the revision lake-manifest.json pins.
+ELAN_BIN_LOCAL := $(if $(ELAN_BIN),$(ELAN_BIN),$(if $(wildcard $(ROOT)/.elan/bin/lake),$(ROOT)/.elan/bin,$(HOME)/.elan/bin))
+LEAN_ENV := PATH=$(ELAN_BIN_LOCAL):$$PATH ELAN_HOME=$(dir $(ELAN_BIN_LOCAL))
+
 .PHONY: help build release test py-test check repl eval demo notebook notebook-bg stop restart clean \
         mcp mcp-http \
         app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-verify demo-gen
@@ -121,7 +128,7 @@ uitest:
 # Verify a battery of claims in Lean, including ones that must be rejected.
 # Slow (Mathlib loads per claim, ~10s each): run it deliberately, not on every build.
 lean-verify:
-	@python3 $(ROOT)/scripts/dev/lean_verify_test.py
+	@$(LEAN_ENV) python3 $(ROOT)/scripts/dev/lean_verify_test.py
 
 # Regenerate demo/demo.mt: every candidate example is executed against the
 # kernel first, and only examples that really evaluate are written out.
@@ -135,7 +142,7 @@ lean-test:
 # Benchmark the Lean bridge over the golden files and the demo: translation by
 # default (fast); `make lean-bench BENCH=--verify` also runs Lean per claim.
 lean-bench:
-	@python3 $(ROOT)/scripts/dev/lean_bench.py $(BENCH)
+	@$(LEAN_ENV) python3 $(ROOT)/scripts/dev/lean_bench.py $(BENCH)
 
 # Random + invariant correctness oracle over the algebra surface (dev only).
 # `make oracle ORACLE="-n 200 --seed 7"` for a longer run.

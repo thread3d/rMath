@@ -260,6 +260,8 @@ class Handler(BaseHTTPRequestHandler):
             from . import lean
             self._json({"available": lean.available(),
                         "lake": lean.lake(),
+                        "mathlib": lean.mathlib_olean(),
+                        "elan": lean.elan_bin(),
                         "project": lean.project_dir(),
                         "toolchain": lean.toolchain(),
                         "server_mode": lean.persistent_mode(),

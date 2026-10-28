@@ -81,31 +81,85 @@ def project_dir():
 
 
 def elan_bin():
-    return os.environ.get("ELAN_BIN") or os.path.expanduser("~/.elan/bin")
+    """The directory holding the `elan` shims (`lake`, `lean`, `leanpkg`).
+
+    elan is what makes the toolchain pinned by `lean-toolchain` the one that
+    runs, so it is preferred over a system-wide `lean`/`lake` of another
+    version. `ELAN_BIN` wins, then `ELAN_HOME/bin`, then an installation inside
+    the repository (the only place a read-only `$HOME` leaves writable), then
+    the conventional `~/.elan/bin`.
+    """
+    if os.environ.get("ELAN_BIN"):
+        return os.environ["ELAN_BIN"]
+    home = os.environ.get("ELAN_HOME")
+    if home:
+        return os.path.join(home, "bin")
+    candidates = [
+        os.path.join(os.path.dirname(project_dir()), ".elan", "bin"),
+        os.path.expanduser("~/.elan/bin"),
+    ]
+    for cand in candidates:
+        if os.path.isfile(os.path.join(cand, "lake")):
+            return cand
+    return candidates[-1]
+
+
+def lean_env():
+    """The environment for a lake/lean run: the elan shims first on PATH, and
+    ELAN_HOME pointing at the installation those shims belong to."""
+    import shutil
+
+    env = dict(os.environ)
+    bin_dir = elan_bin()
+    if os.path.isfile(os.path.join(bin_dir, "lake")):
+        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+        env.setdefault("ELAN_HOME", os.path.dirname(bin_dir))
+        # `lake exe cache get` needs somewhere to put its downloads; a read-only
+        # HOME breaks the default.
+        if "MATHLIB_CACHE_DIR" not in env:
+            cache = os.path.join(os.path.dirname(project_dir()), ".mathlib-cache")
+            if os.path.isdir(cache):
+                env["MATHLIB_CACHE_DIR"] = cache
+    del shutil
+    return env
 
 
 def lake():
+    """The lake to run: the elan shim when elan is installed (so the pinned
+    toolchain is honoured), else whatever is on PATH."""
     import shutil
 
-    found = shutil.which("lake")
-    if found:
-        return found
-    cand = os.path.join(elan_bin(), "lake")
-    return cand if os.path.isfile(cand) else None
+    shim = os.path.join(elan_bin(), "lake")
+    if os.path.isfile(shim):
+        return shim
+    return shutil.which("lake")
 
 
 def lean():
     import shutil
 
-    found = shutil.which("lean")
-    if found:
-        return found
-    cand = os.path.join(elan_bin(), "lean")
+    shim = os.path.join(elan_bin(), "lean")
+    if os.path.isfile(shim):
+        return shim
+    return shutil.which("lean")
+
+
+def mathlib_olean():
+    """The built `Mathlib.olean`, or None when Mathlib has not been built."""
+    from .paths import lean_project
+    cand = os.path.join(lean_project(), ".lake", "packages", "mathlib", ".lake",
+                        "build", "lib", "lean", "Mathlib.olean")
     return cand if os.path.isfile(cand) else None
 
 
 def available():
-    return lake() is not None
+    """Lean can actually decide a claim here: `lake` *and* a built Mathlib.
+
+    `lake` alone is not enough — a Lean installed without Mathlib parses
+    `import Mathlib` as an unknown module, so every check would fail. The
+    status endpoint reports the two separately so the panel can say why.
+    """
+    return lake() is not None and mathlib_olean() is not None
 
 
 def toolchain():
@@ -151,9 +205,7 @@ class LeanServer:
 
     # ---- plumbing
     def _env(self):
-        env = dict(os.environ)
-        env["PATH"] = elan_bin() + ":" + env.get("PATH", "")
-        return env
+        return lean_env()
 
     def start(self):
         lk = lake()
@@ -468,7 +520,8 @@ def _run_lean_once(body, code, timeout=600, filename=None):
     """One `lake env lean` process (slow: reloads Mathlib)."""
     lk = lake()
     if lk is None:
-        return {"status": "error", "error": "Lean is not installed (no lake on PATH or in ~/.elan/bin)",
+        return {"status": "error", "error": "Lean is not installed (no lake on PATH, in "
+                                            "$ELAN_HOME/bin or in ~/.elan/bin)",
                 "output": "", "diagnostics": []}
     project = project_dir()
     if not os.path.isdir(project):
@@ -483,7 +536,7 @@ def _run_lean_once(body, code, timeout=600, filename=None):
         return {"status": "error", "error": str(e), "output": "", "diagnostics": []}
     try:
         proc = subprocess.run([lk, "env", "lean", name], cwd=project, capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, timeout=timeout, env=lean_env())
         out = (proc.stdout or "") + (proc.stderr or "")
         diags = parse_diagnostics(out)
         ok = proc.returncode == 0 and not any(d["severity"] == "error" for d in diags)

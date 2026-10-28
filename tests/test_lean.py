@@ -194,3 +194,64 @@ class DiagnosticsAndAudit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolchainDiscovery(unittest.TestCase):
+    """Where the bridge looks for Lean, and when it claims to be usable.
+
+    A Lean installation without Mathlib parses `import Mathlib` as an unknown
+    module, so `lake` on PATH is not enough — the bridge used to report
+    "available" on a machine where every check failed.
+    """
+
+    def test_elan_bin_comes_from_the_environment_first(self):
+        with mock.patch.dict(os.environ, {"ELAN_BIN": "/opt/elan/bin"}, clear=False):
+            self.assertEqual(lean.elan_bin(), "/opt/elan/bin")
+        with mock.patch.dict(os.environ, {"ELAN_HOME": "/opt/elan-home"}, clear=False):
+            os.environ.pop("ELAN_BIN", None)
+            self.assertEqual(lean.elan_bin(), os.path.join("/opt/elan-home", "bin"))
+
+    def test_a_repository_local_elan_is_found(self):
+        env = {k: v for k, v in os.environ.items() if k not in ("ELAN_BIN", "ELAN_HOME")}
+        local = os.path.join(os.path.dirname(lean.project_dir()), ".elan", "bin")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("os.path.isfile", lambda p: p == os.path.join(local, "lake")):
+            self.assertEqual(lean.elan_bin(), local)
+            self.assertEqual(lean.lake(), os.path.join(local, "lake"))
+
+    def test_the_elan_shim_beats_a_system_lake(self):
+        """A system lake of another version cannot build the pinned Mathlib."""
+        with mock.patch("os.path.isfile", lambda p: p.endswith("lake")), \
+                mock.patch("shutil.which", lambda name: "/usr/local/bin/" + name):
+            self.assertNotEqual(lean.lake(), "/usr/local/bin/lake")
+
+    def test_without_elan_the_system_lake_is_used(self):
+        with mock.patch("os.path.isfile", lambda p: False), \
+                mock.patch("shutil.which", lambda name: "/usr/local/bin/" + name):
+            self.assertEqual(lean.lake(), "/usr/local/bin/lake")
+
+    def test_the_run_environment_puts_the_shims_first(self):
+        with mock.patch("os.path.isfile", lambda p: p.endswith("lake")):
+            env = lean.lean_env()
+        first = env["PATH"].split(os.pathsep)[0]
+        self.assertTrue(first.endswith(os.path.join(".elan", "bin")), first)
+        self.assertTrue(env.get("ELAN_HOME", "").endswith(".elan"), env.get("ELAN_HOME"))
+
+    def test_available_needs_mathlib_not_just_lake(self):
+        with mock.patch.object(lean, "lake", lambda: "/usr/local/bin/lake"), \
+                mock.patch.object(lean, "mathlib_olean", lambda: None):
+            self.assertFalse(lean.available())
+        with mock.patch.object(lean, "lake", lambda: "/usr/local/bin/lake"), \
+                mock.patch.object(lean, "mathlib_olean", lambda: "/x/Mathlib.olean"):
+            self.assertTrue(lean.available())
+        with mock.patch.object(lean, "lake", lambda: None), \
+                mock.patch.object(lean, "mathlib_olean", lambda: "/x/Mathlib.olean"):
+            self.assertFalse(lean.available())
+
+    def test_mathlib_olean_points_at_the_built_module(self):
+        path = os.path.join(lean.project_dir(), ".lake", "packages", "mathlib",
+                            ".lake", "build", "lib", "lean", "Mathlib.olean")
+        with mock.patch("os.path.isfile", lambda p: p == path):
+            self.assertEqual(lean.mathlib_olean(), path)
+        with mock.patch("os.path.isfile", lambda p: False):
+            self.assertIsNone(lean.mathlib_olean())

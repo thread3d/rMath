@@ -34,6 +34,11 @@ scripts/dev/screenshot
 
 # Lean/Mathlib project: keep the project files, never the multi-GB build tree
 lean/.lake/
+
+# elan toolchain and Mathlib download cache, installed inside the repository
+# when $HOME is read-only
+/.elan/
+/.mathlib-cache/
 lean/*.olean
 lean/Debug*.lean
 lean/RMathVerify.lean
