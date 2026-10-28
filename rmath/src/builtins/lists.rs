@@ -155,8 +155,19 @@ pub fn b_primeq(i: &mut Interp, args: &[Expr]) -> EvalRes {
         return Ok(unevaluated_call(i, "PrimeQ", args));
     }
     match &args[0] {
-        Expr::Int(n) => Ok(bool_e(i, is_prime_big(n))),
-        _ => Ok(bool_e(i, false)),
+        Expr::Int(n) => match is_prime_big(n) {
+            Some(p) => Ok(bool_e(i, p)),
+            // Never guess: a wrong `False` is worse than no answer, so an
+            // integer beyond the deterministic test stays unevaluated.
+            None => {
+                i.message("PrimeQ", "bigint");
+                Ok(unevaluated_call(i, "PrimeQ", args))
+            }
+        },
+        // Non-integer numbers are simply not prime (`PrimeQ[1/2]` is False).
+        Expr::Real(_) | Expr::Rat(_) | Expr::Cnum(_) | Expr::BigReal(_) => Ok(bool_e(i, false)),
+        // Anything symbolic stays unevaluated, as in Mathematica.
+        _ => Ok(unevaluated_call(i, "PrimeQ", args)),
     }
 }
 
@@ -197,14 +208,14 @@ pub fn is_prime(n: u64) -> bool {
     true
 }
 
-pub fn is_prime_big(n: &crate::bigint::BigInt) -> bool {
+/// `Some(is_prime)` when the deterministic Miller-Rabin test applies,
+/// `None` when the integer is too large for it (the caller must then leave the
+/// expression unevaluated rather than answer `False`, which would be a lie).
+pub fn is_prime_big(n: &crate::bigint::BigInt) -> Option<bool> {
     if n.sign < 0 {
-        return false;
+        return Some(false);
     }
-    match n.to_u64_pub() {
-        Some(v) => is_prime(v),
-        None => false,
-    }
+    n.to_u64_pub().map(is_prime)
 }
 
 pub fn b_prime(i: &mut Interp, args: &[Expr]) -> EvalRes {

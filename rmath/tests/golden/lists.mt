@@ -48,3 +48,21 @@ SortBy[Range[5], Identity]
 => {1, 2, 3, 4, 5}
 Position[Range[5], 5]
 => {{5}}
+
+# PrimeQ must never answer False for an integer the built-in test cannot
+# handle: it stays unevaluated (regression: every integer beyond u64 came
+# back False, so PrimeQ[2^89 - 1] denied a Mersenne prime).
+PrimeQ[97]
+=> True
+PrimeQ[2^61 - 1]
+=> True
+PrimeQ[2^89 - 1]
+=> PrimeQ[618970019642690137449562111]
+PrimeQ[10^20]
+=> PrimeQ[100000000000000000000]
+PrimeQ[x]
+=> PrimeQ[x]
+PrimeQ[1/2]
+=> False
+PrimeQ[2.5]
+=> False

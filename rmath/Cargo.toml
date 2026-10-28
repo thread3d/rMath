@@ -1,6 +1,6 @@
 [package]
 name = "rmath"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Stand-alone Mathematica-style kernel: expression engine, pattern matching, exact arithmetic, CAS builtins"
 license = "MIT"
