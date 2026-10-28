@@ -255,3 +255,51 @@ class ToolchainDiscovery(unittest.TestCase):
             self.assertEqual(lean.mathlib_olean(), path)
         with mock.patch("os.path.isfile", lambda p: False):
             self.assertIsNone(lean.mathlib_olean())
+
+
+class LeanDoctor(unittest.TestCase):
+    """`make lean-status` must name the missing piece, not just say "unavailable"."""
+
+    def test_elan_encodes_the_pinned_toolchain_path(self):
+        with mock.patch.dict(os.environ, {"ELAN_HOME": "/opt/elan"}, clear=False):
+            got = lean.toolchain_dir("leanprover/lean4:v4.34.0-rc2")
+        self.assertEqual(got, os.path.join(
+            "/opt/elan", "toolchains", "leanprover--lean4---v4.34.0-rc2"))
+
+    def test_an_empty_pin_has_no_directory(self):
+        self.assertIsNone(lean.toolchain_dir(""))
+
+    def test_the_cache_dir_follows_the_environment(self):
+        with mock.patch.dict(os.environ, {"MATHLIB_CACHE_DIR": "/opt/cache"}, clear=False):
+            self.assertEqual(lean.cache_dir(), "/opt/cache")
+
+    def test_the_hint_names_the_first_missing_piece(self):
+        with mock.patch("os.path.isfile", lambda p: False):
+            self.assertIn("elan is not installed", lean.setup_hint())
+        with mock.patch("os.path.isfile", lambda p: p.endswith("elan")), \
+                mock.patch.object(lean, "toolchain_installed", lambda: False), \
+                mock.patch.object(lean, "toolchain", lambda: "leanprover/lean4:v4.34.0-rc2"):
+            hint = lean.setup_hint()
+            self.assertIn("not installed", hint)
+            self.assertIn("v4.34.0-rc2", hint)
+            self.assertIn("make lean-setup", hint)
+        with mock.patch("os.path.isfile", lambda p: p.endswith("elan")), \
+                mock.patch.object(lean, "toolchain_installed", lambda: True), \
+                mock.patch.object(lean, "mathlib_olean", lambda: None):
+            self.assertIn("Mathlib is not built", lean.setup_hint())
+
+    def test_no_hint_when_everything_is_there(self):
+        with mock.patch("os.path.isfile", lambda p: p.endswith("elan")), \
+                mock.patch.object(lean, "toolchain_installed", lambda: True), \
+                mock.patch.object(lean, "mathlib_olean", lambda: "/x/Mathlib.olean"):
+            self.assertEqual(lean.setup_hint(), "")
+
+    def test_status_reports_both_halves_and_the_next_step(self):
+        with mock.patch.object(lean, "available", lambda: False), \
+                mock.patch.object(lean, "setup_hint", lambda: "run: make lean-setup"):
+            st = lean.status()
+        for key in ("available", "elan", "elan_version", "lake", "project", "toolchain",
+                    "toolchain_installed", "mathlib", "mathlib_cache", "next_step"):
+            self.assertIn(key, st)
+        self.assertFalse(st["available"])
+        self.assertEqual(st["next_step"], "run: make lean-setup")

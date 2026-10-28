@@ -79,8 +79,13 @@ NUMERIC = {
 
 def main():
     if not lean.available():
-        print("LEAN-VERIFY: SKIP (Lean is not installed)")
-        return 0
+        # A silent skip is how "Lean is installed" stays false for months: the
+        # suite goes green without ever checking a proof. Say what is missing
+        # and how to fix it, and let the exit status carry the bad news.
+        st = lean.status()
+        print("LEAN-VERIFY: NOT READY — %s" % (st["next_step"] or "Lean is unavailable"))
+        print("  (add --skip to run nothing and exit 0, e.g. on a machine without Lean)")
+        return 1 if "--skip" not in sys.argv else 0
     ok = bad = 0
     for lhs, rhs, want in BATTERY:
         result_form = rhs if lean.is_solve(lhs) else None

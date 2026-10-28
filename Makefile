@@ -14,6 +14,9 @@
 #   make restart    stop + start in the background
 #   make mcp        run the MCP server (stdio) for an MCP client
 #   make mcp-http   run the MCP server (Streamable HTTP, loopback)
+#   make lean-status   can this checkout verify a claim in Lean?
+#   make lean-setup    bring Lean + Mathlib into this checkout (idempotent)
+#   make lean-verify   the Lean battery (slow; needs lean-setup first)
 #   make clean      remove build artifacts
 
 SHELL  := /bin/bash
@@ -33,10 +36,10 @@ LEAN_ENV := PATH=$(ELAN_BIN_LOCAL):$$PATH ELAN_HOME=$(dir $(ELAN_BIN_LOCAL))
 
 .PHONY: help build release test py-test check repl eval demo notebook notebook-bg stop restart clean \
         mcp mcp-http \
-        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-verify demo-gen
+        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-setup lean-status lean-verify demo-gen
 
 help:
-	@sed -n '2,18p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
+	@sed -n '2,21p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
 
 build:
 	cd $(ROOT)/rmath && $(CARGO) build
@@ -125,8 +128,22 @@ report:
 uitest:
 	@bash $(ROOT)/scripts/dev/uitest.sh "$(URL)"
 
+# Bring Lean + Mathlib into this checkout (idempotent). Installs elan into
+# $(ROOT)/.elan unless ELAN_HOME says otherwise, the toolchain lean-toolchain
+# pins, the Mathlib build cache, and then builds the project.
+lean-setup:
+	@bash $(ROOT)/scripts/dev/lean_setup.sh
+
+# Can this checkout verify a claim? Reports elan, the pinned toolchain, Mathlib
+# and the cache, and names the one command that fixes a missing piece. No Lean
+# needed to run it.
+lean-status:
+	@$(LEAN_ENV) python3 $(ROOT)/scripts/dev/lean_status.py
+
 # Verify a battery of claims in Lean, including ones that must be rejected.
-# Slow (Mathlib loads per claim, ~10s each): run it deliberately, not on every build.
+# Slow (Mathlib loads per claim, ~10s each): run it deliberately, not on every
+# build. Fails with `make lean-setup` as the fix rather than skipping silently,
+# because a silent skip is how "Lean is installed" stays false for months.
 lean-verify:
 	@$(LEAN_ENV) python3 $(ROOT)/scripts/dev/lean_verify_test.py
 

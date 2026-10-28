@@ -337,6 +337,23 @@ severity-coloured diagnostics with line/column; **Verify the last cell**
 the outcome. Endpoints: `GET /api/lean/status`, `POST /api/lean/check`,
 `POST /api/lean/verify`.
 
+**Setting it up (once per checkout).** The toolchain, Mathlib and its cache are
+per-checkout state, so they are not in git; two commands manage them:
+
+```bash
+make lean-status    # what is present, and what is missing (no Lean needed)
+make lean-setup     # install whatever is missing — idempotent
+```
+
+`make lean-setup` installs `elan` into `.elan/` (unless `ELAN_HOME` says
+otherwise) with the toolchain `lean/lean-toolchain` pins, downloads the Mathlib
+build cache into `.mathlib-cache/`, runs `lake exe cache get` and `lake build`,
+then reports through `make lean-status`. All three directories are gitignored
+(~11 GB together), so a fresh clone or a `git clean -xdf` starts empty and
+`make lean-setup` puts it back. `make lean-verify` refuses to run in that state
+instead of skipping silently — a green suite that never checked a proof is the
+failure mode this exists to prevent.
+
 ### Harness integration (DeepSeek Harness)
 
 The notebook can hand work to the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
@@ -412,6 +429,9 @@ restart that app. Note that restarting Terminal ends the current agent session.
 | `make py-test` | Python front-end unit tests (notebook + API, MCP, SVG, paths, harness, Lean translation) |
 | `make check` | the fast CI set: `test` + `py-test` + `oracle` + `lean-test` |
 | `make oracle` | random + invariant correctness oracle over the algebra surface (`ORACLE="-n 200 --seed 7"` for a longer run) — independent of the kernel's own simplifier |
+| `make lean-status` | report what Lean needs and what is missing (no Lean required) |
+| `make lean-setup` | install elan + the pinned toolchain + Mathlib into this checkout (idempotent) |
+| `make lean-verify` | the Lean battery, proved *and* rejected claims (slow; needs `lean-setup`) |
 | `make repl` | interactive kernel REPL (`Quit[]` or Ctrl-D exits) |
 | `make eval E='D[Sin[x]^2, x]'` | one-shot evaluation |
 | `make demo` | evaluate `demo/demo.mt` headlessly |

@@ -170,6 +170,80 @@ def toolchain():
         return ""
 
 
+def cache_dir():
+    """Where `lake exe cache get` keeps its downloads (MATHLIB_CACHE_DIR)."""
+    return os.environ.get("MATHLIB_CACHE_DIR") or os.path.join(
+        os.path.dirname(project_dir()), ".mathlib-cache")
+
+
+def toolchain_dir(pin=None):
+    """Where elan keeps a toolchain. elan encodes the pin's path separators:
+    `leanprover/lean4:v4.34.0-rc2` lives in `leanprover--lean4---v4.34.0-rc2`."""
+    pin = (pin if pin is not None else toolchain()).strip()
+    if not pin:
+        return None
+    encoded = pin.replace("/", "--").replace(":", "---")
+    home = os.environ.get("ELAN_HOME") or os.path.dirname(elan_bin())
+    return os.path.join(home, "toolchains", encoded)
+
+
+def toolchain_installed():
+    """Is the toolchain this project pins actually downloaded?"""
+    d = toolchain_dir()
+    return d is not None and os.path.isdir(d)
+
+
+def elan_version():
+    exe = os.path.join(elan_bin(), "elan")
+    if not os.path.isfile(exe):
+        return None
+    try:
+        proc = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                              timeout=20, env=lean_env())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    first = (proc.stdout or "").strip().splitlines()
+    return first[0] if first else None
+
+
+def setup_hint():
+    """The one command that fixes an unusable Lean, or "" when it is usable."""
+    if not os.path.isfile(os.path.join(elan_bin(), "elan")):
+        return "elan is not installed here — run: make lean-setup"
+    if not toolchain_installed():
+        return "toolchain %s is not installed — run: make lean-setup" % toolchain()
+    if mathlib_olean() is None:
+        return ("Mathlib is not built — run: make lean-setup "
+                "(lake exe cache get, then lake build)")
+    return ""
+
+
+def status():
+    """Everything a Lean check needs, and what is missing when it cannot run.
+
+    `available` is the single yes/no the callers gate on; the other keys exist so
+    a person (or the app's Lean panel) can see *which* half is missing instead of
+    a bare "unavailable".
+    """
+    available_now = available()
+    return {
+        "available": available_now,
+        "elan": os.path.join(elan_bin(), "elan"),
+        "elan_bin": elan_bin(),
+        "elan_version": elan_version(),
+        "lake": lake(),
+        "project": project_dir(),
+        "toolchain": toolchain(),
+        "toolchain_installed": toolchain_installed(),
+        "mathlib": mathlib_olean(),
+        "mathlib_cache": cache_dir(),
+        "server_mode": persistent_mode(),
+        "next_step": "" if available_now else setup_hint(),
+    }
+
+
 
 # ------------------------------------------------------- persistent LSP server
 #
