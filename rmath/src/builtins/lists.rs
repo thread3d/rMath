@@ -50,36 +50,59 @@ fn cmp_chain(i: &mut Interp, args: &[Expr], ok: fn(Ordering) -> bool, name: &str
     Ok(bool_e(i, true))
 }
 
-pub fn b_equal(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    if args.len() != 2 {
-        return Ok(unevaluated_call(i, "Equal", args));
+/// Ordering of two values by numeric comparison, `Some(Equal)` when they are
+/// the very same expression, `None` when neither applies (so the caller must
+/// leave the relation unevaluated).
+fn cmp_three_way(i: &Interp, a: &Expr, b: &Expr) -> Option<Ordering> {
+    if let Some(o) = cmp_pair(i, a, b) {
+        return Some(o);
     }
-    if let Some(o) = crate::builtins::num::big_cmp(&i.t, &args[0], &args[1]) {
-        return Ok(bool_e(i, o == Ordering::Equal));
+    if same_q(a, b) {
+        return Some(Ordering::Equal);
     }
-    if let (Some(a), Some(b)) = (num_val(&args[0]), num_val(&args[1])) {
-        return Ok(bool_e(i, nv_f64(&a) == nv_f64(&b)));
-    }
-    if same_q(&args[0], &args[1]) {
-        return Ok(bool_e(i, true));
-    }
-    Ok(unevaluated_call(i, "Equal", args))
+    None
 }
 
+/// `Equal[a, b, c]` is the chain `a == b == c`, as in Mathematica.
+pub fn b_equal(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() < 2 {
+        return Ok(unevaluated_call(i, "Equal", args));
+    }
+    let mut unknown = false;
+    for w in args.windows(2) {
+        match cmp_three_way(i, &w[0], &w[1]) {
+            Some(Ordering::Equal) => {}
+            Some(_) => return Ok(bool_e(i, false)),
+            None => unknown = true,
+        }
+    }
+    if unknown {
+        Ok(unevaluated_call(i, "Equal", args))
+    } else {
+        Ok(bool_e(i, true))
+    }
+}
+
+/// `Unequal[a, b, c]` is true when the values are pairwise different.
 pub fn b_unequal(i: &mut Interp, args: &[Expr]) -> EvalRes {
-    if args.len() != 2 {
+    if args.len() < 2 {
         return Ok(unevaluated_call(i, "Unequal", args));
     }
-    if let Some(o) = crate::builtins::num::big_cmp(&i.t, &args[0], &args[1]) {
-        return Ok(bool_e(i, o != Ordering::Equal));
+    let mut unknown = false;
+    for a in 0..args.len() {
+        for b in (a + 1)..args.len() {
+            match cmp_three_way(i, &args[a], &args[b]) {
+                Some(Ordering::Equal) => return Ok(bool_e(i, false)),
+                Some(_) => {}
+                None => unknown = true,
+            }
+        }
     }
-    if let (Some(a), Some(b)) = (num_val(&args[0]), num_val(&args[1])) {
-        return Ok(bool_e(i, nv_f64(&a) != nv_f64(&b)));
+    if unknown {
+        Ok(unevaluated_call(i, "Unequal", args))
+    } else {
+        Ok(bool_e(i, true))
     }
-    if same_q(&args[0], &args[1]) {
-        return Ok(bool_e(i, false));
-    }
-    Ok(unevaluated_call(i, "Unequal", args))
 }
 
 pub fn b_not(i: &mut Interp, args: &[Expr]) -> EvalRes {

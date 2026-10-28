@@ -69,3 +69,35 @@ TeXForm[N[Gamma[21]]]
 # Unicode division/fraction slashes paste in from rendered math.
 Together[1∕x + 1∕y]
 => (x + y)/(x y)
+
+# A chained comparison is one n-ary comparison, not (a > b) > c, which used to
+# compare True with a number and stay unevaluated (regression: 3 > 2 > 1 gave
+# Greater[True, 1]). A mixed chain is the conjunction of its pairs.
+3 > 2 > 1
+=> True
+1 > 2 > 3
+=> False
+1 < 2 < 3
+=> True
+1 < 2 > 3
+=> False
+2 > 1 > 0 > -1
+=> True
+1 <= 1 <= 1
+=> True
+FullForm[Hold[1 > 2 > 3]]
+=> "Hold[Greater[1, 2, 3]]"
+a = 5; 1 > a > 3
+=> False
+
+# Equal and Unequal are n-ary: a chain of equalities, pairwise difference.
+1 == 1 == 1
+=> True
+1 == 2 == 1
+=> False
+1 != 2 != 3
+=> True
+1 != 2 != 1
+=> False
+Equal[x, y]
+=> Equal[x, y]

@@ -491,10 +491,16 @@ impl<'t> Parser<'t> {
     }
 
     // ----- L14: relations -----
+    /// `a > b > c` is one n-ary comparison, not `(a > b) > c` (which compared
+    /// `True` with a number and stayed unevaluated). Mathematica prints a
+    /// mixed chain such as `a < b > c` as `Inequality[...]`, i.e. the
+    /// conjunction of its neighbouring pairs, which is what a mixed chain
+    /// becomes here.
     fn parse_l14(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_l15()?;
+        let sys = self.t.sys;
+        let mut operands = vec![self.parse_l15()?];
+        let mut heads: Vec<usize> = Vec::new();
         loop {
-            let sys = self.t.sys;
             let head = match self.peek_kind() {
                 TokKind::EqEq => sys.equal,
                 TokKind::BangEq => sys.unequal,
@@ -507,10 +513,24 @@ impl<'t> Parser<'t> {
                 _ => break,
             };
             self.advance();
-            let rhs = self.parse_l15()?;
-            lhs = self.node(Expr::Sym(head), vec![lhs, rhs]);
+            operands.push(self.parse_l15()?);
+            heads.push(head);
         }
-        Ok(lhs)
+        if heads.is_empty() {
+            return Ok(operands.pop().unwrap());
+        }
+        if heads.windows(2).all(|w| w[0] == w[1]) {
+            let args = operands;
+            return Ok(Expr::node(Expr::Sym(heads[0]), args));
+        }
+        // Mixed chain: `a < b > c` is `a < b && b > c`.
+        let mut pairs = Vec::with_capacity(heads.len());
+        for (i, head) in heads.iter().enumerate() {
+            let a = operands[i].clone();
+            let b = operands[i + 1].clone();
+            pairs.push(Expr::node(Expr::Sym(*head), vec![a, b]));
+        }
+        Ok(Expr::node(Expr::Sym(sys.and), pairs))
     }
 
     // ----- L15: + - -----
@@ -1068,5 +1088,32 @@ mod tests {
         assert_eq!(ff("a = b /. r"), "Set[a, ReplaceAll[b, r]]");
         assert_eq!(ff("f[x_] := x /; x > 0"), "SetDelayed[f[Pattern[x, Blank[]]], Condition[x, Greater[x, 0]]]");
         assert_eq!(ff("x /. r //. r2"), "ReplaceRepeated[ReplaceAll[x, r], r2]");
+    }
+}
+#[cfg(test)]
+mod relation_chain_tests {
+    use super::*;
+    use crate::fmt::fullform;
+
+    fn ff(src: &str) -> String {
+        let mut t = SymbolTable::new();
+        match parse_input(&mut t, src) {
+            Ok(e) => fullform(&t, &e),
+            Err(e) => format!("ERROR: {}", e.msg),
+        }
+    }
+
+    #[test]
+    fn chains_are_flat() {
+        assert_eq!(ff("1 > 2 > 3"), "Greater[1, 2, 3]");
+        assert_eq!(ff("1 < 2 < 3 < 4"), "Less[1, 2, 3, 4]");
+        assert_eq!(ff("1 == 1 == 1"), "Equal[1, 1, 1]");
+        assert_eq!(ff("1 != 2 != 3"), "Unequal[1, 2, 3]");
+        // A single relation is unchanged.
+        assert_eq!(ff("1 > 2"), "Greater[1, 2]");
+        // A mixed chain is the conjunction of its neighbouring pairs.
+        assert_eq!(ff("a < b > c"), "And[Less[a, b], Greater[b, c]]");
+        // Relations still bind looser than arithmetic and tighter than &&.
+        assert_eq!(ff("1 + 1 > 2"), "Greater[Plus[1, 1], 2]");
     }
 }
