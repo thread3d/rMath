@@ -2,6 +2,8 @@
 
 import json
 import os
+import shutil
+import tempfile
 import threading
 import unittest
 import urllib.error
@@ -87,6 +89,32 @@ class WorkDir(unittest.TestCase):
             self.assertEqual(notebook.work_dir(), "/tmp/rmath-test")
             self.assertEqual(notebook.session_path(),
                              "/tmp/rmath-test/.rmath-session.json")
+
+
+class ResolveInWorkdir(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rmath-resolve-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        patcher = mock.patch.dict(os.environ, {"RMATH_WORKDIR": self.tmp})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_relative_name_resolves_inside(self):
+        got = notebook.resolve_in_workdir("notes.mt")
+        self.assertEqual(got, os.path.join(os.path.realpath(self.tmp), "notes.mt"))
+
+    def test_dotdot_and_absolute_paths_are_refused(self):
+        self.assertIsNone(notebook.resolve_in_workdir("../escape.mt"))
+        self.assertIsNone(notebook.resolve_in_workdir("/etc/hostname"))
+        self.assertIsNone(notebook.resolve_in_workdir("sub/../../escape.mt"))
+
+    def test_empty_names_are_refused(self):
+        self.assertIsNone(notebook.resolve_in_workdir(""))
+        self.assertIsNone(notebook.resolve_in_workdir(None))
+
+    def test_absolute_path_inside_is_allowed(self):
+        inside = os.path.join(self.tmp, "a.mt")
+        self.assertEqual(notebook.resolve_in_workdir(inside), inside)
 
 
 class FakeKernel:
@@ -222,6 +250,78 @@ class HttpRouting(unittest.TestCase):
             body = json.load(r)
         # An unparseable body becomes {} and evaluates the empty input.
         self.assertIn("result", body)
+
+    # ---- the file endpoints stay inside the working directory -------------
+    def _workdir(self):
+        tmp = tempfile.mkdtemp(prefix="rmath-wd-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        patcher = mock.patch.dict(os.environ, {"RMATH_WORKDIR": tmp})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return tmp
+
+    def test_save_writes_inside_the_workdir(self):
+        tmp = self._workdir()
+        _, body = self.post("/api/save", {"inputs": ["1+1"], "name": "notes.mt"})
+        self.assertEqual(body["status"], "ok")
+        with open(os.path.join(tmp, "notes.mt")) as f:
+            self.assertIn("1+1", f.read())
+
+    def test_save_default_name_lands_in_the_workdir(self):
+        tmp = self._workdir()
+        _, body = self.post("/api/save", {"inputs": ["2+2"]})
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(os.path.dirname(body["path"]), os.path.realpath(tmp))
+
+    def test_save_refuses_to_escape_the_workdir(self):
+        tmp = self._workdir()
+        _, body = self.post("/api/save",
+                            {"inputs": ["1+1"], "name": "../escape.mt"})
+        self.assertEqual(body["status"], "error")
+        self.assertIn("working directory", body["error"])
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(tmp),
+                                                    "escape.mt")))
+
+    def test_save_refuses_an_absolute_path(self):
+        self._workdir()
+        _, body = self.post("/api/save",
+                            {"inputs": ["1+1"],
+                             "name": os.path.join(tempfile.gettempdir(),
+                                                 "rmath-absolute.mt")})
+        self.assertEqual(body["status"], "error")
+        self.assertIn("working directory", body["error"])
+
+    def test_save_svg_refuses_to_escape_the_workdir(self):
+        tmp = self._workdir()
+        _, body = self.post("/api/save-svg", {"svg": "<svg/>",
+                                              "name": "../../plot.svg"})
+        self.assertEqual(body["status"], "error")
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(tmp),
+                                                    "plot.svg")))
+
+    def test_open_reads_a_script_relative_to_the_workdir(self):
+        tmp = self._workdir()
+        with open(os.path.join(tmp, "demo.mt"), "w") as f:
+            f.write("a; b\n")
+        _, body = self.post("/api/open", {"path": "demo.mt"})
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["statements"], ["a", "b"])
+
+    def test_open_accepts_an_absolute_path_inside_the_workdir(self):
+        tmp = self._workdir()
+        path = os.path.join(tmp, "sub.mt")
+        with open(path, "w") as f:
+            f.write("c\n")
+        _, body = self.post("/api/open", {"path": path})
+        self.assertEqual(body["status"], "ok")
+
+    def test_open_refuses_a_path_outside_the_workdir(self):
+        self._workdir()
+        _, body = self.post("/api/open", {"path": "/etc/hostname"})
+        self.assertEqual(body["status"], "error")
+        self.assertIn("working directory", body["error"])
+        _, body = self.post("/api/open", {"path": "../outside.mt"})
+        self.assertEqual(body["status"], "error")
 
     # ---- cross-site / DNS-rebinding guard ---------------------------------
     def test_same_origin_post_is_allowed(self):

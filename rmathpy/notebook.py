@@ -35,6 +35,32 @@ def session_path() -> str:
     return os.path.join(work_dir(), ".rmath-session.json")
 
 
+def resolve_in_workdir(name: str):
+    """The absolute path `name` denotes inside the work directory, or None when
+    it leaves it.
+
+    The API answers any local client (non-browser callers send no `Origin`, and
+    the documented `curl` examples depend on that), so a path that arrives in a
+    request body must not be able to read or write anywhere the user can. The
+    page never needs one: Open asks for a path *relative to the working
+    directory*, and Save and Save-plot name their own files.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    base = os.path.realpath(work_dir())
+    target = os.path.realpath(os.path.join(base, name))
+    try:
+        inside = os.path.commonpath([base, target]) == base
+    except ValueError:  # different drives (Windows)
+        return None
+    return target if inside else None
+
+
+def _outside_workdir(name: str) -> dict:
+    return {"status": "error",
+            "error": "path is outside the working directory: %s" % (name,)}
+
+
 def _balanced(text: str) -> bool:
     """True when brackets/braces/parens are balanced (strings respected)."""
     depth = 0
@@ -266,7 +292,13 @@ class Handler(BaseHTTPRequestHandler):
         base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "katex", "dist", "katex")
         target = os.path.normpath(os.path.join(base, rel))
-        if not target.startswith(base) or not os.path.isfile(target):
+        # commonpath, not startswith: a sibling directory named `katex-…` also
+        # starts with the base path.
+        try:
+            inside = os.path.commonpath([base, target]) == base
+        except ValueError:
+            inside = False
+        if not inside or not os.path.isfile(target):
             self._send(404, "text/plain", b"not found")
             return
         ctype = "application/javascript" if rel.endswith(".js") else (
@@ -498,7 +530,10 @@ class Handler(BaseHTTPRequestHandler):
     def api_save(self, body: dict):
         inputs = body.get("inputs") or []
         name = body.get("name") or "notebook-%s.mt" % time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(work_dir(), name)
+        path = resolve_in_workdir(name)
+        if path is None:
+            self._json(_outside_workdir(name))
+            return
         try:
             with open(path, "w") as f:
                 f.write("(* rMath notebook, saved %s *)\n\n"
@@ -510,9 +545,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"status": "error", "error": str(e)})
 
     def api_open(self, body: dict):
-        path = body.get("path", "")
-        if not os.path.isabs(path):
-            path = os.path.join(work_dir(), path)
+        path = resolve_in_workdir(body.get("path", ""))
+        if path is None:
+            self._json(_outside_workdir(body.get("path", "")))
+            return
         try:
             with open(path) as f:
                 text = f.read()
@@ -533,7 +569,10 @@ class Handler(BaseHTTPRequestHandler):
     def api_save_svg(self, body: dict):
         svg = body.get("svg") or ""
         name = body.get("name") or "plot-%s.svg" % time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(work_dir(), name)
+        path = resolve_in_workdir(name)
+        if path is None:
+            self._json(_outside_workdir(name))
+            return
         try:
             with open(path, "w") as f:
                 f.write(svg)
