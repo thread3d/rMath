@@ -383,7 +383,7 @@ pub fn message_text(tag: &str, name: &str) -> String {
         "noopen" => "cannot be opened.".to_string(),
         "nsarg" => "wrong number of arguments.".to_string(),
         "bigint" => "argument is too large for the built-in test, so the result is left unevaluated.".to_string(),
-        "meprec" => "requested precision exceeds machine precision; arbitrary-precision numbers are not implemented, so a machine-precision result is returned.".to_string(),
+        "meprec" => "the requested precision cannot be reached for this argument; the result is given at machine precision.".to_string(),
         "prec" => "the precision must be a positive integer.".to_string(),
         _ => "message.".to_string(),
     }

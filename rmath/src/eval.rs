@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.1.5 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.1.6 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
@@ -1269,6 +1269,52 @@ mod tests {
             msgs.iter().any(|m| m.contains("positive integer")),
             "{:?}",
             msgs
+        );
+    }
+}
+
+#[cfg(test)]
+mod precision_message_tests {
+    use crate::expr::Expr;
+
+    fn eval_str(src: &str) -> (String, Vec<String>) {
+        let mut i = super::Interp::new();
+        let e = crate::parser::parse_input(&mut i.t, src).unwrap();
+        let v = i.eval(&e).unwrap();
+        let text = crate::fmt::output_form(&i.t, &v);
+        let msgs = i.messages.iter().map(|(_, t)| t.clone()).collect();
+        (text, msgs)
+    }
+
+    #[test]
+    fn arbitrary_precision_works_and_stays_quiet() {
+        // N[1/3, 40] reaches 40 digits, so it must not claim anything is
+        // unimplemented (the message used to say exactly that).
+        let (text, msgs) = eval_str("N[1/3, 40]");
+        assert_eq!(text, "0.3333333333333333333333333333333333333333");
+        assert!(msgs.is_empty(), "unexpected messages: {:?}", msgs);
+        let (text, msgs) = eval_str("N[Pi, 30]");
+        // 30 significant digits: "3." plus 29 more, i.e. 31 characters.
+        assert_eq!(text.len(), 31, "expected 30 digits + '.', got {:?}", text);
+        assert!(msgs.is_empty(), "unexpected messages: {:?}", msgs);
+    }
+
+    #[test]
+    fn the_fallback_message_describes_the_fallback() {
+        // A symbolic argument cannot be evaluated to arbitrary precision; the
+        // message must say that, not that big numbers do not exist.
+        let (_, msgs) = eval_str("N[Sin[x], 40]");
+        assert_eq!(msgs.len(), 1, "expected one message, got {:?}", msgs);
+        let msg = &msgs[0];
+        assert!(
+            msg.contains("machine precision"),
+            "message should name the fallback: {:?}",
+            msg
+        );
+        assert!(
+            !msg.contains("not implemented"),
+            "arbitrary precision *is* implemented: {:?}",
+            msg
         );
     }
 }
