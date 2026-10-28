@@ -641,6 +641,14 @@ k.eval("x = 5; x^2")["result"]       # "25"
   degree 4, geometric series (finite and infinite), factorials and the Basel
   sums `Sum[1/n^2]`/`Sum[1/n^4]`; general symbolic summation and `NSum` are
   not implemented. Anything unrecognised stays unevaluated.
+- `PrimeQ` is a deterministic Miller-Rabin test over machine-sized integers;
+  a larger argument stays unevaluated with `PrimeQ::bigint` instead of being
+  answered (a wrong `False` for a large prime would be worse than no answer).
+  `Prime[n]` is tabulated up to `n = 200000`.
+- Exact trigonometric values are tabulated for multiples of `Pi`, `Pi/2`,
+  `Pi/3`, `Pi/4` and `Pi/6` (with `ComplexInfinity` where the denominator
+  vanishes); any other rational multiple, such as `Sin[Pi/5]`, stays
+  unevaluated rather than dropping to a machine approximation.
 - Up-values (`f /: g[f[x]] = ...`) parse but are not applied.
 - `Integrate` covers polynomials, `1/(a x + b)`, sums, constant factors,
   rational functions that split into distinct linear factors (via `Apart`),
@@ -674,7 +682,8 @@ rmath/src/
   builtins/     registry + arithmetic, algebra, calculus, linalg, graphics…
   fmt.rs        OutputForm / InputForm / FullForm printers
   rpc.rs        JSON-RPC stdio server
-  repl.rs/main  REPL and CLI
+  tex.rs        TeX / TraditionalForm printer used by the notebook
+  main.rs       REPL, one-shot `-e`, `--server` and the app's CLI helpers
 ```
 
 The evaluator follows Mathematica's evaluation semantics: evaluate the head,
@@ -686,7 +695,7 @@ fixpoint (bounded by `$IterationLimit`/`$RecursionLimit`).
 
 ```
 cd rmath
-cargo test            # 60 unit tests + 408 end-to-end golden cases
+cargo test            # 63 unit tests + 471 end-to-end golden cases
 ```
 
 The Rust suite also includes a deterministic **fuzz** pass (`tests/fuzz.rs`:
