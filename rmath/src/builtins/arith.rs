@@ -501,22 +501,262 @@ pub fn b_sqrt(i: &mut Interp, args: &[Expr]) -> EvalRes {
     i.eval(&half)
 }
 
-/// Some(k) when `e` is `k Pi` (or `-k Pi`) with integer k.
-fn pi_multiple(i: &Interp, pi: usize, e: &Expr) -> Option<i64> {
+/// `(num, den)` when `e` is an exact rational multiple of `Pi`, reduced with a
+/// positive denominator (`Pi` is `(1, 1)`, `Pi/6` is `(1, 6)`). An approximate
+/// coefficient (`0.5 Pi`) is not exact and returns None.
+fn pi_frac(i: &Interp, pi: usize, e: &Expr) -> Option<(i64, i64)> {
     if e.sym_id() == Some(pi) {
-        return Some(1);
+        return Some((1, 1));
     }
     let (h, args) = e.parts()?;
-    if h.is_symbol(i.t.sys.times) && args.len() == 2 {
-        let (c, rest) = if args[1].sym_id() == Some(pi) {
-            (&args[0], &args[1])
-        } else if args[0].sym_id() == Some(pi) {
-            (&args[1], &args[0])
-        } else {
-            return None;
-        };
-        let _ = rest;
-        return crate::builtins::core::expr_to_int(c);
+    if !h.is_symbol(i.t.sys.times) {
+        return None;
+    }
+    let mut coeff: Option<Rat> = None;
+    let mut seen_pi = false;
+    for a in args {
+        if a.sym_id() == Some(pi) {
+            if seen_pi {
+                return None; // Pi^2 is not a multiple of Pi
+            }
+            seen_pi = true;
+            continue;
+        }
+        match num_val(a)? {
+            NumVal::R(r) => coeff = Some(match coeff { Some(c) => c.mul(&r), None => r }),
+            NumVal::F(_) => return None,
+        }
+    }
+    if !seen_pi {
+        return None;
+    }
+    let c = coeff?;
+    let (num, den) = (c.num.to_i64()?, c.den.to_i64()?);
+    if den == 0 {
+        return None;
+    }
+    Some(reduce_frac(num, den))
+}
+
+fn gcd_i64(a: i64, b: i64) -> i64 {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a.max(1)
+}
+
+/// Reduce `(num, den)` to lowest terms with `den > 0`.
+fn reduce_frac(num: i64, den: i64) -> (i64, i64) {
+    let g = gcd_i64(num, den);
+    let (num, den) = (num / g, den / g);
+    if den < 0 {
+        (-num, -den)
+    } else {
+        (num, den)
+    }
+}
+
+/// A value the exact-value tables express exactly: the rational `a/b`, or
+/// `(a/b) Sqrt[root]` (so `Sqrt[3]/2` is `Sqrt(1, 2, 3)`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Exact {
+    Rat(i64, i64),
+    Sqrt(i64, i64, i64),
+}
+
+impl Exact {
+    fn one() -> Exact {
+        Exact::Rat(1, 1)
+    }
+    fn neg(self) -> Exact {
+        match self {
+            Exact::Rat(a, b) => Exact::Rat(-a, b),
+            Exact::Sqrt(a, b, r) => Exact::Sqrt(-a, b, r),
+        }
+    }
+}
+
+fn ex_div(a: Exact, b: Exact) -> Option<Exact> {
+    match (a, b) {
+        (Exact::Rat(p, q), Exact::Rat(r, s)) if r != 0 => Some(Exact::Rat(p * s, q * r)),
+        (Exact::Sqrt(p, q, k), Exact::Rat(r, s)) if r != 0 => Some(Exact::Sqrt(p * s, q * r, k)),
+        // 1/Sqrt[k] is Sqrt[k]/k
+        (Exact::Rat(p, q), Exact::Sqrt(r, s, k)) if r != 0 => Some(Exact::Sqrt(p * s, q * r * k, k)),
+        (Exact::Sqrt(p, q, k), Exact::Sqrt(r, s, m)) if r != 0 && k == m => {
+            Some(Exact::Rat(p * s, q * r))
+        }
+        _ => None,
+    }
+}
+
+/// Build the expression for an exact value, in the kernel's own canonical
+/// form (`1/2 Sqrt[3]` rather than `Sqrt[3]/2`).
+fn exact_expr(i: &mut Interp, v: Exact) -> Expr {
+    let rat = |a: i64, b: i64| match reduce_frac(a, b) {
+        (n, 1) => Expr::int_i64(n),
+        (n, d) => Expr::rat(Rat::new(BigInt::from_i64(n), BigInt::from_i64(d))),
+    };
+    match v {
+        Exact::Rat(a, b) => rat(a, b),
+        Exact::Sqrt(a, b, root) => {
+            let sqrt = Expr::node(
+                Expr::Sym(i.t.sys.power),
+                vec![
+                    Expr::int_i64(root),
+                    Expr::rat(Rat::new(BigInt::one(), BigInt::from_i64(2))),
+                ],
+            );
+            if a == 1 && b == 1 {
+                sqrt
+            } else {
+                Expr::node(Expr::Sym(i.t.sys.times), vec![rat(a, b), sqrt])
+            }
+        }
+    }
+}
+
+/// `sin(p Pi / q)` for a fraction in `[0, 1/2]`, the only range the table needs.
+fn sin_small(p: i64, q: i64) -> Option<Exact> {
+    Some(match (p, q) {
+        (0, _) => Exact::Rat(0, 1),
+        (1, 6) => Exact::Rat(1, 2),
+        (1, 4) => Exact::Sqrt(1, 2, 2),
+        (1, 3) => Exact::Sqrt(1, 2, 3),
+        (1, 2) => Exact::Rat(1, 1),
+        _ => return None,
+    })
+}
+
+/// `sin(k Pi / n)` for any exact rational `k/n`, by symmetry into `[0, 1/2]`.
+fn sin_pi(k: i64, n: i64) -> Option<Exact> {
+    if n <= 0 || n > i64::MAX / 4 {
+        return None;
+    }
+    let two_n = 2 * n;
+    let r = k.rem_euclid(two_n); // angle is in [0, 2 Pi)
+    let (p, neg) = if r <= n { (r, false) } else { (two_n - r, true) };
+    let (p, q) = if 2 * p <= n { (p, n) } else { (n - p, n) };
+    let (p, q) = reduce_frac(p, q);
+    let v = sin_small(p, q)?;
+    Some(if neg { v.neg() } else { v })
+}
+
+/// `cos(k Pi / n)`, using `cos(x) = sin(x + Pi/2)`.
+fn cos_pi(k: i64, n: i64) -> Option<Exact> {
+    let (k, n) = reduce_frac(k, n);
+    sin_pi(k.checked_mul(2)?.checked_add(n)?, n.checked_mul(2)?)
+}
+
+/// The exact value of an elementary function at the common special arguments,
+/// or None when the table has nothing to say (the caller then tries `f64`).
+fn exact_value(i: &mut Interp, name: &str, arg: &Expr) -> Option<Expr> {
+    let pi_id = i.t.intern("Pi");
+    let e_id = i.t.intern("E");
+    let zero = matches!(num_val(arg), Some(NumVal::R(ref r)) if r.is_zero());
+    let small_rat = match num_val(arg) {
+        Some(NumVal::R(r)) => r.num.to_i64().zip(r.den.to_i64()),
+        _ => None,
+    };
+
+    // Trigonometry and its reciprocals at an exact multiple of Pi.
+    if matches!(name, "Sin" | "Cos" | "Tan" | "Cot" | "Sec" | "Csc") {
+        if let Some((k, n)) = pi_frac(i, pi_id, arg) {
+            let s = sin_pi(k, n)?;
+            let c = cos_pi(k, n)?;
+            // A vanishing denominator is ComplexInfinity (Tan[Pi/2], Cot[0]).
+            let v = match name {
+                "Sin" => Some(s),
+                "Cos" => Some(c),
+                "Tan" => ex_div(s, c),
+                "Cot" => ex_div(c, s),
+                "Sec" => ex_div(Exact::one(), c),
+                _ => ex_div(Exact::one(), s), // Csc
+            };
+            return Some(match v {
+                Some(v) => exact_expr(i, v),
+                None => Expr::Sym(i.t.sys.complexinfinity),
+            });
+        }
+        if zero {
+            return Some(match name {
+                "Cos" | "Sec" => Expr::int_i64(1),
+                "Cot" | "Csc" => Expr::Sym(i.t.sys.complexinfinity),
+                _ => Expr::int_i64(0),
+            });
+        }
+    }
+
+    // Hyperbolics vanish at 0 (Sinh[0] must be exactly 0, not 0.).
+    if zero {
+        match name {
+            "Sinh" | "Tanh" => return Some(Expr::int_i64(0)),
+            "Cosh" => return Some(Expr::int_i64(1)),
+            _ => {}
+        }
+    }
+
+    match name {
+        "Exp" => {
+            if zero {
+                return Some(Expr::int_i64(1));
+            }
+            if small_rat == Some((1, 1)) {
+                return Some(Expr::Sym(e_id));
+            }
+            // Exp[Log[x]] = x
+            if let Some((h, a)) = arg.parts() {
+                if a.len() == 1 && h.is_symbol_named(&i.t, "Log") {
+                    return Some(a[0].clone());
+                }
+            }
+        }
+        "Log" => {
+            if zero {
+                return None; // Log[0] stays symbolic (Log[0] is -Infinity in Mathematica)
+            }
+            if small_rat == Some((1, 1)) {
+                return Some(Expr::int_i64(0));
+            }
+            if arg.is_symbol(e_id) {
+                return Some(Expr::int_i64(1));
+            }
+            if let Some((h, a)) = arg.parts() {
+                if h.is_symbol(i.t.sys.power) && a.len() == 2 && a[0].is_symbol(e_id) {
+                    return Some(a[1].clone());
+                }
+            }
+        }
+        // Inverse trigonometric functions at 0, +/-1 and +/-1/2.
+        "ArcSin" | "ArcCos" | "ArcTan" => {
+            let angle = match (name, small_rat) {
+                ("ArcSin", Some((0, 1))) | ("ArcTan", Some((0, 1))) => Some(Exact::Rat(0, 1)),
+                ("ArcSin", Some((1, 1))) => Some(Exact::Rat(1, 2)),
+                ("ArcSin", Some((-1, 1))) => Some(Exact::Rat(-1, 2)),
+                ("ArcSin", Some((1, 2))) => Some(Exact::Rat(1, 6)),
+                ("ArcCos", Some((1, 1))) => Some(Exact::Rat(0, 1)),
+                ("ArcCos", Some((0, 1))) => Some(Exact::Rat(1, 2)),
+                ("ArcCos", Some((-1, 1))) => Some(Exact::Rat(1, 1)),
+                ("ArcCos", Some((1, 2))) => Some(Exact::Rat(1, 3)),
+                ("ArcTan", Some((1, 1))) => Some(Exact::Rat(1, 4)),
+                ("ArcTan", Some((-1, 1))) => Some(Exact::Rat(-1, 4)),
+                _ => None,
+            };
+            if let Some(Exact::Rat(p, q)) = angle {
+                let arg_expr = match (p, q) {
+                    (0, _) => Expr::int_i64(0),
+                    (1, 1) => Expr::Sym(pi_id),
+                    (n, d) => Expr::node(
+                        Expr::Sym(i.t.sys.times),
+                        vec![exact_expr(i, Exact::Rat(n, d)), Expr::Sym(pi_id)],
+                    ),
+                };
+                return Some(arg_expr);
+            }
+        }
+        _ => {}
     }
     None
 }
@@ -528,47 +768,8 @@ fn num1(i: &mut Interp, args: &[Expr], f: fn(f64) -> f64, name: &str) -> EvalRes
         i.message(name, "argr");
         return Ok(unevaluated_call(i, name, args));
     }
-    // Exact special values, including integer multiples of Pi: Sin[Pi] = 0,
-    // Cos[Pi] = -1, which definite integrals over [0, Pi] rely on.
-    let pi_id = i.t.intern("Pi");
-    if let Some(k) = pi_multiple(i, pi_id, &args[0]) {
-        if name == "Sin" || name == "Tan" {
-            return Ok(Expr::int_i64(0));
-        }
-        if name == "Cos" {
-            return Ok(Expr::int_i64(if k % 2 == 0 { 1 } else { -1 }));
-        }
-    }
-    match name {
-        "Sin" | "Cos" | "Tan" | "Cot" | "Csc" | "Sec" => {
-            if args[0].to_i64_pub() == Some(0) {
-                let v = match name {
-                    "Sin" | "Tan" | "Cot" | "Csc" => 0,
-                    _ => 1,
-                };
-                return Ok(Expr::int_i64(v));
-            }
-        }
-        "Exp" => {
-            if args[0].to_i64_pub() == Some(0) {
-                return Ok(Expr::int_i64(1));
-            }
-        }
-        "Log" => {
-            if args[0].to_i64_pub() == Some(1) {
-                return Ok(Expr::int_i64(0));
-            }
-            // Log[E] = 1 (and Log[E^n] = n)
-            if args[0].is_symbol(i.t.intern("E")) {
-                return Ok(Expr::int_i64(1));
-            }
-            if let Some((h, a)) = args[0].parts() {
-                if h.is_symbol(i.t.sys.power) && a.len() == 2 && a[0].is_symbol(i.t.intern("E")) {
-                    return Ok(a[1].clone());
-                }
-            }
-        }
-        _ => {}
+    if let Some(v) = exact_value(i, name, &args[0]) {
+        return Ok(v);
     }
     if let Some(n) = num_val(&args[0]) {
         let x = nv_f64(&n);

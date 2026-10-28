@@ -57,3 +57,66 @@ Chop[1/10000000]
 => 1/10000000
 Chop[x]
 => x
+
+# Exact values at multiples of Pi/6, Pi/4, Pi/3 and Pi/2 (regression: only
+# integer multiples of Pi were exact, so Sin[Pi/6] stayed Sin[1/6 Pi] and
+# definite integrals over [0, Pi/2] did not close).
+Sin[Pi/6]
+=> 1/2
+Cos[Pi/3]
+=> 1/2
+Sin[Pi/4]
+=> 1/2 Sqrt[2]
+Tan[Pi/4]
+=> 1
+Cot[Pi/4]
+=> 1
+Csc[Pi/2]
+=> 1
+Sec[Pi/3]
+=> 2
+Sin[Pi/2]
+=> 1
+Cos[Pi/2]
+=> 0
+Sin[5 Pi/6]
+=> 1/2
+Sin[-Pi/6]
+=> -1/2
+Cos[2 Pi/3]
+=> -1/2
+Tan[Pi/3]
+=> Sqrt[3]
+Sin[Pi]
+=> 0
+Cos[Pi]
+=> -1
+Tan[Pi/2]
+=> ComplexInfinity
+Cot[0]
+=> ComplexInfinity
+Sin[Pi/5]
+=> Sin[1/5 Pi]
+
+# Exact values outside trigonometry: 0 and 1 of the hyperbolics, the
+# inverse functions at 0/+/-1/+/-1/2, Exp[1] = E.
+Exp[1]
+=> E
+Exp[Log[x]]
+=> x
+Sinh[0]
+=> 0
+Cosh[0]
+=> 1
+ArcSin[1]
+=> 1/2 Pi
+ArcSin[1/2]
+=> 1/6 Pi
+ArcCos[1]
+=> 0
+ArcTan[1]
+=> 1/4 Pi
+Integrate[Cos[x], {x, 0, Pi/2}]
+=> 1
+Integrate[Sin[x], {x, 0, Pi/2}]
+=> 1
