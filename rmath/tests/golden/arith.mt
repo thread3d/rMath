@@ -211,3 +211,17 @@ IntegerDigits[10^20] // Length
 => 21
 IntegerDigits[-5]
 => IntegerDigits[-5]
+
+# FactorInteger was missing. Trial division to 10^5, then the cofactor is accepted
+# only when it is provably prime at the built-in test's size — a larger composite
+# leaves the call unevaluated rather than reporting it as prime.
+FactorInteger[12]
+=> {{2, 2}, {3, 1}}
+FactorInteger[2^10]
+=> {{2, 10}}
+FactorInteger[1]
+=> {{1, 1}}
+FactorInteger[-12]
+=> {{-1, 1}, {2, 2}, {3, 1}}
+FactorInteger[97]
+=> {{97, 1}}

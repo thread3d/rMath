@@ -1473,3 +1473,78 @@ pub fn b_integerdigits(i: &mut Interp, args: &[Expr]) -> EvalRes {
     digits.reverse();
     Ok(Expr::node(Expr::Sym(i.t.sys.list), digits))
 }
+
+/// `FactorInteger[n]`: the prime factorisation as `{{p, e}, ...}`, ascending.
+///
+/// Trial division up to 10^5, then the cofactor is accepted only when it is 1 or a
+/// prime of a size the built-in test can decide (`is_prime_big`). Anything else
+/// leaves the call unevaluated rather than reporting a composite as prime.
+pub fn b_factorinteger(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() != 1 {
+        i.message("FactorInteger", "argr");
+        return Ok(unevaluated_call(i, "FactorInteger", args));
+    }
+    let n = match &args[0] {
+        Expr::Int(n) => n.clone(),
+        Expr::Rat(r) if r.is_int() => r.num.clone(),
+        _ => return Ok(unevaluated_call(i, "FactorInteger", args)),
+    };
+    let negative = n.sign < 0;
+    let mut rem = n.abs();
+    if rem.is_zero() {
+        return Ok(unevaluated_call(i, "FactorInteger", args));
+    }
+    if rem.cmp(&BigInt::one()) == std::cmp::Ordering::Equal {
+        // Mathematica: FactorInteger[1] is {{1, 1}}.
+        let pair = Expr::node(
+            Expr::Sym(i.t.sys.list),
+            vec![Expr::int_i64(1), Expr::int_i64(1)],
+        );
+        return Ok(Expr::node(Expr::Sym(i.t.sys.list), vec![pair]));
+    }
+    let limit = 100_000i64;
+    let mut factors: Vec<(BigInt, i64)> = Vec::new();
+    let mut p = 2i64;
+    while p <= limit {
+        let pb = BigInt::from_i64(p);
+        let mut count = 0i64;
+        loop {
+            let (q, r) = rem.div_rem(&pb);
+            if !r.is_zero() {
+                break;
+            }
+            rem = q;
+            count += 1;
+        }
+        if count > 0 {
+            factors.push((pb, count));
+        }
+        if rem.cmp(&BigInt::one()) == std::cmp::Ordering::Equal {
+            break;
+        }
+        p = if p == 2 { 3 } else { p + 2 };
+    }
+    if rem.cmp(&BigInt::one()) != std::cmp::Ordering::Equal {
+        match crate::builtins::lists::is_prime_big(&rem) {
+            Some(true) => factors.push((rem, 1)),
+            _ => {
+                i.message("FactorInteger", "bigint");
+                return Ok(unevaluated_call(i, "FactorInteger", args));
+            }
+        }
+    }
+    let mut items: Vec<Expr> = Vec::new();
+    if negative {
+        items.push(Expr::node(
+            Expr::Sym(i.t.sys.list),
+            vec![Expr::int_i64(-1), Expr::int_i64(1)],
+        ));
+    }
+    for (f, e) in factors {
+        items.push(Expr::node(
+            Expr::Sym(i.t.sys.list),
+            vec![Expr::Int(f), Expr::int_i64(e)],
+        ));
+    }
+    Ok(Expr::node(Expr::Sym(i.t.sys.list), items))
+}

@@ -633,7 +633,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `Range`, `Nest`, `NestList`, `Fold`, `FixedPoint`, `Sow`/`Reap`, plus
   `Array`, `ConstantArray`, `Partition`, `Accumulate`, `Differences`,
   `Ordering`, `TakeWhile`, `DeleteCases`, `Riffle`.
-- **Numbers/predicates**: `Max`, `Min`, `Binomial`, `IntegerDigits`, `PrimeQ`, `Prime`, `EvenQ`, `OddQ`, `NumberQ`,
+- **Numbers/predicates**: `Max`, `Min`, `Binomial`, `IntegerDigits`, `FactorInteger`
+  (trial division to 10^5, plus a provably-prime cofactor; a larger composite stays
+  unevaluated rather than being reported as prime), `PrimeQ`, `Prime`, `EvenQ`, `OddQ`, `NumberQ`,
   `NumericQ`, `AtomQ`, `Head`, `Length`, `MatchQ`, `FreeQ`, `MemberQ`,
   `SameQ`, `Equal`, ordering relations, `Abs`, `Sign`, `Floor`, `Ceiling`,
   `Round`, `Mod`, `Quotient`, `GCD`, `LCM`, `Re`, `Im`, `Conjugate`,
