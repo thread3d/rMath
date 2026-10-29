@@ -66,3 +66,12 @@ PrimeQ[1/2]
 => False
 PrimeQ[2.5]
 => False
+
+# ListPlot takes coordinates as well as bare y-values (regression: a list of
+# {x, y} pairs produced a Graphics with no primitives at all).
+ListPlot[{{1, 2}, {3, 4}}]
+=> -Graphics-
+ListPlot[{{1, 2}, {3, 4}}, Joined -> True]
+=> -Graphics-
+ListPlot[{1, 3, 2}]
+=> -Graphics-

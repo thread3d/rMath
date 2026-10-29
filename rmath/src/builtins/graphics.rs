@@ -226,6 +226,19 @@ pub fn b_listplot(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let joined = matches!(opt_value(&opts, "Joined"), Some(Expr::Sym(id)) if *id == i.t.sys.r#true);
     let mut pts: Vec<(f64, f64)> = Vec::new();
     for (k, e) in data.node_args().iter().enumerate() {
+        // `{{x1, y1}, ...}` gives the points directly; a flat list `{y1, ...}` is
+        // plotted against its index. Only the flat form was handled, so a list of
+        // pairs produced a Graphics with no primitives at all.
+        if let Some((h, pair)) = e.parts() {
+            if h.is_symbol(i.t.sys.list) && pair.len() == 2 {
+                let xv = real_val(i, &pair[0])?;
+                let yv = real_val(i, &pair[1])?;
+                if let (Some(x), Some(y)) = (xv, yv) {
+                    pts.push((x, y));
+                    continue;
+                }
+            }
+        }
         let y: f64 = match e {
             Expr::Int(n) => n.to_f64(),
             Expr::Rat(r) => r.to_f64(),
