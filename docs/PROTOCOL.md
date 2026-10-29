@@ -59,3 +59,24 @@ JSON** on stdin/stdout (one request per line, one response per line).
 - The kernel runs on a 512 MiB stack; deep recursion raises
   `$RecursionLimit::reclim` (an error response) rather than crashing.
 - `reset` restores a pristine kernel (clears all user definitions).
+
+## Evaluation limit
+
+Each `eval` carries a wall-clock limit, because one runaway cell would otherwise
+block the server forever — the notebook holds its kernel lock across an
+evaluation, so the page, the Lean panel and the harness panel would all wait.
+
+```json
+{"id": 7, "op": "eval", "input": "Do[Null, {10^9}]", "timeout": 2.5}
+```
+
+- Default 60 s. `RMATH_EVAL_TIMEOUT` (seconds, in the environment) changes it for
+  every request, and a per-request `"timeout"` overrides that. `0` disables it.
+- When the limit is reached the evaluation is aborted, the response carries
+  `"result": "$Aborted"` with a message naming the limit, and **the session
+  survives**: the definitions made before the runaway cell are still there, and
+  the next request evaluates normally. A deadline is never carried over to the
+  next request.
+- A loop that swallows the abort is a bug, not a feature: `Do` used to end
+  silently and answer `Null` as if it had finished. `Break` and `Continue` still
+  end their loop, but an abort propagates to the response.
