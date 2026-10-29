@@ -680,14 +680,16 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `x^n Sin/Cos/Exp` and `x^n Log[x]` by parts, the arc-tangent/arc-sine forms
   of `1/quadratic`, any power `Sin[u]^n`/`Cos[u]^n` of a linear argument (by the
   reduction formula, so `Integrate[Sin[x]^2, x]` and `Integrate[Cos[x]^4, x]`
-  work), the elementary functions with linear arguments, and the special cases
+  work), the elementary functions with linear arguments, rational functions
+  with a single irreducible quadratic factor (`Integrate[1/(x^3 + x), x]` →
+  `Log[x] - 1/2 Log[1 + x^2]`, via `Apart`), and the special cases
   `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`,
-  `Exp[-x^2]` (trigonometric substitution, repeated-factor partial fractions,
-  irreducible quadratics and products of different trig powers are not
-  implemented, so `Integrate[1/(x^3 + x), x]` and
-  `Integrate[Sin[x]^2 Cos[x]^3, x]` stay unevaluated; a trig-power
-  antiderivative is also not yet Lean-checked, because closing it needs the
-  Pythagorean identity in the derivative tactic chain).
+  `Exp[-x^2]` (trigonometric substitution, repeated-factor partial fractions
+  and products of different trig powers are not implemented, so
+  `Integrate[1/x^2/(1 + x), x]` and `Integrate[Sin[x]^2 Cos[x]^3, x]` stay
+  unevaluated; a trig-power antiderivative is also not yet Lean-checked,
+  because closing it needs the Pythagorean identity in the derivative tactic
+  chain).
 - Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
   `SinhIntegral`, `CoshIntegral`, `ExpIntegralEi`, `LogIntegral`, `Sinc`
   (machine-precision numeric evaluation, exact values at 0/±Infinity, and

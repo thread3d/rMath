@@ -78,8 +78,16 @@ Integrate[3 x^2 + 2 x + 1, x]
 # "Infinite expression encountered").
 Integrate[Exp[-x^2] Cos[x]^2, {x, -Infinity, Infinity}]
 => Integrate[Exp[-x^2] Cos[x]^2, {x, -Infinity, Infinity}]
+# Rational functions with an irreducible quadratic factor: Apart now carries a
+# (B x + C)/(x^2 + 1) term and Integrate follows it to Log/ArcTan.
+Apart[1/(x^3 + x), x]
+=> -x/(1 + x^2) + 1/x
 Integrate[1/(x^3 + x), x]
-=> Integrate[1/(x + x^3), x]
+=> Log[x] - 1/2 Log[1 + x^2]
+Integrate[(x + 1)/(x^3 + x), x]
+=> ArcTan[x] + Log[x] - 1/2 Log[1 + x^2]
+Integrate[1/(x (x^2 + 4)), x]
+=> -1/8 Log[4 + x^2] + 1/4 Log[x]
 # Exact values at integer multiples of Pi, which definite integrals rely on.
 Sin[Pi]
 => 0

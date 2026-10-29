@@ -525,6 +525,10 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
         i.step("arc form", &v);
         return Ok(v);
     }
+    if let Some(v) = linear_over_quadratic_antiderivative(i, e, var)? {
+        i.step("linear over quadratic", &v);
+        return Ok(v);
+    }
     if let Some((h, args)) = e.parts() {
         // Constant factor.
         if h.is_symbol(sys.times) {
@@ -540,18 +544,18 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
                     });
                 }
             }
-            let Some(rest) = rest else {
-                return Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]));
-            };
             // Without a factor free of the variable there is nothing to pull
-            // out: recursing here would loop on the same product forever
-            // (e.g. Integrate[Sin[x]/x, x]).
-            if consts.is_empty() || same_q(&rest, e) {
-                return Ok(unevaluated_call(i, "Integrate", &[e.clone(), var.clone()]));
+            // out; fall through instead of stopping here, so a product that is
+            // really a rational function still reaches the partial-fraction
+            // rule below. Recursing on the same product would loop
+            // (e.g. Integrate[Sin[x]/x, x]), and `same_q` guards that.
+            if let Some(rest) = rest {
+                if !consts.is_empty() && !same_q(&rest, e) {
+                    let c = eval_call(i, Expr::Sym(sys.times), consts)?;
+                    let inner = integrate_rec(i, &rest, var, depth + 1)?;
+                    return eval_call(i, Expr::Sym(sys.times), vec![c, inner]);
+                }
             }
-            let c = eval_call(i, Expr::Sym(sys.times), consts)?;
-            let inner = integrate_rec(i, &rest, var, depth + 1)?;
-            return eval_call(i, Expr::Sym(sys.times), vec![c, inner]);
         }
         // x^a for any exponent a free of x (x^n, Sqrt[x], 1/x, ...), plus
         // 1/(b + a x). The old code forced every exponent through
@@ -811,6 +815,73 @@ fn trig_power_antiderivative(
     // the shape a reader expects (3/8 x + 3/8 Cos[x] Sin[x] + ...).
     let expanded = app(i, "Expand", &res);
     Ok(Some(i.eval(&expanded)?))
+}
+
+/// `(b x + c)/(c0 + c2 x^2) -> b/(2 c2) Log[c0 + c2 x^2] + c/sqrt(c0 c2) ArcTan[x sqrt(c2/c0)]`
+/// — how a rational function with an irreducible quadratic factor integrates,
+/// after `Apart` has split it (`Integrate[1/(x^3 + x), x]`).
+fn linear_over_quadratic_antiderivative(
+    i: &mut Interp,
+    e: &Expr,
+    var: &Expr,
+) -> Result<Option<Expr>, Flow> {
+    let (num_e, den_e) = crate::builtins::poly::together_parts(i, e)?;
+    let Some(den) = crate::builtins::poly::poly_coeffs(i, &den_e, var)? else {
+        return Ok(None);
+    };
+    if den.len() != 3 || !den[1].is_zero() {
+        return Ok(None);
+    }
+    let (c0, c2) = (den[0].clone(), den[2].clone());
+    if c0.is_zero() || c2.is_zero() {
+        return Ok(None);
+    }
+    let Some(num) = crate::builtins::poly::poly_coeffs(i, &num_e, var)? else {
+        return Ok(None);
+    };
+    if num.len() > 2 {
+        return Ok(None);
+    }
+    let zero = Rat::from_i64(0);
+    let c = num.first().cloned().unwrap_or_else(|| zero.clone());
+    let b = num.get(1).cloned().unwrap_or_else(|| zero.clone());
+    if c.is_zero() && b.is_zero() {
+        return Ok(None);
+    }
+    let mut terms: Vec<Expr> = Vec::new();
+    // The logarithmic part exists whenever the linear coefficient does.
+    if !b.is_zero() {
+        let coef = b.div(&Rat::from_i64(2).mul(&c2));
+        let den_expr = crate::builtins::poly::coeffs_to_expr(i, &den, var)?;
+        let log = app(i, "Log", &den_expr);
+        terms.push(eval_call(
+            i,
+            Expr::Sym(i.t.sys.times),
+            vec![Expr::rat(coef), log],
+        )?);
+    }
+    // The arc-tangent part needs a positive quadratic form.
+    if !c.is_zero() && !c0.is_neg() && !c2.is_neg() {
+        let den_sqrt = rat_sqrt_expr(i, &c0.mul(&c2))?;
+        let ratio_sqrt = rat_sqrt_expr(i, &c2.div(&c0))?;
+        let arg = eval_call(i, Expr::Sym(i.t.sys.times), vec![var.clone(), ratio_sqrt])?;
+        let atan = app(i, "ArcTan", &arg);
+        let scale = eval_call(
+            i,
+            Expr::Sym(i.t.sys.times),
+            vec![Expr::rat(c), Expr::node(Expr::Sym(i.t.sys.power), vec![den_sqrt, Expr::int_i64(-1)])],
+        )?;
+        terms.push(eval_call(i, Expr::Sym(i.t.sys.times), vec![scale, atan])?);
+    }
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    let out = if terms.len() == 1 {
+        terms.pop().unwrap()
+    } else {
+        Expr::node(Expr::Sym(i.t.sys.plus), terms)
+    };
+    Ok(Some(i.eval(&out)?))
 }
 
 /// `1/(c0 + c2 x^2) -> ArcTan`, and `1/Sqrt[c0 - a x^2] -> ArcSin`.

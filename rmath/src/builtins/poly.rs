@@ -792,7 +792,12 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
         return Ok(None);
     };
     let (roots, leftover) = split_linear_factors(den.clone());
-    if leftover.len() > 1 || roots.is_empty() || roots.iter().any(|(_, m)| *m != 1) {
+    // A degree-3 leftover is a quadratic with no rational root — irreducible over
+    // the rationals, so it can carry a (B x + C) numerator of its own. Degree 2
+    // means an irrational linear factor, which this does not model.
+    let quadratic = leftover.len() == 3;
+    if (leftover.len() > 1 && !quadratic) || roots.is_empty() || roots.iter().any(|(_, m)| *m != 1)
+    {
         return Ok(None);
     }
     let dprime = poly_deriv(&den);
@@ -819,6 +824,34 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
             ],
         );
         terms.push(i.eval(&term)?);
+    }
+    if quadratic {
+        // rem = Σ A_i · den/(x - r_i) + (B x + C) · L, where L is the product of
+        // the linear factors; divide by L to read off B and C.
+        let mut residual = rem.clone();
+        for (r, _) in &roots {
+            let a = horner(&rem, r).div(&horner(&dprime, r));
+            let cofactor = synth_div(&den, r);
+            residual = poly_sub(&residual, &poly_scale(&cofactor, &a));
+        }
+        let Some((lin_part, _)) = poly_div(&den, &leftover) else {
+            return Ok(None);
+        };
+        let Some((bc, _)) = poly_div(&residual, &lin_part) else {
+            return Ok(None);
+        };
+        if !bc.iter().all(|c| c.is_zero()) {
+            let num_expr = coeffs_to_expr(i, &bc, var)?;
+            let den_expr = coeffs_to_expr(i, &leftover, var)?;
+            let term = Expr::node(
+                Expr::Sym(i.t.sys.times),
+                vec![
+                    num_expr,
+                    Expr::node(Expr::Sym(i.t.sys.power), vec![den_expr, Expr::int_i64(-1)]),
+                ],
+            );
+            terms.push(i.eval(&term)?);
+        }
     }
     if terms.is_empty() {
         return Ok(Some(Expr::int_i64(0)));
@@ -850,6 +883,21 @@ pub fn b_apart(i: &mut Interp, args: &[Expr]) -> EvalRes {
 
 /// Long division of Rat-coefficient polynomials (lowest-first lists).
 /// Long division of Rat-coefficient polynomials (lowest-first lists).
+fn poly_scale(a: &[Rat], s: &Rat) -> Vec<Rat> {
+    a.iter().map(|c| c.mul(s)).collect()
+}
+
+fn poly_sub(a: &[Rat], b: &[Rat]) -> Vec<Rat> {
+    let n = a.len().max(b.len());
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = a.get(i).cloned().unwrap_or_else(|| Rat::from_i64(0));
+        let y = b.get(i).cloned().unwrap_or_else(|| Rat::from_i64(0));
+        out.push(x.sub(&y));
+    }
+    out
+}
+
 pub fn poly_div(a: &[Rat], b: &[Rat]) -> Option<(Vec<Rat>, Vec<Rat>)> {
     let bn = b.iter().rposition(|c| !c.is_zero())? + 1;
     let b_lead = b[bn - 1].clone();
