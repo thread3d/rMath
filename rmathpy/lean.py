@@ -21,6 +21,7 @@ import re
 import subprocess
 import threading
 import time
+from fractions import Fraction
 
 # Functions whose rMath name maps to a Lean name. Names not listed are treated
 # as free variables (or, for known constants, as Lean constants).
@@ -687,6 +688,88 @@ def _rmath_to_python(text):
     return "".join(out)
 
 
+def _int_literal(node):
+    """The Python int a numeral-only AST evaluates to, or None."""
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int) and not isinstance(node.value, bool):
+            return node.value
+        return None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        v = _int_literal(node.operand)
+        return None if v is None else -v
+    if isinstance(node, ast.BinOp):
+        a, b = _int_literal(node.left), _int_literal(node.right)
+        if a is None or b is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return a + b
+        if isinstance(node.op, ast.Sub):
+            return a - b
+        if isinstance(node.op, ast.Mult):
+            return a * b
+        if isinstance(node.op, ast.Pow) and 0 <= b <= 4096:
+            return a ** b
+    return None
+
+
+def _num_literal(node):
+    """The exact Fraction a numeral-only AST evaluates to, or None.
+
+    Machine reals are refused: a float has no faithful exact counterpart, which
+    is the same reason `N[...]` is refused.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int) and not isinstance(node.value, bool):
+            return Fraction(node.value)
+        return None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        v = _num_literal(node.operand)
+        return None if v is None else -v
+    if isinstance(node, ast.BinOp):
+        a, b = _num_literal(node.left), _num_literal(node.right)
+        if a is None or b is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return a + b
+        if isinstance(node.op, ast.Sub):
+            return a - b
+        if isinstance(node.op, ast.Mult):
+            return a * b
+        if isinstance(node.op, ast.Div) and b != 0:
+            return a / b
+        if (isinstance(node.op, ast.Pow) and b.denominator == 1
+                and 0 <= b.numerator <= 64):
+            return a ** int(b)
+    return None
+
+
+def _range_items(vals):
+    """The elements of a numeric `Range[...]` as Fractions ([] when absurd)."""
+    if len(vals) == 1:
+        start, stop, step = Fraction(1), vals[0], Fraction(1)
+    elif len(vals) == 2:
+        start, stop, step = vals[0], vals[1], Fraction(1)
+    else:
+        start, stop, step = vals[0], vals[1], vals[2]
+    if step == 0:
+        return []
+    out = []
+    v = start
+    while (step > 0 and v <= stop) or (step < 0 and v >= stop):
+        if len(out) >= 4096:
+            return []
+        out.append(v)
+        v += step
+    return out
+
+
+def _literal_text(v, ty):
+    """`7` for an integer, `1/4` for a fraction — Lean reads it in the list's type."""
+    if v.denominator == 1:
+        return "%d" % v.numerator
+    return "(%d/%d)" % (v.numerator, v.denominator)
+
+
 class Translator:
     """rMath text -> (Lean expression, type, free variables)."""
 
@@ -699,6 +782,11 @@ class Translator:
         # a bare `1/2` to ℕ (where 1/2 = 0 and false claims become provable).
         self.ascribe = ascribe
         self.ty = ty
+        # `Length[...]`/`GCD[...]` are ℕ-valued, and `PrimeQ[...]` is a
+        # proposition — the claim `PrimeQ[97] = True` is `Nat.Prime 97`, not an
+        # equation between numbers.
+        self.nat = False
+        self.prop = False
 
     def _num(self, text, natural=False):
         if not self.ascribe or not self.ty:
@@ -772,6 +860,11 @@ class Translator:
         if isinstance(node, ast.BoolOp):
             op = " ∧ " if isinstance(node.op, ast.And) else " ∨ "
             return "(" + op.join("(%s)" % self.expr(v) for v in node.values) + ")"
+        if isinstance(node, ast.Tuple):
+            # rMath lists `{a, b, c}`; the ambient type carries the element type.
+            ty = self.ty or ("ℝ" if self.real else "ℚ")
+            items = ", ".join(self.expr(e) for e in node.elts)
+            return "([%s] : List %s)" % (items, ty)
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
                 raise ValueError("unsupported call")
@@ -791,6 +884,38 @@ class Translator:
                 # A negative radicand is a genuine complex square root; keep it
                 # in ℂ rather than letting ℝ collapse it to 0.
                 return "Complex.sqrt (%s)" % self.expr(node.args[0])
+            if fname == "GCD" and node.args:
+                # GCD is ℕ-valued; negatives are folded in by absolute value,
+                # which is what Mathematica's GCD does too.
+                vals = [_int_literal(a) for a in node.args]
+                if any(v is None for v in vals):
+                    raise ValueError("GCD is translated only for integer literals")
+                self.nat = True
+                g = "%d" % abs(vals[0])
+                for v in vals[1:]:
+                    g = "Nat.gcd %s (%d)" % (g, abs(v))
+                return "(%s)" % g
+            if fname == "PrimeQ" and len(node.args) == 1:
+                # `PrimeQ[n]` is a proposition about a natural number; a
+                # fractional or symbolic argument has no faithful translation
+                # (PrimeQ of a non-integer is False for a reason Lean cannot see).
+                v = _int_literal(node.args[0])
+                if v is None or v < 0:
+                    raise ValueError("PrimeQ is translated only for integer literals")
+                self.nat = True
+                self.prop = True
+                return "(Nat.Prime %d)" % v
+            if fname == "Length" and len(node.args) == 1:
+                self.nat = True
+                return "(%s).length" % self.expr(node.args[0])
+            if fname == "Range" and 1 <= len(node.args) <= 3:
+                vals = [_num_literal(a) for a in node.args]
+                if any(v is None for v in vals):
+                    raise ValueError("Range is translated only for numeric literals")
+                items = _range_items(vals)
+                ty = self.ty or ("ℝ" if self.real else "ℚ")
+                return "([%s] : List %s)" % (
+                    ", ".join(_literal_text(v, ty) for v in items), ty)
             target = FUNCS.get(fname)
             if target is None:
                 raise ValueError("no Lean translation for %s" % fname)
@@ -1414,6 +1539,14 @@ def _expand_finite(text):
     return "(" + op.join("(%s)" % t for t in terms) + ")"
 
 
+def _ambient_type(*probes):
+    """The type a claim lives in: ℕ for a Nat-valued result, ℝ when a real
+    function appears on either side, ℚ otherwise (never let `1/2` default to ℕ)."""
+    if any(p.nat or p.prop for p in probes):
+        return "ℕ"
+    return "ℝ" if any(p.real for p in probes) else "ℚ"
+
+
 def statement(lhs_text, rhs_text=None, relation="="):
     """Build a Lean `example` proving lhs = rhs (or a claim about lhs)."""
     # `Collect[e, x]` etc. preserve the value of their first argument, and a
@@ -1441,16 +1574,27 @@ def statement(lhs_text, rhs_text=None, relation="="):
                           (ast.Compare, ast.BoolOp)):
             raise ValueError("nothing to verify: %r is not a claim "
                              "(expected an equation or inequality)" % lhs_text)
-        ty = "ℝ" if probe.real else "ℚ"
+        ty = _ambient_type(probe)
         vs = sorted(probe.vars)
         prop = typed(lhs_text, ty, vs)
     else:
         probe_l, probe_r = Translator(), Translator()
         probe_l.expr(tree(lhs_text))
         probe_r.expr(tree(rhs_text))
-        ty = "ℝ" if (probe_l.real or probe_r.real) else "ℚ"
         vs = sorted(set(probe_l.vars) | set(probe_r.vars))
-        prop = "%s %s %s" % (typed(lhs_text, ty, vs), relation, typed(rhs_text, ty, vs))
+        if probe_l.prop:
+            # `PrimeQ[97] = True` is the proposition itself, not an equation
+            # between numbers; `= False` is its negation.
+            verdict = rhs_text.strip()
+            if verdict not in ("True", "False"):
+                raise ValueError("a proposition is only checked against True or False, "
+                                 "not %r" % rhs_text)
+            ty = "ℕ"
+            verdict_prop = typed(lhs_text, ty, vs)
+            prop = verdict_prop if verdict == "True" else "(¬ %s)" % verdict_prop
+        else:
+            ty = _ambient_type(probe_l, probe_r)
+            prop = "%s %s %s" % (typed(lhs_text, ty, vs), relation, typed(rhs_text, ty, vs))
     binders = ("(" + " ".join(vs) + " : %s) " % ty) if vs else ""
     return (QUIET + "example %s: %s := by\n  solve | %s\n" % (binders, prop, TACTICS),
             prop, ty, vs)

@@ -303,3 +303,71 @@ class LeanDoctor(unittest.TestCase):
             self.assertIn(key, st)
         self.assertFalse(st["available"])
         self.assertEqual(st["next_step"], "run: make lean-setup")
+
+
+class IntegerAndListHeads(unittest.TestCase):
+    """The integer/list tail of the corpus: GCD, PrimeQ, Length, Range.
+
+    Each is translated only in the form Lean can carry exactly: integer
+    literals for GCD/PrimeQ, numeric literals for Range, list literals for
+    Length. Everything else is refused rather than approximated.
+    """
+
+    def test_gcd_is_nat_valued_and_folds(self):
+        _, prop, ty, vs = lean.statement("GCD[24, 36]", "12")
+        self.assertEqual(ty, "ℕ")
+        self.assertEqual(vs, [])
+        self.assertIn("Nat.gcd 24 (36)", prop)
+        self.assertIn("(12 : ℕ)", prop)
+
+    def test_gcd_of_large_literals_keeps_the_exact_value(self):
+        _, prop, ty, _ = lean.statement("GCD[2^64, 2^70]", "18446744073709551616")
+        self.assertEqual(ty, "ℕ")
+        self.assertIn("1180591620717411303424", prop)
+
+    def test_primeq_is_a_proposition(self):
+        _, prop, ty, _ = lean.statement("PrimeQ[97]", "True")
+        self.assertEqual(prop, "(Nat.Prime 97)")
+        self.assertEqual(ty, "ℕ")
+        _, prop, _, _ = lean.statement("PrimeQ[10]", "False")
+        self.assertEqual(prop, "(¬ (Nat.Prime 10))")
+
+    def test_primeq_only_against_true_or_false(self):
+        with self.assertRaises(ValueError):
+            lean.statement("PrimeQ[97]", "PrimeQ[97]")
+
+    def test_primeq_of_a_fraction_is_refused(self):
+        with self.assertRaises(ValueError) as cm:
+            lean.statement("PrimeQ[1/2]", "False")
+        self.assertIn("integer literals", str(cm.exception))
+
+    def test_symbolic_gcd_is_refused(self):
+        with self.assertRaises(ValueError):
+            lean.statement("GCD[x, 2]", "GCD[x, 2]")
+
+    def test_range_expands_to_a_literal_list(self):
+        _, prop, _, _ = lean.statement("Range[5]", "{1, 2, 3, 4, 5}")
+        self.assertEqual(prop, "([1, 2, 3, 4, 5] : List ℚ) = "
+                               "([(1 : ℚ), (2 : ℚ), (3 : ℚ), (4 : ℚ), (5 : ℚ)] : List ℚ)")
+        _, prop, _, _ = lean.statement("Range[0, 1, 1/4]", "{0, 1/4, 1/2, 3/4, 1}")
+        self.assertIn("[0, (1/4), (1/2), (3/4), 1]", prop)
+        _, prop, _, _ = lean.statement("Range[5, 1, -2]", "{5, 3, 1}")
+        self.assertIn("[5, 3, 1]", prop)
+
+    def test_a_machine_real_range_is_refused(self):
+        with self.assertRaises(ValueError):
+            lean.statement("Range[0, 1, 0.25]", "{0., 0.25, 0.5, 0.75, 1.0}")
+
+    def test_length_is_nat_valued(self):
+        _, prop, ty, vs = lean.statement("Length[{a, b, c}]", "3")
+        self.assertEqual(ty, "ℕ")
+        self.assertEqual(vs, ["a", "b", "c"])
+        self.assertIn(".length", prop)
+        self.assertIn("(3 : ℕ)", prop)
+
+    def test_sort_is_still_refused_with_a_reason(self):
+        # Sorting is a computation Lean only closes through `native_decide`
+        # (which adds a trusted axiom), so it stays outside the exact path.
+        with self.assertRaises(ValueError) as cm:
+            lean.statement("Sort[{3, 1, 2}]", "{1, 2, 3}")
+        self.assertIn("Sort", str(cm.exception))

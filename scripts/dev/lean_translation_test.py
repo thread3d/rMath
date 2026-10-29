@@ -29,6 +29,14 @@ CASES = [
      'Real.sin ((Real.pi / (6 : ℝ))) = ((1 : ℝ) / (2 : ℝ))', 'ℝ'),
     ('x^2 + 2 x + 1 == (x + 1)^2', None,
      '(((x ^ (2 : ℕ)) + ((2 : ℚ) * x)) + (1 : ℚ)) = ((x + (1 : ℚ)) ^ (2 : ℕ))', 'ℚ'),
+    # integers and lists: ℕ-valued heads, a proposition, and literal lists
+    ('GCD[24, 36]', '12', '(Nat.gcd 24 (36)) = (12 : ℕ)', 'ℕ'),
+    ('PrimeQ[97]', 'True', '(Nat.Prime 97)', 'ℕ'),
+    ('PrimeQ[10]', 'False', '(¬ (Nat.Prime 10))', 'ℕ'),
+    ('Range[5]', '{1, 2, 3, 4, 5}',
+     '([1, 2, 3, 4, 5] : List ℚ) = ([(1 : ℚ), (2 : ℚ), (3 : ℚ), (4 : ℚ), (5 : ℚ)]'
+     ' : List ℚ)', 'ℚ'),
+    ('Length[{a, b, c}]', '3', '(([a, b, c] : List ℕ)).length = (3 : ℕ)', 'ℕ'),
 ]
 
 REFUSALS = [
@@ -40,7 +48,11 @@ REFUSALS = [
     ("x^2 + 2 x + 1", None),
     ("N[Pi]", "3.14159"),
     ("2 I", "0 + 2 I"),
-    ("GCD[24, 36]", "12"),
+    # only integer literals carry a faithful translation
+    ("GCD[x, 2]", "GCD[x, 2]"),
+    ("PrimeQ[1/2]", "False"),
+    # sorting needs `native_decide`, which adds a trusted axiom
+    ("Sort[{3, 1, 2}]", "{1, 2, 3}"),
 ]
 
 

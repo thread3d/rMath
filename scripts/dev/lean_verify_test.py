@@ -58,6 +58,12 @@ BATTERY = [
      "{{x -> Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 + Sqrt[5])]}, "
      "{x -> Sqrt[1/2 (-1 - Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 - Sqrt[5])]}}",
      "verified"),
+    # integers and lists: Nat.gcd, Nat.Prime, List.length, literal lists
+    ("GCD[24, 36]", "12", "verified"),
+    ("GCD[2^64, 2^70]", "18446744073709551616", "verified"),
+    ("PrimeQ[97]", "True", "verified"),
+    ("Range[5]", "{1, 2, 3, 4, 5}", "verified"),
+    ("Length[{a, b, c}]", "3", "verified"),
     # must NOT be accepted
     ("1/2 + 1/3", "2/3", "unproved"),
     ("2 + 2", "5", "unproved"),
@@ -65,7 +71,7 @@ BATTERY = [
     # must be refused with a reason, not guessed at
     ("N[Pi]", "3.14159", "cannot verify"),
     ("2 I", "0 + 2 I", "cannot verify"),
-    ("GCD[24, 36]", "12", "cannot verify"),
+    ("PrimeQ[1/2]", "False", "cannot verify"),
 ]
 
 # `N[roots]` for a Solve case: the bridge drops the roots with an imaginary part.
