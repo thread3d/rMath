@@ -318,6 +318,31 @@ pub fn same_q(a: &Expr, b: &Expr) -> bool {
     }
 }
 
+/// The same expression, decided *without* descending: identical nodes, or the
+/// same head with the same argument values (pointer-equal arguments are the common
+/// case, because evaluation hands back the very subexpressions it was given).
+///
+/// `true` always implies `same_q`; `false` only means "not obviously the same", so
+/// callers fall back to `same_q`. The evaluator decides after every rewrite whether
+/// its result differs from its input, and for a large polynomial that structural
+/// comparison costs the whole tree.
+pub fn same_q_shallow(a: &Expr, b: &Expr) -> bool {
+    if std::ptr::eq(a, b) {
+        return true;
+    }
+    match (a, b) {
+        (Expr::Node(x), Expr::Node(y)) => {
+            std::rc::Rc::ptr_eq(x, y)
+                || (x.args.len() == y.args.len()
+                    && same_q(&x.head, &y.head)
+                    && x.args.iter().zip(y.args.iter()).all(|(p, q)| {
+                        std::ptr::eq(p, q) || same_q(p, q)
+                    }))
+        }
+        _ => same_q(a, b),
+    }
+}
+
 /// Canonical ordering used for Orderless sorting and Sort[].
 /// Roughly: exact numbers < machine reals < complex < strings < symbols < nodes.
 pub fn canon_cmp(t: &SymbolTable, a: &Expr, b: &Expr) -> Ordering {

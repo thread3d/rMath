@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.2.16 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.2.17 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
@@ -273,16 +273,20 @@ impl Interp {
         // 4. Attribute normalization (Flat / Orderless).
         let nchanged = self.normalize(head.sym_id(), &mut vargs);
         let changed_pre = hchanged || achanged || nchanged;
+        // "Did the result differ from the input?" is asked after every rewrite below.
+        // A shallow comparison answers the common unchanged case in O(args) instead
+        // of O(subtree); when it cannot tell, the full comparison still runs.
+        let unchanged = |v: &Expr| crate::expr::same_q_shallow(v, orig) || same_q(v, orig);
         // 5. Dispatch: up-values (tagged on an argument), then down-values, then
         // built-ins (plain symbol heads only).
         if let Some(id) = head.sym_id() {
             if let Some(v) = self.try_upvalues(&head, &vargs)? {
-                let ch = !same_q(&v, orig);
+                let ch = !unchanged(&v);
                 return Ok((v, ch));
             }
             if !self.t.data[id].down.is_empty() {
                 if let Some(v) = self.try_downvalues(id, &vargs)? {
-                    let ch = !same_q(&v, orig);
+                    let ch = !unchanged(&v);
                     return Ok((v, ch));
                 }
             }
@@ -290,7 +294,7 @@ impl Interp {
             if let Some(bi) = self.t.data[id].builtin {
                 let attrs = self.t.data[id].attrs;
                 let res = self.call_builtin(id, bi, attrs, &vargs)?;
-                let ch = !same_q(&res, orig);
+                let ch = !unchanged(&res);
                 return Ok((res, ch));
             }
             // User symbols with Listable attribute thread over lists.
@@ -299,7 +303,7 @@ impl Interp {
                 && !vargs.is_empty()
             {
                 if let Some(res) = self.thread_listable(id, &vargs)? {
-                    let ch = !same_q(&res, orig);
+                    let ch = !unchanged(&res);
                     return Ok((res, ch));
                 }
             }
@@ -993,8 +997,24 @@ fn has_positive_var_power(t: &SymbolTable, vars: &[Expr], e: &Expr) -> bool {
 /// A `Times` factor's ordering key: the base name and exponent of a variable or
 /// power. `Exp[u]` is `E^u` in Mathematica's canonical order, so it keys on
 /// base `E` with `u` as its exponent.
+/// The name a factor sorts by. A symbol keeps its id (looked up only when two
+/// keys are compared), so building a key allocates nothing — the sort comparators
+/// run O(n log n) times per `Plus`/`Times` and used to allocate a String each time.
+#[derive(Clone)]
+enum FactorName {
+    Sym(crate::expr::SymId),
+    Literal(&'static str),
+}
+
+fn factor_name<'a>(t: &'a SymbolTable, n: &'a FactorName) -> &'a str {
+    match n {
+        FactorName::Sym(id) => t.name_of(*id),
+        FactorName::Literal(s) => s,
+    }
+}
+
 struct FactorKey {
-    name: String,
+    name: FactorName,
     exp: i64,
     exp_expr: Expr,
 }
@@ -1002,7 +1022,7 @@ struct FactorKey {
 fn factor_key(t: &SymbolTable, e: &Expr) -> Option<FactorKey> {
     if let Expr::Sym(id) = e {
         return Some(FactorKey {
-            name: t.name_of(*id).to_string(),
+            name: FactorName::Sym(*id),
             exp: 1,
             exp_expr: Expr::int_i64(1),
         });
@@ -1011,7 +1031,7 @@ fn factor_key(t: &SymbolTable, e: &Expr) -> Option<FactorKey> {
         if let Some(exp_id) = t.get("Exp") {
             if nd.head.is_symbol(exp_id) && nd.args.len() == 1 {
                 return Some(FactorKey {
-                    name: "E".to_string(),
+                    name: FactorName::Literal("E"),
                     exp: 0,
                     exp_expr: nd.args[0].clone(),
                 });
@@ -1019,7 +1039,7 @@ fn factor_key(t: &SymbolTable, e: &Expr) -> Option<FactorKey> {
         }
         if nd.head.is_symbol(t.sys.power) && nd.args.len() == 2 {
             let base = nd.args[0].sym_id()?;
-            let name = t.name_of(base).to_string();
+            let name = FactorName::Sym(base);
             return Some(match crate::builtins::core::expr_to_int(&nd.args[1]) {
                 Some(n) => FactorKey { name, exp: n, exp_expr: nd.args[1].clone() },
                 None => FactorKey { name, exp: 0, exp_expr: nd.args[1].clone() },
@@ -1063,8 +1083,8 @@ fn factor_rank(t: &SymbolTable, e: &Expr) -> u8 {
 }
 
 fn cmp_factor_keys(a: &FactorKey, b: &FactorKey, t: &SymbolTable) -> Ordering {
-    a.name
-        .cmp(&b.name)
+    factor_name(t, &a.name)
+        .cmp(factor_name(t, &b.name))
         .then(a.exp.cmp(&b.exp))
         .then_with(|| canon_cmp(t, &a.exp_expr, &b.exp_expr))
 }

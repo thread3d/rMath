@@ -99,6 +99,10 @@ pub fn b_plus(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let mut c_re: Option<NumVal> = None;
     let mut c_im: Option<NumVal> = None;
     let mut terms: Vec<(Expr, Rat, Option<f64>)> = Vec::new();
+    // Key -> index in `terms`. Merging like terms by scanning the vector compared
+    // every key with every other one, i.e. O(k^2) deep `same_q` calls for a sum of
+    // k terms — 740k comparisons for the 861 terms of `Expand[(x+y+z)^40]`.
+    let mut term_index: std::collections::HashMap<Expr, usize> = std::collections::HashMap::new();
 
     for a in args {
         match a {
@@ -125,21 +129,17 @@ pub fn b_plus(i: &mut Interp, args: &[Expr]) -> EvalRes {
             }
             other => {
                 let (ec, mc, key) = term_coeff(other, &i.t);
-                let mut merged = false;
-                for (k, e, m) in terms.iter_mut() {
-                    if crate::expr::same_q(k, &key) {
-                        *e = e.add(&ec);
-                        *m = match (*m, mc) {
-                            (None, None) => None,
-                            (Some(x), Some(y)) => Some(x + y),
-                            (None, Some(y)) => Some(y),
-                            (Some(x), None) => Some(x),
-                        };
-                        merged = true;
-                        break;
-                    }
-                }
-                if !merged {
+                if let Some(&idx) = term_index.get(&key) {
+                    let (_, e, m) = &mut terms[idx];
+                    *e = e.add(&ec);
+                    *m = match (*m, mc) {
+                        (None, None) => None,
+                        (Some(x), Some(y)) => Some(x + y),
+                        (None, Some(y)) => Some(y),
+                        (Some(x), None) => Some(x),
+                    };
+                } else {
+                    term_index.insert(key.clone(), terms.len());
                     terms.push((key, ec, mc));
                 }
             }
@@ -213,6 +213,7 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
     // is kept as an expression. The old three-field form stored a symbolic
     // exponent as 0, which silently deleted the factor (`x^n y` -> `y`).
     let mut powers: Vec<(Expr, Expr)> = Vec::new();
+    let mut power_index: std::collections::HashMap<Expr, usize> = std::collections::HashMap::new();
 
     for a in args {
         match a {
@@ -245,10 +246,10 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
                 }
             }
             Expr::Node(nd) if nd.head.is_symbol(power_id) && nd.args.len() == 2 => {
-                push_power(i, &mut powers, &nd.args[0], &nd.args[1])?;
+                push_power(i, &mut powers, &mut power_index, &nd.args[0], &nd.args[1])?;
             }
             other => {
-                push_power(i, &mut powers, other, &Expr::int_i64(1))?;
+                push_power(i, &mut powers, &mut power_index, other, &Expr::int_i64(1))?;
             }
         }
     }
@@ -319,16 +320,20 @@ pub fn b_times(i: &mut Interp, args: &[Expr]) -> EvalRes {
 fn push_power(
     i: &mut Interp,
     p: &mut Vec<(Expr, Expr)>,
+    index: &mut std::collections::HashMap<Expr, usize>,
     base: &Expr,
     exp: &Expr,
 ) -> Result<(), Flow> {
-    for (b, e) in p.iter_mut() {
-        if crate::expr::same_q(b, base) {
-            let sum = Expr::node(Expr::Sym(i.t.sys.plus), vec![e.clone(), exp.clone()]);
-            *e = i.eval(&sum)?;
-            return Ok(());
-        }
+    // Same fix as the like-term merge in `Plus`: a linear scan compares every base
+    // with every other one (O(k^2) deep `same_q`), so a product of many factors was
+    // quadratic in its length.
+    if let Some(&idx) = index.get(base) {
+        let (_, e) = &mut p[idx];
+        let sum = Expr::node(Expr::Sym(i.t.sys.plus), vec![e.clone(), exp.clone()]);
+        *e = i.eval(&sum)?;
+        return Ok(());
     }
+    index.insert(base.clone(), p.len());
     p.push((base.clone(), exp.clone()));
     Ok(())
 }
