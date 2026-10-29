@@ -632,7 +632,7 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `Range`, `Nest`, `NestList`, `Fold`, `FixedPoint`, `Sow`/`Reap`, plus
   `Array`, `ConstantArray`, `Partition`, `Accumulate`, `Differences`,
   `Ordering`, `TakeWhile`, `DeleteCases`, `Riffle`.
-- **Numbers/predicates**: `PrimeQ`, `Prime`, `EvenQ`, `OddQ`, `NumberQ`,
+- **Numbers/predicates**: `Max`, `Min`, `Binomial`, `PrimeQ`, `Prime`, `EvenQ`, `OddQ`, `NumberQ`,
   `NumericQ`, `AtomQ`, `Head`, `Length`, `MatchQ`, `FreeQ`, `MemberQ`,
   `SameQ`, `Equal`, ordering relations, `Abs`, `Sign`, `Floor`, `Ceiling`,
   `Round`, `Mod`, `Quotient`, `GCD`, `LCM`, `Re`, `Im`, `Conjugate`,

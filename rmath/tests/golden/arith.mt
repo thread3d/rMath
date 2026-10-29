@@ -138,3 +138,27 @@ GCD[12.0, 18]
 => 6
 GCD[x, 2]
 => GCD[x, 2]
+
+# Max, Min and Binomial were missing entirely (Max[1, 3, 2] stayed unevaluated).
+Max[1, 3, 2]
+=> 3
+Min[1, 3, 2]
+=> 1
+Max[1/2, 1/3]
+=> 1/2
+Max[1.5, 2]
+=> 2
+Max[x, 1]
+=> Max[x, 1]
+Max[]
+=> -Infinity
+Min[]
+=> Infinity
+Binomial[5, 2]
+=> 10
+Binomial[10, 5]
+=> 252
+Binomial[5, 7]
+=> 0
+Binomial[x, 2]
+=> Binomial[x, 2]

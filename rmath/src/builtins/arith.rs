@@ -1337,3 +1337,75 @@ pub fn b_chop(i: &mut Interp, args: &[Expr]) -> EvalRes {
     };
     Ok(chop_expr(&args[0], tol))
 }
+
+// ============================ Max, Min, Binomial ============================
+
+/// The larger (or smaller) of the arguments. Numbers only: a symbolic argument
+/// leaves the call unevaluated, as `Max[x, 1]` does in Mathematica.
+fn extremum(i: &mut Interp, args: &[Expr], want_max: bool, name: &str) -> EvalRes {
+    if args.is_empty() {
+        // Max[] is -Infinity, Min[] is Infinity.
+        let sym = Expr::Sym(i.t.sys.infinity);
+        let e = if want_max {
+            Expr::node(Expr::Sym(i.t.sys.times), vec![Expr::int_i64(-1), sym])
+        } else {
+            sym
+        };
+        return Ok(i.eval(&e)?);
+    }
+    let mut best: Option<(f64, Expr)> = None;
+    for a in args {
+        let Some(n) = num_val(a) else {
+            return Ok(unevaluated_call(i, name, args));
+        };
+        let v = nv_f64(&n);
+        if !v.is_finite() {
+            return Ok(unevaluated_call(i, name, args));
+        }
+        best = match best {
+            None => Some((v, a.clone())),
+            Some((bv, be)) => {
+                let better = if want_max { v > bv } else { v < bv };
+                if better {
+                    Some((v, a.clone()))
+                } else {
+                    Some((bv, be))
+                }
+            }
+        };
+    }
+    Ok(best.map(|(_, e)| e).unwrap_or(Expr::int_i64(0)))
+}
+
+pub fn b_max(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    extremum(i, args, true, "Max")
+}
+
+pub fn b_min(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    extremum(i, args, false, "Min")
+}
+
+pub fn b_binomial(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() != 2 {
+        i.message("Binomial", "argr");
+        return Ok(unevaluated_call(i, "Binomial", args));
+    }
+    let (Some(n), Some(k)) = (expr_to_int(&args[0]), expr_to_int(&args[1])) else {
+        return Ok(unevaluated_call(i, "Binomial", args));
+    };
+    if n < 0 || k < 0 {
+        return Ok(unevaluated_call(i, "Binomial", args));
+    }
+    // Beyond the end of the row the coefficient is 0, as in Mathematica.
+    if k > n {
+        return Ok(Expr::int_i64(0));
+    }
+    // C(n, k) = Π (n-k+i)/i, exact at every step.
+    let mut c = BigInt::one();
+    for j in 1..=k {
+        let num = BigInt::from_i64(n - k + j);
+        let den = BigInt::from_i64(j);
+        c = c.mul(&num).div_rem(&den).0;
+    }
+    Ok(Expr::Int(c))
+}
