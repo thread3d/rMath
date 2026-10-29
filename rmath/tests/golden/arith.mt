@@ -162,3 +162,14 @@ Binomial[5, 7]
 => 0
 Binomial[x, 2]
 => Binomial[x, 2]
+
+# The integer part of a machine real is an exact integer (regression:
+# IntegerPart[2.7] answered 2.0, an inexact value where Mathematica gives 2).
+IntegerPart[2.7]
+=> 2
+IntegerPart[-2.5]
+=> -2
+IntegerPart[7/2]
+=> 3
+FractionalPart[2.7]
+=> 0.7

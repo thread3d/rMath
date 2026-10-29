@@ -951,7 +951,17 @@ pub fn b_integerpart(i: &mut Interp, args: &[Expr]) -> EvalRes {
             let (q, _) = r.num.div_rem(&r.den);
             Ok(Expr::Int(q))
         }
-        Expr::Real(x) => Ok(Expr::real(x.trunc())),
+        // The integer part of a machine real is an exact integer, not a real:
+        // `IntegerPart[2.7]` is 2, not 2.0. (Beyond i64 the truncation cannot be
+        // represented exactly, so the real is returned unchanged.)
+        Expr::Real(x) => {
+            let t = x.trunc();
+            if t.abs() < 9.2e18 {
+                Ok(Expr::int_i64(t as i64))
+            } else {
+                Ok(Expr::real(*x))
+            }
+        }
         _ => Ok(unevaluated_call(i, "IntegerPart", args)),
     }
 }
