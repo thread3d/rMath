@@ -6,9 +6,17 @@
 //! univariate rational function by its polynomial GCD. `Assuming` pushes
 //! assumptions onto `Interp::assumptions`, and `$Assumptions` is consulted too.
 
+use crate::bigint::BigInt;
 use crate::builtins::core::unevaluated_call;
 use crate::eval::{EvalRes, Flow, Interp};
 use crate::expr::{same_q, Expr};
+use crate::rational::Rat;
+
+/// `head[a, b, ...]` evaluated (simplify.rs's own helper; calculus.rs has a private
+/// one with the same name).
+fn eval_call(i: &mut Interp, head: Expr, args: Vec<Expr>) -> Result<Expr, Flow> {
+    i.eval(&Expr::node(head, args))
+}
 
 fn is_zero(e: &Expr) -> bool {
     crate::builtins::num::is_numeric_zero(e)
@@ -197,6 +205,48 @@ fn rewrite(i: &mut Interp, e: &Expr, assums: &[Expr]) -> Result<Option<Expr>, Fl
             if np {
                 let r = neg(i, args[0].clone());
                 i.step("assumption: Abs[x] = -x", &r);
+                return Ok(Some(r));
+            }
+        }
+    }
+    // Sin[u] Cos[u] -> Sin[2u]/2, which is what Mathematica's Simplify does and
+    // what makes an antiderivative written as `Cos[x] Sin[x]` read like the one
+    // written as `Sin[2 x]/4`. Only bare factors, and only for equal arguments.
+    if h.is_symbol(sys.times) {
+        let mut sinarg: Option<Expr> = None;
+        let mut cosarg: Option<Expr> = None;
+        let mut rest: Vec<Expr> = Vec::new();
+        for a in args {
+            let f = a.parts().and_then(|(fh, fa)| {
+                if fa.len() == 1 && fh.is_symbol_named(&i.t, "Sin") {
+                    Some((true, fa[0].clone()))
+                } else if fa.len() == 1 && fh.is_symbol_named(&i.t, "Cos") {
+                    Some((false, fa[0].clone()))
+                } else {
+                    None
+                }
+            });
+            match f {
+                Some((true, u)) if sinarg.is_none() => sinarg = Some(u),
+                Some((false, u)) if cosarg.is_none() => cosarg = Some(u),
+                _ => rest.push(a.clone()),
+            }
+        }
+        if let (Some(su), Some(cu)) = (&sinarg, &cosarg) {
+            if same_q(su, cu) {
+                let two = eval_call(
+                    i,
+                    Expr::Sym(sys.times),
+                    vec![Expr::int_i64(2), cu.clone()],
+                )?;
+                let sin2 = Expr::node(Expr::Sym(i.t.intern("Sin")), vec![two]);
+                let mut factors = vec![
+                    Expr::rat(Rat::new(BigInt::one(), BigInt::from_i64(2))),
+                    sin2,
+                ];
+                factors.extend(rest);
+                let r = eval_call(i, Expr::Sym(sys.times), factors)?;
+                i.step("double angle: Sin[u] Cos[u] = Sin[2u]/2", &r);
                 return Ok(Some(r));
             }
         }

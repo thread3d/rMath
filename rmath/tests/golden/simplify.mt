@@ -65,3 +65,20 @@ Cancel[(x^2 + y)/(x^3 + y)]
 => (x^2 + y)/(x^3 + y)
 PolynomialGCD[x^2 - y^2, x - y]
 => x - y
+
+# Double angle: Sin[u] Cos[u] -> Sin[2u]/2, as Mathematica's Simplify does. This is
+# what makes an antiderivative written in terms of Cos[x] Sin[x] read like the one
+# written with Sin[2 x].
+Simplify[Sin[x] Cos[x]]
+=> 1/2 Sin[2 x]
+Simplify[2 Sin[x] Cos[x]]
+=> Sin[2 x]
+Simplify[Sin[2 x] Cos[2 x]]
+=> 1/2 Sin[4 x]
+Simplify[3 a Sin[x] Cos[x]]
+=> 3/2 a Sin[2 x]
+# arguments must agree, and a squared factor is left alone
+Simplify[Sin[x] Cos[y]]
+=> Cos[y] Sin[x]
+Simplify[Sin[x]^2]
+=> Sin[x]^2

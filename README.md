@@ -608,7 +608,8 @@ k.eval("x = 5; x^2")["result"]       # "25"
   (content + rational roots), `Coefficient(s)` (symbolic coefficients and
   monomial forms, on unexpanded input), `CoefficientList`, `Exponent`,
   `Variables`, `PolynomialQuotient[Remainder]`, `PolynomialGCD` (univariate),
-  and `Simplify`/`FullSimplify` with `Assuming`/`$Assumptions`.
+  and `Simplify`/`FullSimplify` with `Assuming`/`$Assumptions`.  `Simplify` also applies the double-angle identity
+  (`Sin[u] Cos[u]` → `Sin[2u]/2`).
 - **Calculus**: `D` (elementary chain rules, and `Derivative` for unknown
   functions), `Integrate` (polynomials, powers incl. `Sqrt`, `1/(a x + b)`,
   rational functions via partial fractions, `x^n Sin/Cos/Exp` by parts,
