@@ -27,6 +27,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from . import __version__
+
 # Protocol revisions this server can speak, newest first. The client's requested
 # version is echoed when supported; otherwise we answer with our preferred one,
 # which is the negotiation the MCP lifecycle prescribes.
@@ -35,7 +37,7 @@ SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 SERVER_NAME = "rmath"
 SERVER_TITLE = "rMath symbolic kernel"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = __version__   # the project version, not a second counter
 
 INSTRUCTIONS = (
     "rMath is a self-contained Mathematica-style symbolic kernel (exact "

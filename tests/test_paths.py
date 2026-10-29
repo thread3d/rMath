@@ -70,3 +70,33 @@ class ToolResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VersionAgreement(unittest.TestCase):
+    """One version, reported everywhere.
+
+    `rmath --version`, `$Version` and the MCP server's serverInfo all describe the
+    same build; the MCP server used to carry its own counter ("1.0.0") that had
+    already drifted from the project.
+    """
+
+    def test_the_package_version_comes_from_the_crate_manifest(self):
+        import re
+        from rmathpy import __version__
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "rmath", "Cargo.toml")) as f:
+            manifest = re.search(r'^version = "([^"]+)"', f.read(), re.M).group(1)
+        self.assertEqual(__version__, manifest)
+        self.assertNotEqual(__version__, "0.0.0", "the manifest should be readable")
+
+    def test_the_mcp_server_reports_the_project_version(self):
+        from rmathpy import __version__
+        from rmathpy import mcp
+        self.assertEqual(mcp.SERVER_VERSION, __version__)
+
+    def test_the_kernel_reports_the_same_version(self):
+        """The Rust side carries the number in a string; keep it in step."""
+        from rmathpy import __version__
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "rmath", "src", "main.rs")) as f:
+            self.assertIn("rmath %s " % __version__, f.read())
