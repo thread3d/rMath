@@ -1,0 +1,44 @@
+name: Lean
+
+# The proof battery, on demand and nightly — *not* on every push.
+#
+# `make check` (unit, golden, front end, oracle, translation) runs in ci.yml and
+# needs no Lean. This job installs the toolchain lean/lean-toolchain pins, pulls
+# Mathlib's prebuilt oleans and checks 43 claims in the kernel, which costs a few
+# minutes and ~500 MB of downloads — worth doing nightly, not per commit.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+jobs:
+  verify:
+    name: Proof battery (Lean 4 + Mathlib)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # elan runs the version lean/lean-toolchain names; a distro lean of another
+      # version cannot build the Mathlib revision lake-manifest.json pins.
+      - name: Install elan
+        run: |
+          curl -fsSL https://elan.lean-lang.org/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+          sh "$RUNNER_TEMP/elan-init.sh" -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache the toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.elan/toolchains
+          key: elan-${{ hashFiles('lean/lean-toolchain') }}
+
+      - name: Fetch Mathlib's prebuilt oleans
+        run: make lean-setup
+        env:
+          MATHLIB_CACHE_DIR: ${{ github.workspace }}/.mathlib-cache
+
+      - name: Proof battery (proved *and* rejected claims)
+        run: make lean-verify
+        env:
+          MATHLIB_CACHE_DIR: ${{ github.workspace }}/.mathlib-cache

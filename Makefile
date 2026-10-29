@@ -36,7 +36,7 @@ LEAN_ENV := PATH=$(ELAN_BIN_LOCAL):$$PATH ELAN_HOME=$(dir $(ELAN_BIN_LOCAL))
 
 .PHONY: help build release test py-test check repl eval demo notebook notebook-bg stop restart clean \
         mcp mcp-http \
-        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-setup lean-status lean-verify demo-gen
+        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-setup lean-status lean-verify demo-gen tag
 
 help:
 	@sed -n '2,21p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -133,6 +133,13 @@ uitest:
 # pins, the Mathlib build cache, and then builds the project.
 lean-setup:
 	@bash $(ROOT)/scripts/dev/lean_setup.sh
+
+# Tag the current version (from rmath/Cargo.toml) and push the tag.
+tag:
+	@V=$$(sed -n 's/^version = "\(.*\)"$$/\1/p' $(ROOT)/rmath/Cargo.toml); \
+	git -C $(ROOT) tag -a "v$$V" -m "rMath $$V"; \
+	git -C $(ROOT) push origin "v$$V"; \
+	echo "tagged v$$V"
 
 # Can this checkout verify a claim? Reports elan, the pinned toolchain, Mathlib
 # and the cache, and names the one command that fixes a missing piece. No Lean
