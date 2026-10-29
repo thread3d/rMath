@@ -551,6 +551,7 @@ response mode and applies the same origin check as the notebook.
 | `rmathpy/mcp.py` | MCP server (stdio + Streamable HTTP) over the kernel |
 | `rmathpy/apispec.py` | HTTP API discovery index + OpenAPI 3.1 document |
 | `docs/PROTOCOL.md` | JSON-RPC stdio protocol between front end and kernel |
+| `docs/PERFORMANCE.md` | what the evaluator's profiles say, and the design note for the remaining performance work |
 | `rmath/tests/golden/` | End-to-end golden tests (`expr` / `=> expected`) |
 
 ### Kernel CLI
