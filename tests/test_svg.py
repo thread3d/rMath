@@ -68,3 +68,27 @@ class Render(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DegeneratePlotRange(unittest.TestCase):
+    """A plot with no data has no bounds, and the kernel reports them as null.
+
+    Unpacking that raised `TypeError: unsupported operand type(s) for +: 'NoneType'
+    and 'float'` inside the renderer, so `/api/eval` of `ListPlot[{}]` failed
+    instead of returning the cell's result.
+    """
+
+    def test_null_bounds_fall_back_to_the_data(self):
+        from rmathpy.svg import render_graphics
+        svg = render_graphics({"type": "Graphics", "primitives": [],
+                               "plotrange": [None, None, None, None]})
+        self.assertIn("<svg", svg)
+        self.assertNotIn("nan", svg.lower())
+
+    def test_a_single_point_still_draws_a_frame(self):
+        from rmathpy.svg import render_graphics
+        svg = render_graphics({"type": "Graphics",
+                               "primitives": [{"type": "Point", "pt": [1.0, 2.0]}],
+                               "plotrange": [None, None, None, None]})
+        self.assertIn("<svg", svg)
+        self.assertNotIn("nan", svg.lower())

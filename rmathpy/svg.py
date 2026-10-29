@@ -55,8 +55,13 @@ def render_graphics(g: dict, width=360, height=240) -> str:
             if math.isfinite(x) and math.isfinite(y):
                 xs.append(x)
                 ys.append(y)
-    if pr and len(pr) == 4:
-        xmin, xmax, ymin, ymax = pr
+    # A ListPlot with no points (or one) has no bounds to report, and the kernel
+    # sends `None` for them: unpacking that crashed the renderer with a TypeError
+    # instead of drawing an empty frame.
+    pr_ok = (isinstance(pr, (list, tuple)) and len(pr) == 4
+             and all(isinstance(v, (int, float)) and math.isfinite(v) for v in pr))
+    if pr_ok:
+        xmin, xmax, ymin, ymax = (float(v) for v in pr)
     else:
         xmin = min(xs) if xs else 0.0
         xmax = max(xs) if xs else 1.0
