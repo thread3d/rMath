@@ -660,10 +660,13 @@ k.eval("x = 5; x^2")["result"]       # "25"
   including repeated roots) plus an irreducible quadratic, to the second power;
   a cube or higher power of a quadratic still stays unevaluated.
 - `Cancel` cancels the common monomial factor and the numeric content of any
-  rational function, and for a univariate one the common polynomial factor as
-  well. A multivariate *polynomial* GCD (a shared factor such as `x + y`) is not
-  implemented, and a symbolic coefficient is not treated as content, so
-  `Cancel[(a x + a)/(x + 1)]` stays as `Together` left it.
+  rational function, the common univariate polynomial factor, and a shared
+  multivariate factor such as `x + y` (`Cancel[(x^2 - y^2)/(x - y)]` → `x + y`,
+  and `Cancel[(a x + a)/(x + 1)]` → `a` — a symbolic coefficient is just another
+  variable). The multivariate GCD uses a Kronecker substitution into one
+  variable, and keeps a candidate only when exact multivariate division confirms
+  it divides both sides, so a degenerate substitution loses a factor rather than
+  inventing one.
 - `Solve` covers linear systems (unique solutions), quadratics, and cubics
   with rational roots; multivariate nonlinear systems stay unevaluated.
 - A `MatrixPower[...]` claim translates to Lean but is not proved by the tactic

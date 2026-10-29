@@ -645,6 +645,36 @@ pub fn b_cancel(i: &mut Interp, args: &[Expr]) -> EvalRes {
             return Ok(num);
         }
     }
+    // A shared polynomial factor such as `x + y` — the univariate GCD below cannot
+    // see it because the coefficients of one are not rational in the other.
+    {
+        let mut all_vars: Vec<Expr> = vars_of(i, &num)?;
+        for v in vars_of(i, &den)? {
+            if !all_vars.iter().any(|x| same_q(x, &v)) {
+                all_vars.push(v);
+            }
+        }
+        if all_vars.len() >= 2 && all_vars.len() < 6 {
+            if let (Some(pn), Some(pd)) = (
+                m_from_expr(i, &num, &all_vars)?,
+                m_from_expr(i, &den, &all_vars)?,
+            ) {
+                if pn.len() < 4096 && pd.len() < 4096 {
+                    if let Some(g) = multivariate_gcd(i, &pn, &pd, &all_vars) {
+                        if let (Some(qn), Some(qd)) =
+                            (m_div_exact(&pn, &g), m_div_exact(&pd, &g))
+                        {
+                            num = m_to_expr(i, &qn, &all_vars)?;
+                            den = m_to_expr(i, &qd, &all_vars)?;
+                            if same_q(&den, &Expr::int_i64(1)) {
+                                return Ok(num);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Whatever the univariate step manages, the monomial/content reduction
     // above is already an improvement, so the fallbacks below return the current
     // fraction rather than the original expression.
@@ -1306,13 +1336,257 @@ pub fn coeffs_to_expr(i: &mut Interp, coeffs: &[Rat], var: &Expr) -> EvalRes {
     eval_call(i, Expr::Sym(i.t.sys.plus), out)
 }
 
+/// A multivariate polynomial over ℚ: monomial exponent vectors (in the order of
+/// a fixed variable list) mapped to coefficients. `BTreeMap`'s key order is a
+/// monomial order (plain lexicographic on the exponent vectors), which is all
+/// multivariate division needs.
+type MPoly = std::collections::BTreeMap<Vec<u32>, Rat>;
+
+fn m_from_expr(i: &mut Interp, e: &Expr, vars: &[Expr]) -> Result<Option<MPoly>, Flow> {
+    let mut out: MPoly = MPoly::new();
+    let terms = expanded_terms(i, e)?;
+    for t in &terms {
+        let mut bases = Vec::new();
+        let mut coeffs = Vec::new();
+        split_term(i, t, &mut bases, &mut coeffs);
+        let mut exps = vec![0u32; vars.len()];
+        for (b, n) in &bases {
+            if *n < 0 {
+                return Ok(None);
+            }
+            let Some(pos) = vars.iter().position(|v| same_q(v, b)) else {
+                return Ok(None);
+            };
+            exps[pos] += *n as u32;
+        }
+        let mut c = Rat::from_i64(1);
+        for f in &coeffs {
+            match f.as_rat_exact() {
+                Some(r) => c = c.mul(&r),
+                None => return Ok(None),
+            }
+        }
+        let slot = out.entry(exps).or_insert_with(|| Rat::from_i64(0));
+        *slot = slot.add(&c);
+    }
+    out.retain(|_, c| !c.is_zero());
+    Ok(Some(out))
+}
+
+fn m_to_expr(i: &mut Interp, p: &MPoly, vars: &[Expr]) -> Result<Expr, Flow> {
+    let sys = i.t.sys;
+    let mut terms: Vec<Expr> = Vec::new();
+    for (exps, c) in p {
+        let mut factors: Vec<Expr> = vec![Expr::rat(c.clone())];
+        for (v, e) in vars.iter().zip(exps.iter()) {
+            if *e == 0 {
+                continue;
+            }
+            let factor = if *e == 1 {
+                v.clone()
+            } else {
+                eval_call(
+                    i,
+                    Expr::Sym(sys.power),
+                    vec![v.clone(), Expr::int_i64(*e as i64)],
+                )?
+            };
+            factors.push(factor);
+        }
+        terms.push(eval_call(i, Expr::Sym(sys.times), factors)?);
+    }
+    if terms.is_empty() {
+        return Ok(Expr::int_i64(0));
+    }
+    eval_call(i, Expr::Sym(sys.plus), terms)
+}
+
+fn m_scale(p: &MPoly, k: &Rat) -> MPoly {
+    p.iter().map(|(e, c)| (e.clone(), c.mul(k))).collect()
+}
+
+fn m_sub(a: &MPoly, b: &MPoly) -> MPoly {
+    let mut out = a.clone();
+    for (e, c) in b {
+        let slot = out.entry(e.clone()).or_insert_with(|| Rat::from_i64(0));
+        *slot = slot.sub(c);
+    }
+    out.retain(|_, c| !c.is_zero());
+    out
+}
+
+fn m_mul(a: &MPoly, b: &MPoly) -> MPoly {
+    let mut out: MPoly = MPoly::new();
+    for (ea, ca) in a {
+        for (eb, cb) in b {
+            let mut e = ea.clone();
+            for (k, v) in eb.iter().enumerate() {
+                e[k] += v;
+            }
+            let slot = out.entry(e).or_insert_with(|| Rat::from_i64(0));
+            *slot = slot.add(&ca.mul(cb));
+        }
+    }
+    out.retain(|_, c| !c.is_zero());
+    out
+}
+
+/// Exact quotient `a / b` (None when the division does not come out even).
+fn m_div_exact(a: &MPoly, b: &MPoly) -> Option<MPoly> {
+    if b.is_empty() {
+        return None;
+    }
+    let (lead_b, coef_b) = b.iter().next_back()?;
+    let mut rem = a.clone();
+    let mut quot: MPoly = MPoly::new();
+    while !rem.is_empty() {
+        let (lead_r, coef_r) = rem.iter().next_back()?;
+        // The divisor's leading monomial must divide the remainder's.
+        if lead_b.iter().zip(lead_r.iter()).any(|(x, y)| x > y) {
+            return None;
+        }
+        let e: Vec<u32> = lead_r.iter().zip(lead_b.iter()).map(|(x, y)| x - y).collect();
+        let c = coef_r.div(coef_b);
+        let term: MPoly = std::iter::once((e, c)).collect();
+        quot = m_sub(&quot, &m_scale(&term, &Rat::from_i64(-1)));
+        rem = m_sub(&rem, &m_mul(&term, b));
+    }
+    Some(quot)
+}
+
+fn m_content(p: &MPoly) -> Rat {
+    let mut g: Option<Rat> = None;
+    for c in p.values() {
+        let c = c.clone().abs();
+        g = Some(match g {
+            None => c,
+            Some(prev) => rat_gcd(&prev, &c),
+        });
+    }
+    g.unwrap_or_else(|| Rat::from_i64(1))
+}
+
+/// An exact univariate GCD, made monic.
+fn uni_gcd(a: &[Rat], b: &[Rat]) -> Vec<Rat> {
+    let mut x = a.to_vec();
+    let mut y = b.to_vec();
+    trim(&mut x);
+    trim(&mut y);
+    while !y.is_empty() {
+        let Some((_, r)) = poly_div(&x, &y) else {
+            return vec![Rat::from_i64(1)];
+        };
+        x = y;
+        y = r;
+        trim(&mut y);
+    }
+    trim(&mut x);
+    if x.is_empty() {
+        return vec![Rat::from_i64(1)];
+    }
+    let lead = x[x.len() - 1].clone();
+    if lead.is_zero() {
+        return vec![Rat::from_i64(1)];
+    }
+    div_coeffs(&x, &lead)
+}
+
+/// A common factor of two multivariate polynomials, by Kronecker substitution:
+/// replace the variables by a single one so the univariate GCD applies, then
+/// check the decoded result really divides both inputs (that check is what makes
+/// the shortcut safe — a degenerate substitution can only lose a factor, never
+/// invent one).
+fn multivariate_gcd(i: &mut Interp, a: &MPoly, b: &MPoly, vars: &[Expr]) -> Option<MPoly> {
+    let degree = |p: &MPoly| -> u32 {
+        p.keys().map(|e| e.iter().sum::<u32>()).max().unwrap_or(0)
+    };
+    let d = degree(a).max(degree(b));
+    let base = d + 1;
+    let encode = |e: &[u32]| -> usize {
+        let mut idx = 0usize;
+        let mut mul = 1usize;
+        for x in e {
+            idx += *x as usize * mul;
+            mul *= base as usize;
+        }
+        idx
+    };
+    let to_uni = |p: &MPoly| -> Vec<Rat> {
+        let mut out: Vec<Rat> =
+            vec![Rat::from_i64(0); p.keys().map(|e| encode(e)).max().unwrap_or(0) + 1];
+        for (e, c) in p {
+            let k = encode(e);
+            out[k] = out[k].add(c);
+        }
+        trim(&mut out);
+        out
+    };
+    let ua = to_uni(a);
+    let ub = to_uni(b);
+    let ug = uni_gcd(&ua, &ub);
+    if ug.len() <= 1 {
+        return None;
+    }
+    // Decode: the digits of the index in base `base` are the exponents.
+    let mut g: MPoly = MPoly::new();
+    for (k, c) in ug.iter().enumerate() {
+        if c.is_zero() {
+            continue;
+        }
+        let mut idx = k;
+        let mut e = vec![0u32; vars.len()];
+        for slot in e.iter_mut() {
+            *slot = (idx % base as usize) as u32;
+            idx /= base as usize;
+        }
+        if idx != 0 {
+            return None; // exponent beyond the encoding's range
+        }
+        g.insert(e, c.clone());
+    }
+    // The decoded polynomial must genuinely divide both inputs: that check is what
+    // makes the shortcut sound (a degenerate substitution can lose a factor, never
+    // invent one).
+    m_div_exact(a, &g)?;
+    m_div_exact(b, &g)?;
+    // A unit multiple is the same factor; pick the sign with a positive leading
+    // coefficient so `Cancel[(x^2 - y^2)/(x - y)]` reads `x + y`, not `-(-x - y)`.
+    if let Some((_, lead)) = g.iter().next_back() {
+        if lead.is_neg() {
+            g = m_scale(&g, &Rat::from_i64(-1));
+        }
+    }
+    Some(g)
+}
+
 pub fn b_polynomialgcd(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 2 {
         return Ok(unevaluated_call(i, "PolynomialGCD", args));
     }
     let a = i.eval(&args[0])?;
     let b = i.eval(&args[1])?;
-    // v1: univariate GCD using the first variable of a.
+    // More than one variable: a shared factor such as `x + y` is invisible to the
+    // univariate GCD below, so try the multivariate one first.
+    let mut all_vars: Vec<Expr> = vars_of(i, &a)?;
+    for v in vars_of(i, &b)? {
+        if !all_vars.iter().any(|x| same_q(x, &v)) {
+            all_vars.push(v);
+        }
+    }
+    if all_vars.len() >= 2 && all_vars.len() < 6 {
+        if let (Some(pa), Some(pb)) = (
+            m_from_expr(i, &a, &all_vars)?,
+            m_from_expr(i, &b, &all_vars)?,
+        ) {
+            if pa.len() < 4096 && pb.len() < 4096 {
+                if let Some(g) = multivariate_gcd(i, &pa, &pb, &all_vars) {
+                    let content = m_content(&g);
+                    let monic = m_scale(&g, &Rat::from_i64(1).div(&content));
+                    return m_to_expr(i, &monic, &all_vars);
+                }
+            }
+        }
+    }
     let Some(var) = vars_of(i, &a)?.first().cloned() else {
         return Ok(unevaluated_call(i, "PolynomialGCD", args));
     };

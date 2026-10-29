@@ -51,6 +51,17 @@ Cancel[(x^2 y + x y^2)/(x y)]
 => x + y
 Cancel[(2 x y)/(4 x)]
 => 1/2 y
-# A symbolic coefficient is not a rational content, so this stays as Together left it.
+# A symbolic coefficient is just another variable to the multivariate GCD, which
+# now cancels the shared factor `1 + x`.
 Cancel[(a x + a)/(x + 1)]
-=> (a + a x)/(1 + x)
+=> a
+Cancel[(x^2 - y^2)/(x - y)]
+=> x + y
+Cancel[(x^3 + y^3)/(x + y)]
+=> x^2 - x y + y^2
+Cancel[(x^2 y + x y^2)/(x + y)]
+=> x y
+Cancel[(x^2 + y)/(x^3 + y)]
+=> (x^2 + y)/(x^3 + y)
+PolynomialGCD[x^2 - y^2, x - y]
+=> x - y
