@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.2.17 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.2.18 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
@@ -647,9 +647,18 @@ impl Interp {
             Ok(r) => r,
             Err(payload) => {
                 let detail = panic_text(&payload);
+                // Name the call, so a report says which input found the bug: a
+                // backstop message without its arguments is a dead end.
+                let call = crate::fmt::output_form(&self.t, &Expr::node(Expr::Sym(sym_id), args.to_vec()));
+                let call = if call.chars().count() > 120 {
+                    let head: String = call.chars().take(120).collect();
+                    format!("{}…", head)
+                } else {
+                    call
+                };
                 self.messages.push((
                     format!("{}::panic", name),
-                    format!("internal error while evaluating {}: {}", name, detail),
+                    format!("internal error while evaluating {}: {} ({})", call, detail, name),
                 ));
                 Ok(Expr::node(Expr::Sym(sym_id), args.to_vec()))
             }
@@ -1455,5 +1464,53 @@ mod hint_cache_tests {
         let mut i = super::Interp::new();
         assert_eq!(i.t.case_insensitive_match("Sin"), None);
         assert_eq!(i.t.case_insensitive_match("sin").as_deref(), Some("Sin"));
+    }
+}
+
+#[cfg(test)]
+mod builtin_panic_backstop_tests {
+    /// Built-ins have a `catch_unwind` backstop that reports a panic as
+    /// `Name::panic` and leaves the call unevaluated, so the kernel survives —
+    /// but a panic there is still a bug. This pins the integration and algebra
+    /// rules that have tripped it (the repeated-quadratic rule divided by `j - 1`
+    /// before its base case was guarded).
+    fn messages_for(src: &str) -> Vec<String> {
+        let mut i = super::Interp::new();
+        let e = crate::parser::parse_input(&mut i.t, src).unwrap();
+        let _ = i.eval(&e);
+        i.messages.iter().map(|(t, _)| t.clone()).collect()
+    }
+
+    #[test]
+    fn arithmetic_and_algebra_rules_never_reach_the_backstop() {
+        for src in [
+            "Integrate[1/(1 + x^2)^2, x]",
+            "Integrate[x/(1 + x^2)^2, x]",
+            "Integrate[1/(4 + x^2)^2, x]",
+            "Integrate[x^3/(1 + x^2)^2, x]",
+            "Integrate[1/(1 + x^2), x]",
+            "Integrate[1/(x^3 + x), x]",
+            "Integrate[1/(x^2 (1 + x)), x]",
+            "Integrate[Sin[x]^2, x]",
+            "Integrate[Sin[x]^2 Cos[x]^3, x]",
+            "Integrate[Sin[x]^2 Cos[x]^2, x]",
+            "Integrate[Sin[x]^30 Cos[x]^30, x]",
+            "Integrate[1/(x^2 + 1)^3, x]",   // still unsupported, must be clean
+            "Apart[1/(1 + x^2)^2, x]",
+            "Apart[1/(x^2 + 1)^3, x]",
+            "Cancel[(x^2 - y^2)/(x - y)]",
+            "PolynomialGCD[x^2 - y^2, x - y]",
+            "Eigenvalues[{{1, 2}, {3, 4}}]",
+            "Eigenvectors[{{1, 2}, {3, 4}}]",
+            "GCD[2^64, 2^70]",
+            "PrimeQ[2^89 - 1]",
+        ] {
+            let msgs = messages_for(src);
+            assert!(
+                !msgs.iter().any(|m| m.ends_with("::panic")),
+                "{src} reached the panic backstop: {:?}",
+                msgs
+            );
+        }
     }
 }

@@ -103,3 +103,9 @@ Integrate[1/(4 + x^2)^2, x]
 => 1/8 x/(4 + x^2) + 1/16 ArcTan[1/2 x]
 Integrate[x^3/(1 + x^2)^2, x]
 => 1/2 Log[1 + x^2] + 1/2/(1 + x^2)
+# The reduction recurses, so higher powers work even though Apart stops at the
+# second power of a quadratic.
+Integrate[1/(1 + x^2)^3, x]
+=> 1/4 x 1/(1 + x^2)^2 + 3/4 (1/2 x/(1 + x^2) + 1/2 ArcTan[x])
+Apart[1/(1 + x^2)^3, x]
+=> Apart[1/(1 + x^2)^3, x]

@@ -155,6 +155,13 @@ fn exercise(src: &str) -> Result<bool, ()> {
             Err(_) => false,
         }
     }));
+    // A built-in has a `catch_unwind` backstop that turns its own panic into a
+    // `Name::panic` message, so a panic that never escapes still counts as a
+    // failure here. That is the check that would have caught `Integrate`
+    // dividing by zero when a rule met its own base case.
+    if i.messages.iter().any(|(tag, _)| tag.ends_with("::panic")) {
+        return Err(());
+    }
     run.map_err(|_| ())
 }
 

@@ -657,8 +657,10 @@ k.eval("x = 5; x^2")["result"]       # "25"
   (`N[Sin[x], 40]`) and an `f64` input (`N[1.5, 40]`, which cannot regain
   precision) still report `N::meprec` and fall back to machine precision.
 - `Apart` splits a denominator whose factors are linear (with multiplicity,
-  including repeated roots) plus an irreducible quadratic, to the second power;
-  a cube or higher power of a quadratic still stays unevaluated.
+  including repeated roots) plus an irreducible quadratic, to the second power; a
+  cube or higher power of a quadratic makes `Apart` leave the expression alone
+  (`Integrate` does handle those — see below — it just works from the whole
+  fraction rather than from a partial-fraction split).
 - `Cancel` cancels the common monomial factor and the numeric content of any
   rational function, the common univariate polynomial factor, and a shared
   multivariate factor such as `x + y` (`Cancel[(x^2 - y^2)/(x - y)]` → `x + y`,
@@ -700,8 +702,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `Log[x] - 1/2 Log[1 + x^2]`, via `Apart`), and the special cases
   `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`,
   `Exp[-x^2]`, rational functions with repeated linear factors and with a
-  repeated irreducible quadratic (`Integrate[1/(1 + x^2)^2, x]` →
-  `1/2 x/(1 + x^2) + 1/2 ArcTan[x]`, by the standard reduction)
+  any power of an irreducible quadratic (`Integrate[1/(1 + x^2)^2, x]` →
+  `1/2 x/(1 + x^2) + 1/2 ArcTan[x]`, and `1/(1 + x^2)^3` likewise, by the standard
+  reduction, which recurses down to the arc tangent)
   (`Integrate[1/(x^2 (1 + x)), x]` → `Log[1 + x] - Log[x] - 1/x`, via the
   generalised `Apart`), and every product `Sin[u]^m Cos[u]^n` with integer
   exponents ≥ 0 — the substitution `t = sin u`/`t = cos u` when one exponent is
