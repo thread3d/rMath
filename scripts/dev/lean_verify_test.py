@@ -58,6 +58,12 @@ BATTERY = [
      "{{x -> Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 + Sqrt[5])]}, "
      "{x -> Sqrt[1/2 (-1 - Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 - Sqrt[5])]}}",
      "verified"),
+    # matrices: a literal is `!![...]` over ℚ, and the tactics close the entries
+    ("Det[{{2, 1}, {1, 3}}]", "5", "verified"),
+    ("Transpose[{{1, 2}, {3, 4}}]", "{{1, 3}, {2, 4}}", "verified"),
+    ("Dot[{{1, 2}, {3, 4}}, {5, 6}]", "{17, 39}", "verified"),
+    ("Dot[{5, 6}, {{1, 2}, {3, 4}}]", "{23, 34}", "verified"),
+    ("Dot[{1, 2}, {3, 4}]", "11", "verified"),
     # inverse-tangent wiring: the derivative, and the two integrals it unlocks
     ("D[ArcTan[x], x]", "1/(1 + x^2)", "verified"),
     ("Integrate[1/(1 + x^2), x]", "ArcTan[x]", "verified"),

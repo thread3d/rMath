@@ -240,6 +240,7 @@ omega | simp | decide | rfl`, so only a tactic that *closes* the goal counts:
 | `Integrate[x^2, x] = 1/3 x^3`, `Integrate[Sin[x], x] = -Cos[x]`, `Integrate[1/x, x] = Log[x]` | verified — an indefinite integral is checked by differentiating the antiderivative (`deriv F = f`) |
 | `D[x^3 + Sin[x], x]`, `D[Exp[x^2], x]`, `D[Sin[x]^2, x]`, `D[3 x^4, x]`, `D[Cos[x], x]`, `D[x, x]`, `D[7, x]`, `D[x^2 + 2 x + 1, x]`, `D[1/x, x]`, `D[Sin[x]/x, x]`, `D[Log[x], x]`, `D[Sqrt[x], x]`, `D[Exp[x] Log[x], x]`, `D[Log[x^2 + 1], x]` | verified — the kernel's derivative cross-checked through explicit `HasDerivAt` wiring (**14 of 14** sampled shapes) |
 | `Solve[x^2 - 3 x + 2 == 0, x]`, `Solve[x^2 - 2 == 0, x]` | verified — every root the kernel returned is substituted back into the equation |
+| `Det[{{2, 1}, {1, 3}}] = 5`, `Transpose[...]`, `Dot[...]` (matrix·vector, vector·matrix, vector·vector) | verified — a matrix literal is `!![...]` over ℚ and the goal is closed entrywise (`ext i j <;> fin_cases i <;> fin_cases j <;> simp`, `norm_num [Matrix.det_fin_two]`) |
 | `1/2 + 1/3 = 2/3` (false) | **not proved** |
 
 `Steps[...]` and `Trace[...]` are display wrappers, so verifying such a cell
@@ -665,6 +666,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `Cancel[(a x + a)/(x + 1)]` stays as `Together` left it.
 - `Solve` covers linear systems (unique solutions), quadratics, and cubics
   with rational roots; multivariate nonlinear systems stay unevaluated.
+- A `MatrixPower[...]` claim translates to Lean but is not proved by the tactic
+  chain (`m ^ 3` does not reduce for `decide`); `Inverse`, `LinearSolve`,
+  `RowReduce` and `MatrixRank` are not translated at all.
 - `Eigenvalues`/`Eigenvectors` cover 2×2 matrices with exact entries (the
   characteristic quadratic is solved exactly, with `I` for a negative
   discriminant); larger matrices stay unevaluated.

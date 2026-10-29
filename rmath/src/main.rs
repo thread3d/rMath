@@ -86,7 +86,7 @@ fn main() {
 
 fn real_main(args: &[String]) {
     if args.iter().any(|a| a == "--version") {
-        println!("rmath 0.2.12 (stand-alone Mathematica-style kernel, Rust)");
+        println!("rmath 0.2.13 (stand-alone Mathematica-style kernel, Rust)");
         return;
     }
     // --server: JSON-RPC stdio mode for the Python front end.

@@ -51,7 +51,8 @@ CONSTS = {
 }
 # Silence the linters that flag the tactic alternatives that did not run: the
 # chain is deliberately a set of fallbacks.
-QUIET = ("set_option linter.unreachableTactic false\n"
+QUIET = ("open Matrix\n"
+         "set_option linter.unreachableTactic false\n"
          "set_option linter.unusedTactic false\n"
          "set_option linter.unnecessarySimpa false\n"
          "set_option autoImplicit false\n\n")
@@ -64,15 +65,20 @@ REAL_FUNCS = {v for k, v in FUNCS.items() if v.startswith("Real.")}
 # Ordered cheapest/most-likely first; `solve |` only accepts a tactic that
 # *closes* the goal, so the search engines go last. `rmath_radical` is defined in
 # `lean/RMathLemmas.lean`, which is inlined into every generated file.
+MATRIX_TACTICS = ("norm_num [Matrix.det_fin_two] | "
+                  "ext i j <;> fin_cases i <;> fin_cases j <;> simp | "
+                  "ext i <;> fin_cases i <;> simp <;> norm_num | "
+                  "simp [dotProduct] <;> norm_num")
 TACTICS = ("rmath_radical | norm_num [Real.sq_sqrt] | norm_num | ring | ring_nf | "
            "field_simp | norm_cast | positivity | linarith | nlinarith | gcongr | "
-           "omega | simp | simp_all | decide | rfl | aesop | grind")
+           "omega | simp | simp_all | decide | rfl | " + MATRIX_TACTICS + " | aesop | grind")
 
 # Root substitution additionally knows how to use `Real.sq_sqrt`, which closes
 # real-radical roots like (√2)² − 2 = 0 that plain `norm_num` leaves open.
 SOLVE_TACTICS = ("rmath_radical | norm_num [Real.sq_sqrt] | norm_num | ring | ring_nf | "
                  "field_simp | norm_cast | nlinarith | linarith | positivity | gcongr | "
-                 "omega | simp | simp_all | decide | rfl | aesop | grind")
+                 "omega | simp | simp_all | decide | rfl | " + MATRIX_TACTICS +
+                 " | aesop | grind")
 
 
 def project_dir():
@@ -787,6 +793,8 @@ class Translator:
         # equation between numbers.
         self.nat = False
         self.prop = False
+        self.matrix = False
+        self.vector = False
 
     def _num(self, text, natural=False):
         if not self.ascribe or not self.ty:
@@ -861,9 +869,23 @@ class Translator:
             op = " ∧ " if isinstance(node.op, ast.And) else " ∨ "
             return "(" + op.join("(%s)" % self.expr(v) for v in node.values) + ")"
         if isinstance(node, ast.Tuple):
-            # rMath lists `{a, b, c}`; the ambient type carries the element type.
+            # A list of equal-length lists is a matrix: `{{1, 2}, {3, 4}}` is
+            # `!![1, 2; 3, 4]` over the ambient type.
             ty = self.ty or ("ℝ" if self.real else "ℚ")
+            rows = [[c for c in r.elts] for r in node.elts
+                    if isinstance(r, ast.Tuple)]
+            if rows and len(rows) == len(node.elts) and rows[0] \
+                    and all(len(r) == len(rows[0]) for r in rows):
+                body = "; ".join(", ".join(self.expr(c) for c in row) for row in rows)
+                self.matrix = True
+                return "(!![%s] : Matrix (Fin %d) (Fin %d) %s)" % (
+                    body, len(rows), len(rows[0]), ty)
+            # A flat tuple inside a matrix or dot-product claim is a vector
+            # (`Fin n → ℚ`), which is what `*ᵥ` and `⬝ᵥ` take; elsewhere rMath's
+            # list is `List ℚ`.
             items = ", ".join(self.expr(e) for e in node.elts)
+            if getattr(self, "vector", False):
+                return "(![%s] : Fin %d → %s)" % (items, len(node.elts), ty)
             return "([%s] : List %s)" % (items, ty)
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
@@ -916,6 +938,8 @@ class Translator:
                 ty = self.ty or ("ℝ" if self.real else "ℚ")
                 return "([%s] : List %s)" % (
                     ", ".join(_literal_text(v, ty) for v in items), ty)
+            if fname in ("Det", "Transpose", "Inverse", "MatrixPower", "Dot"):
+                return self._matrix_call(fname, node)
             target = FUNCS.get(fname)
             if target is None:
                 raise ValueError("no Lean translation for %s" % fname)
@@ -924,6 +948,41 @@ class Translator:
             args = " ".join("(%s)" % self.expr(a) for a in node.args)
             return "%s %s" % (target, args) if args else target
         raise ValueError("unsupported construct %s" % type(node).__name__)
+
+    def _matrix_call(self, fname, node):
+        """Matrix heads. A matrix is `Matrix (Fin n) (Fin m) ty`, so `Det` is
+        `.det`, `Transpose` is `.transpose`, and `Dot` picks the product that
+        matches its operands (`*ᵥ` for a matrix with a vector, `⬝ᵥ` between two
+        vectors, `*` between two matrices)."""
+        self.matrix = True
+        if fname == "Det" and len(node.args) == 1:
+            return "((%s).det)" % self.expr(node.args[0])
+        if fname == "Transpose" and len(node.args) == 1:
+            return "((%s).transpose)" % self.expr(node.args[0])
+        if fname == "Inverse" and len(node.args) == 1:
+            return "((%s)⁻¹)" % self.expr(node.args[0])
+        if fname == "MatrixPower" and len(node.args) == 2:
+            k = _int_literal(node.args[1])
+            if k is None:
+                raise ValueError("MatrixPower is translated only for an integer power")
+            base = self.expr(node.args[0])
+            if k >= 0:
+                return "((%s) ^ %d)" % (base, k)
+            return "(((%s)⁻¹) ^ %d)" % (base, -k)
+        if fname == "Dot" and len(node.args) == 2:
+            a, b = node.args
+            left = self.expr(a)
+            right = self.expr(b)
+            a_mat = isinstance(a, ast.Tuple) and a.elts and isinstance(a.elts[0], ast.Tuple)
+            b_mat = isinstance(b, ast.Tuple) and b.elts and isinstance(b.elts[0], ast.Tuple)
+            if a_mat and b_mat:
+                return "((%s) * (%s))" % (left, right)
+            if a_mat:
+                return "((%s) *ᵥ (%s))" % (left, right)
+            if b_mat:
+                return "((%s) ᵥ* (%s))" % (left, right)
+            return "((%s) ⬝ᵥ (%s))" % (left, right)
+        raise ValueError("no Lean translation for %s" % fname)
 
     def translate(self, text):
         """Returns (lean_expression, type_name, sorted variable names)."""
@@ -1564,14 +1623,20 @@ def statement(lhs_text, rhs_text=None, relation="="):
         except SyntaxError as e:
             raise ValueError("cannot parse %r as rMath: %s" % (text, e.msg))
 
+    # A claim about matrices or dot products lives in `Matrix`/`Fin n → ty`, so
+    # both sides must be translated that way (`![1, 2]`, not `[1, 2] : List ℚ`).
+    vector_mode = bool(re.search(r"\b(Det|Transpose|Inverse|MatrixPower|Dot)\s*\[", lhs_text))
+
     def typed(text, ty, extra_vars):
         t = Translator(ascribe=True, ty=ty)
         t.vars = {v: None for v in extra_vars}
+        t.vector = vector_mode
         return t.expr(tree(text))
 
     if rhs_text is None:
         # Without a right-hand side the input must itself be a claim.
         probe = Translator()
+        probe.vector = vector_mode
         probe.expr(tree(lhs_text))
         if not isinstance(ast.parse(_rmath_to_python(lhs_text), mode="eval").body,
                           (ast.Compare, ast.BoolOp)):
@@ -1582,6 +1647,8 @@ def statement(lhs_text, rhs_text=None, relation="="):
         prop = typed(lhs_text, ty, vs)
     else:
         probe_l, probe_r = Translator(), Translator()
+        probe_l.vector = vector_mode
+        probe_r.vector = vector_mode
         probe_l.expr(tree(lhs_text))
         probe_r.expr(tree(rhs_text))
         vs = sorted(set(probe_l.vars) | set(probe_r.vars))
