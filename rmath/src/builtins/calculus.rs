@@ -908,10 +908,107 @@ fn one_minus_t2_power(k: i64, p: i64) -> Vec<Rat> {
     c
 }
 
-/// `Sin[u]^m Cos[u]^n` with one odd exponent, by the substitution t = cos u
-/// (m odd) or t = sin u (n odd); u linear in the variable, so the inverse slope
-/// comes out as a factor. Both exponents even needs product-to-sum, which is not
-/// implemented and is left unevaluated.
+/// `∫ sin^m u cos^n u du` by the substitution `t = sin u` (n odd) or `t = cos u`
+/// (m odd): the integrand becomes a polynomial in `t`, integrated term by term.
+/// The `-1` for the cosine case is `du = -sin u du`.
+fn trig_substitution_integral(
+    i: &mut Interp,
+    u: &Expr,
+    m: i64,
+    n: i64,
+) -> Result<Expr, Flow> {
+    let sys = i.t.sys;
+    let (k, p, base_name, sign) = if n % 2 == 1 {
+        ((n - 1) / 2, m, "Sin", 1i64)
+    } else {
+        ((m - 1) / 2, n, "Cos", -1i64)
+    };
+    let coeffs = one_minus_t2_power(k, p);
+    let base = app(i, base_name, u);
+    let mut terms: Vec<Expr> = Vec::new();
+    for (j, c) in coeffs.iter().enumerate() {
+        if c.is_zero() {
+            continue;
+        }
+        let power = (j + 1) as i64;
+        let coef = c.div(&Rat::from_i64(power));
+        let pw = eval_call(
+            i,
+            Expr::Sym(sys.power),
+            vec![base.clone(), Expr::int_i64(power)],
+        )?;
+        terms.push(eval_call(
+            i,
+            Expr::Sym(sys.times),
+            vec![Expr::rat(coef), pw],
+        )?);
+    }
+    let mut poly = eval_call(i, Expr::Sym(sys.plus), terms)?;
+    if sign < 0 {
+        let neg = neg1(i, poly);
+        poly = i.eval(&neg)?;
+    }
+    Ok(poly)
+}
+
+/// `∫ sin^m u cos^n u du` for integer exponents >= 0, with respect to `u`.
+///
+/// One odd exponent: the substitution above. Both even: the reduction
+///
+/// ```text
+/// ∫ sin^m cos^n = sin^(m+1)u cos^(n-1)u/(m+n) + ((n-1)/(m+n)) ∫ sin^m cos^(n-2)
+/// ```
+///
+/// which lowers `n` by two until it reaches zero (and then `m`, by the mirror
+/// recurrence). This is the product-to-sum identity in disguise: it leaves the
+/// answer in terms of `sin u cos u` rather than `sin 2u`, which is a valid
+/// antiderivative either way.
+fn trig_product_integral_u(i: &mut Interp, u: &Expr, m: i64, n: i64) -> Result<Expr, Flow> {
+    let sys = i.t.sys;
+    if m == 0 && n == 0 {
+        return Ok(u.clone());
+    }
+    if m % 2 == 1 || n % 2 == 1 {
+        return trig_substitution_integral(i, u, m, n);
+    }
+    let (mm, nn) = (m, n);
+    // Reduce the larger even exponent by two.
+    if nn >= 2 {
+        let s = app(i, "Sin", u);
+        let c = app(i, "Cos", u);
+        let sp = eval_call(i, Expr::Sym(sys.power), vec![s, Expr::int_i64(mm + 1)])?;
+        let cp = eval_call(i, Expr::Sym(sys.power), vec![c, Expr::int_i64(nn - 1)])?;
+        let pair = eval_call(i, Expr::Sym(sys.times), vec![sp, cp])?;
+        let coef = Rat::new(BigInt::one(), BigInt::from_i64(mm + nn));
+        let first = eval_call(
+            i,
+            Expr::Sym(sys.times),
+            vec![Expr::rat(coef.clone()), pair],
+        )?;
+        let rest = trig_product_integral_u(i, u, mm, nn - 2)?;
+        let coef2 = Rat::new(BigInt::from_i64(nn - 1), BigInt::from_i64(mm + nn));
+        let second = eval_call(
+            i,
+            Expr::Sym(sys.times),
+            vec![Expr::rat(coef2), rest],
+        )?;
+        return eval_call(i, Expr::Sym(sys.plus), vec![first, second]);
+    }
+    // n == 0, m even >= 2: ∫ sin^m = -(sin^(m-1) cos)/m + ((m-1)/m) ∫ sin^(m-2)
+    let s = app(i, "Sin", u);
+    let c = app(i, "Cos", u);
+    let sp = eval_call(i, Expr::Sym(sys.power), vec![s, Expr::int_i64(mm - 1)])?;
+    let pair = eval_call(i, Expr::Sym(sys.times), vec![sp, c])?;
+    let neg = Rat::new(BigInt::from_i64(-1), BigInt::from_i64(mm));
+    let first = eval_call(i, Expr::Sym(sys.times), vec![Expr::rat(neg), pair])?;
+    let rest = trig_product_integral_u(i, u, mm - 2, 0)?;
+    let coef2 = Rat::new(BigInt::from_i64(mm - 1), BigInt::from_i64(mm));
+    let second = eval_call(i, Expr::Sym(sys.times), vec![Expr::rat(coef2), rest])?;
+    eval_call(i, Expr::Sym(sys.plus), vec![first, second])
+}
+
+/// `Sin[u]^m Cos[u]^n` for any integer exponents >= 0, with `u` linear in the
+/// variable (the inverse slope comes out as a factor).
 fn trig_product_antiderivative(
     i: &mut Interp,
     e: &Expr,
@@ -972,7 +1069,7 @@ fn trig_product_antiderivative(
     let (Some(m), Some(n), Some(u)) = (sin_exp, cos_exp, arg) else {
         return Ok(None);
     };
-    if m % 2 == 0 && n % 2 == 0 {
+    if m > 400 || n > 400 {
         return Ok(None);
     }
     let Some((slope, _)) = linear_form(i, &u, var)? else {
@@ -981,42 +1078,8 @@ fn trig_product_antiderivative(
     if slope == 0 {
         return Ok(None);
     }
-    // Odd cosine power: t = sin u. Odd sine power: t = cos u, with a minus sign
-    // from du = -sin u du.
-    let (k, p, base_name, sign) = if n % 2 == 1 {
-        ((n - 1) / 2, m, "Sin", 1i64)
-    } else {
-        ((m - 1) / 2, n, "Cos", -1i64)
-    };
-    let coeffs = one_minus_t2_power(k, p);
-    let base = app(i, base_name, &u);
-    let mut terms: Vec<Expr> = Vec::new();
-    for (j, c) in coeffs.iter().enumerate() {
-        if c.is_zero() {
-            continue;
-        }
-        let power = (j + 1) as i64;
-        let coef = c.div(&Rat::from_i64(power));
-        let pw = eval_call(
-            i,
-            Expr::Sym(sys.power),
-            vec![base.clone(), Expr::int_i64(power)],
-        )?;
-        let term = eval_call(
-            i,
-            Expr::Sym(sys.times),
-            vec![Expr::rat(coef), pw],
-        )?;
-        terms.push(term);
-    }
-    if terms.is_empty() {
-        return Ok(None);
-    }
-    let poly = eval_call(i, Expr::Sym(sys.plus), terms)?;
-    let scale = Expr::rat(Rat::new(
-        BigInt::from_i64(sign),
-        BigInt::from_i64(slope),
-    ));
+    let poly = trig_product_integral_u(i, &u, m, n)?;
+    let scale = Expr::rat(Rat::new(BigInt::one(), BigInt::from_i64(slope)));
     let res = eval_call(i, Expr::Sym(sys.times), vec![scale, poly])?;
     let expanded = app(i, "Expand", &res);
     Ok(Some(i.eval(&expanded)?))

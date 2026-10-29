@@ -698,12 +698,14 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`,
   `Exp[-x^2]`, rational functions with repeated linear factors
   (`Integrate[1/(x^2 (1 + x)), x]` → `Log[1 + x] - Log[x] - 1/x`, via the
-  generalised `Apart`), and products `Sin[u]^m Cos[u]^n` with one odd exponent
-  (by the substitution `t = sin u` or `t = cos u`, so
-  `Integrate[Sin[x]^2 Cos[x]^3, x]` → `-1/5 Sin[x]^5 + 1/3 Sin[x]^3`); a product
-  with *both* exponents even needs product-to-sum and stays unevaluated. A
-  trig-power antiderivative is also not yet Lean-checked, because closing it
-  needs the Pythagorean identity in the derivative tactic chain.
+  generalised `Apart`), and every product `Sin[u]^m Cos[u]^n` with integer
+  exponents ≥ 0 — the substitution `t = sin u`/`t = cos u` when one exponent is
+  odd, and the reduction `∫sin^m cos^n = sin^(m+1)cos^(n-1)/(m+n) + ((n-1)/(m+n))∫sin^m cos^(n-2)`
+  when both are even (so `Integrate[Sin[x]^2 Cos[x]^2, x]` gives
+  `x/8 - Cos[x] Sin[x]/8 + Cos[x] Sin[x]^3/4`, an antiderivative written with
+  `sin u cos u` rather than `sin 2u`). A trig-power antiderivative is also not
+  yet Lean-checked, because closing it needs the Pythagorean identity in the
+  derivative tactic chain.
 - Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
   `SinhIntegral`, `CoshIntegral`, `ExpIntegralEi`, `LogIntegral`, `Sinc`
   (machine-precision numeric evaluation, exact values at 0/±Infinity, and

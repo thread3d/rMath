@@ -67,8 +67,16 @@ Integrate[Sin[x] Cos[x], x]
 => 1/2 Sin[x]^2
 Integrate[Sin[2 x]^3 Cos[2 x], x]
 => 1/8 Sin[2 x]^4
+# Both exponents even: the reduction lowers n by two, which is product-to-sum in
+# disguise (the answer stays in terms of sin u cos u rather than sin 2u).
 Integrate[Sin[x]^2 Cos[x]^2, x]
-=> Integrate[Cos[x]^2 Sin[x]^2, x]
+=> 1/8 x - 1/8 Cos[x] Sin[x] + 1/4 Cos[x] Sin[x]^3
+Integrate[Sin[x]^2 Cos[x]^4, x]
+=> 1/16 x - 1/16 Cos[x] Sin[x] + 1/8 Cos[x] Sin[x]^3 + 1/6 Cos[x]^3 Sin[x]^3
+Integrate[Sin[x]^4 Cos[x]^4, x]
+=> 3/128 x - 3/128 Cos[x] Sin[x] - 1/64 Cos[x] Sin[x]^3 + 1/16 Cos[x] Sin[x]^5 + 1/8 Cos[x]^3 Sin[x]^5
+Integrate[Sin[x]^2 Cos[x]^2, {x, 0, Pi}]
+=> 1/8 Pi
 
 # Repeated linear factors in the denominator: the cover-up rule generalises to a
 # power series about the root, so 1/(x^2 (1+x)) splits instead of staying put.
