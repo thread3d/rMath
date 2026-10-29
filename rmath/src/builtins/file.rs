@@ -549,7 +549,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut i = crate::eval::Interp::new();
         let file = Expr::from_str(&path);
-        put_lines(&mut i, &path, &[Expr::int_i64(42), Expr::from_str("hi")], false);
+        put_lines(&mut i, &path, &[Expr::int_i64(42), Expr::from_str("hi")], false).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "42\n\"hi\"\n");
         // Get evaluates the stored expressions.

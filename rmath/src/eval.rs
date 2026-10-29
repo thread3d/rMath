@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.2.2 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.2.3 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
@@ -1148,7 +1148,6 @@ impl MatchCtx for Interp {
 }
 #[cfg(test)]
 mod tests {
-    use crate::expr::Expr;
 
     fn eval_str(src: &str) -> (String, Vec<String>) {
         let mut i = super::Interp::new();
@@ -1275,7 +1274,6 @@ mod tests {
 
 #[cfg(test)]
 mod precision_message_tests {
-    use crate::expr::Expr;
 
     fn eval_str(src: &str) -> (String, Vec<String>) {
         let mut i = super::Interp::new();

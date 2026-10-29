@@ -78,10 +78,6 @@ fn symbol_tex(name: &str) -> Option<&'static str> {
     })
 }
 
-fn tex_symbol(name: &str) -> String {
-    tex_symbol_as(name, Form::Standard)
-}
-
 /// Escape characters that are special in KaTeX math mode. Symbol names may
 /// contain `$` ($Version, x$1, Pattern$Marker), which must not reach the
 /// output bare or every KaTeX parse fails.

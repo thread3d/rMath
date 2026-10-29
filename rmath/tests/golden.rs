@@ -2,10 +2,8 @@
 //! parse → eval → OutputForm pipeline and compare with expected strings.
 
 use rmath::eval::Interp;
-use rmath::expr::Expr;
 use rmath::fmt::output_form;
 use rmath::parser::parse_input;
-use std::path::Path;
 
 /// Run one input through the kernel, returning the printed result.
 fn eval_one(i: &mut Interp, src: &str) -> Result<String, String> {
@@ -76,6 +74,6 @@ fn golden_suite() {
     files.sort();
     assert!(!files.is_empty(), "no golden files found");
     for f in files {
-        run_golden_file(&f);
+        let _ = run_golden_file(&f);
     }
 }

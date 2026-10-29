@@ -516,22 +516,6 @@ fn is_exact_neg_one_nv(n: &crate::expr::NumVal) -> bool {
     matches!(n, crate::expr::NumVal::R(r) if r.num.to_i64() == Some(-1) && r.den.to_i64() == Some(1))
 }
 
-/// True when the machine/exact value is -1.
-fn is_negative_one_nv(n: &crate::expr::NumVal) -> bool {
-    match n {
-        crate::expr::NumVal::R(r) => r.num.to_i64() == Some(-1) && r.den.to_i64() == Some(1),
-        crate::expr::NumVal::F(v) => *v == -1.0,
-    }
-}
-
-/// True when the machine/exact value is 1.
-fn is_one_nv(n: &crate::expr::NumVal) -> bool {
-    match n {
-        crate::expr::NumVal::R(r) => r.is_one_pub(),
-        crate::expr::NumVal::F(v) => *v == 1.0,
-    }
-}
-
 fn is_negative_one(e: &Expr) -> bool {
     matches!(e, Expr::Int(n) if n.to_i64() == Some(-1))
 }

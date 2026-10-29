@@ -3,7 +3,7 @@
 //! Integrate can return closed forms such as ∫ sin(x)/x dx = SinIntegral[x].
 
 use crate::builtins::core::unevaluated_call;
-use crate::eval::{EvalRes, Flow, Interp};
+use crate::eval::{EvalRes, Interp};
 use crate::expr::Expr;
 
 const SQRT_PI: f64 = 1.772_453_850_905_516;
