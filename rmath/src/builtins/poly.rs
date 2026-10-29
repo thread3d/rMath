@@ -922,6 +922,58 @@ fn split_linear_factors(mut work: Vec<Rat>) -> (Vec<(Rat, usize)>, Vec<Rat>) {
     (roots, work)
 }
 
+/// An exact rational square root, or None when either part is not a square.
+fn rat_sqrt(r: &Rat) -> Option<Rat> {
+    if r.is_neg() {
+        return None;
+    }
+    let n = r.num.clone().isqrt();
+    let d = r.den.clone().isqrt();
+    if n.mul(&n) == r.num && d.mul(&d) == r.den {
+        Some(Rat { num: n, den: d })
+    } else {
+        None
+    }
+}
+
+fn poly_mul(a: &[Rat], b: &[Rat]) -> Vec<Rat> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![Rat::from_i64(0); a.len() + b.len() - 1];
+    for (i, x) in a.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            out[i + j] = out[i + j].add(&x.mul(y));
+        }
+    }
+    out
+}
+
+/// The monic-normalised quadratic `p` is a perfect square, i.e. `p = q^2` for a
+/// quadratic `q` — the shape `(x^2 + 1)^2` a denominator takes. Only degree 4 is
+/// supported: `q = α x^2 + β x + γ` from α² = p₄, 2αβ = p₃, β² + 2αγ = p₂, then
+/// the last two coefficients are checked rather than solved.
+fn square_of_quadratic(p: &[Rat]) -> Option<Vec<Rat>> {
+    if p.len() != 5 {
+        return None;
+    }
+    let alpha = rat_sqrt(&p[4])?;
+    if alpha.is_zero() {
+        return None;
+    }
+    let beta = p[3].div(&Rat::from_i64(2).mul(&alpha));
+    let two_alpha = Rat::from_i64(2).mul(&alpha);
+    let gamma = p[2].sub(&beta.mul(&beta)).div(&two_alpha);
+    let check1 = Rat::from_i64(2).mul(&beta).mul(&gamma);
+    if check1.cmp(&p[1]) != std::cmp::Ordering::Equal {
+        return None;
+    }
+    if gamma.mul(&gamma).cmp(&p[0]) != std::cmp::Ordering::Equal {
+        return None;
+    }
+    Some(vec![gamma, beta, alpha])
+}
+
 /// The first `n` Taylor coefficients of `p` about `r`: `p(r+u) = Σ b_j u^j`,
 /// with `b_j = p^{(j)}(r)/j!` (repeated synthetic division by `x - r`).
 fn taylor_coeffs(mut coeffs: Vec<Rat>, r: &Rat, n: usize) -> Vec<Rat> {
@@ -976,8 +1028,23 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
     // A degree-3 leftover is a quadratic with no rational root — irreducible over
     // the rationals, so it can carry a (B x + C) numerator of its own. Degree 2
     // means an irrational linear factor, which this does not model.
-    let quadratic = leftover.len() == 3;
-    if (leftover.len() > 1 && !quadratic) || roots.is_empty() {
+    // The leftover cofactor is a constant (complete split), one irreducible
+    // quadratic, or the square of one — `(x^2 + 1)^2` and friends.
+    let (quad, quad_power) = if leftover.len() == 1 {
+        (None, 0usize)
+    } else if leftover.len() == 3 {
+        (Some(leftover.clone()), 1usize)
+    } else if let Some(q) = square_of_quadratic(&leftover) {
+        // The square must itself be irreducible, or the split is not in this form.
+        if q.len() == 3 && split_linear_factors(q.clone()).0.is_empty() {
+            (Some(q), 2usize)
+        } else {
+            return Ok(None);
+        }
+    } else {
+        return Ok(None);
+    };
+    if quad.is_none() && roots.is_empty() {
         return Ok(None);
     }
     let dprime = poly_deriv(&den);
@@ -1038,9 +1105,11 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
         );
         terms.push(i.eval(&term)?);
     }
-    if quadratic {
-        // rem = Σ A_i · den/(x - r_i) + (B x + C) · L, where L is the product of
-        // the linear factors; divide by L to read off B and C.
+    if let Some(q) = &quad {
+        // rem = Σ A_i · den/(x - r_i)^k + Σ_j (B_j x + C_j) · L(x) · Q^(k-j), where
+        // L is the product of the linear factors. Divide by L, then peel off one
+        // (B_j x + C_j)/Q^j at a time by dividing by Q^(k-j): the quotient is at
+        // most linear, and that is B_j x + C_j.
         let mut residual = rem.clone();
         for (r, k, a) in &coeffs {
             let cofactor = divide_by_power(&den, r, *k);
@@ -1049,20 +1118,45 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
             }
             residual = poly_sub(&residual, &poly_scale(&cofactor, a));
         }
-        let Some((lin_part, _)) = poly_div(&den, &leftover) else {
+        // L = product of the linear factor powers.
+        let mut lin = vec![Rat::from_i64(1)];
+        for (r, m) in &roots {
+            let factor = vec![Rat::from_i64(0).sub(r), Rat::from_i64(1)];
+            for _ in 0..*m {
+                lin = poly_mul(&lin, &factor);
+            }
+        }
+        let Some((t_poly, _)) = poly_div(&residual, &lin) else {
             return Ok(None);
         };
-        let Some((bc, _)) = poly_div(&residual, &lin_part) else {
-            return Ok(None);
-        };
-        if !bc.iter().all(|c| c.is_zero()) {
-            let num_expr = coeffs_to_expr(i, &bc, var)?;
-            let den_expr = coeffs_to_expr(i, &leftover, var)?;
+        let mut cur = t_poly;
+        for j in 1..=quad_power {
+            // Q^(power - j)
+            let mut qpow = vec![Rat::from_i64(1)];
+            for _ in 0..(quad_power - j) {
+                qpow = poly_mul(&qpow, q);
+            }
+            let Some((num_part, rest)) = poly_div(&cur, &qpow) else {
+                return Ok(None);
+            };
+            cur = rest;
+            if num_part.iter().all(|c| c.is_zero()) {
+                continue;
+            }
+            let num_expr = coeffs_to_expr(i, &num_part, var)?;
+            let mut q_expr = coeffs_to_expr(i, q, var)?;
+            if j > 1 {
+                q_expr = eval_call(
+                    i,
+                    Expr::Sym(i.t.sys.power),
+                    vec![q_expr, Expr::int_i64(j as i64)],
+                )?;
+            }
             let term = Expr::node(
                 Expr::Sym(i.t.sys.times),
                 vec![
                     num_expr,
-                    Expr::node(Expr::Sym(i.t.sys.power), vec![den_expr, Expr::int_i64(-1)]),
+                    Expr::node(Expr::Sym(i.t.sys.power), vec![q_expr, Expr::int_i64(-1)]),
                 ],
             );
             terms.push(i.eval(&term)?);

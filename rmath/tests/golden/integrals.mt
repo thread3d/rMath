@@ -88,3 +88,18 @@ Apart[(x + 1)/(x^2 (x - 1)), x]
 => -2/x - 1/x^2 + 2/(-1 + x)
 Integrate[1/(x^2 (1 + x)), x]
 => Log[1 + x] - Log[x] - 1/x
+
+# A repeated irreducible quadratic factor: the reduction
+#   ∫ dx/Q^j = x c2^j/(2 c0 (j-1) Q^(j-1)) + ((2j-3) c2/(2 c0 (j-1))) ∫ dx/Q^(j-1)
+# takes the arc-tangent as its base case. The kernel keeps (1 + x^2)^-2 as
+# Power[Power[1 + x^2, 2], -1], so the rule normalises that shape first.
+Apart[x^3/(1 + x^2)^2, x]
+=> x/(1 + x^2) - x/(1 + x^2)^2
+Integrate[1/(1 + x^2)^2, x]
+=> 1/2 x/(1 + x^2) + 1/2 ArcTan[x]
+Integrate[x/(1 + x^2)^2, x]
+=> -1/2/(1 + x^2)
+Integrate[1/(4 + x^2)^2, x]
+=> 1/8 x/(4 + x^2) + 1/16 ArcTan[1/2 x]
+Integrate[x^3/(1 + x^2)^2, x]
+=> 1/2 Log[1 + x^2] + 1/2/(1 + x^2)

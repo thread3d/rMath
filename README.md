@@ -657,8 +657,8 @@ k.eval("x = 5; x^2")["result"]       # "25"
   (`N[Sin[x], 40]`) and an `f64` input (`N[1.5, 40]`, which cannot regain
   precision) still report `N::meprec` and fall back to machine precision.
 - `Apart` splits a denominator whose factors are linear (with multiplicity,
-  including repeated roots) plus at most one irreducible quadratic; a repeated
-  quadratic factor (`1/(x^2 + 1)^2`) stays unevaluated.
+  including repeated roots) plus an irreducible quadratic, to the second power;
+  a cube or higher power of a quadratic still stays unevaluated.
 - `Cancel` cancels the common monomial factor and the numeric content of any
   rational function, and for a univariate one the common polynomial factor as
   well. A multivariate *polynomial* GCD (a shared factor such as `x + y`) is not
@@ -696,7 +696,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   with a single irreducible quadratic factor (`Integrate[1/(x^3 + x), x]` →
   `Log[x] - 1/2 Log[1 + x^2]`, via `Apart`), and the special cases
   `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`,
-  `Exp[-x^2]`, rational functions with repeated linear factors
+  `Exp[-x^2]`, rational functions with repeated linear factors and with a
+  repeated irreducible quadratic (`Integrate[1/(1 + x^2)^2, x]` →
+  `1/2 x/(1 + x^2) + 1/2 ArcTan[x]`, by the standard reduction)
   (`Integrate[1/(x^2 (1 + x)), x]` → `Log[1 + x] - Log[x] - 1/x`, via the
   generalised `Apart`), and every product `Sin[u]^m Cos[u]^n` with integer
   exponents ≥ 0 — the substitution `t = sin u`/`t = cos u` when one exponent is

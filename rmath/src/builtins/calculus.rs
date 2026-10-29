@@ -529,6 +529,10 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
         i.step("arc form", &v);
         return Ok(v);
     }
+    if let Some(v) = repeated_quadratic_antiderivative(i, e, var)? {
+        i.step("repeated quadratic reduction", &v);
+        return Ok(v);
+    }
     if let Some(v) = linear_over_quadratic_antiderivative(i, e, var)? {
         i.step("linear over quadratic", &v);
         return Ok(v);
@@ -821,7 +825,171 @@ fn trig_power_antiderivative(
     Ok(Some(i.eval(&expanded)?))
 }
 
-/// `(b x + c)/(c0 + c2 x^2) -> b/(2 c2) Log[c0 + c2 x^2] + c/sqrt(c0 c2) ArcTan[x sqrt(c2/c0)]`
+/// `∫ dx/(c0 + c2 x^2)^j` for j >= 1, by the reduction
+///
+/// ```text
+/// ∫ dx/Q^j = x c2^j/(2 c0 (j-1) Q^(j-1)) + ((2j-3) c2/(2 c0 (j-1))) ∫ dx/Q^(j-1)
+/// ```
+///
+/// with the arc-tangent as the base case. Needs `c0, c2 > 0`.
+fn quad_power_integral(
+    i: &mut Interp,
+    var: &Expr,
+    c0: &Rat,
+    c2: &Rat,
+    j: i64,
+    q_expr: &Expr,
+) -> Result<Expr, Flow> {
+    let sys = i.t.sys;
+    if j == 1 {
+        let den_sqrt = rat_sqrt_expr(i, &c0.mul(c2))?;
+        let ratio_sqrt = rat_sqrt_expr(i, &c2.div(c0))?;
+        let arg = eval_call(i, Expr::Sym(sys.times), vec![var.clone(), ratio_sqrt])?;
+        let atan = app(i, "ArcTan", &arg);
+        let inv = Expr::node(Expr::Sym(sys.power), vec![den_sqrt, Expr::int_i64(-1)]);
+        return eval_call(i, Expr::Sym(sys.times), vec![inv, atan]);
+    }
+    // first term: x · c2^j / (2 c0 (j-1) Q^(j-1))
+    let q_pow = eval_call(
+        i,
+        Expr::Sym(sys.power),
+        vec![q_expr.clone(), Expr::int_i64(-(j - 1))],
+    )?;
+    let mut c2_pow = Rat::from_i64(1);
+    for _ in 0..j {
+        c2_pow = c2_pow.mul(c2);
+    }
+    let denom = Rat::from_i64(2).mul(c0).mul(&Rat::from_i64(j - 1));
+    let coef1 = c2_pow.div(&denom);
+    let first = eval_call(
+        i,
+        Expr::Sym(sys.times),
+        vec![Expr::rat(coef1), var.clone(), q_pow],
+    )?;
+    // second term: (2j-3) c2/(2 c0 (j-1)) · I_(j-1)
+    let coef2 = Rat::from_i64(2 * j - 3).mul(c2).div(&denom);
+    let inner = quad_power_integral(i, var, c0, c2, j - 1, q_expr)?;
+    let second = eval_call(i, Expr::Sym(sys.times), vec![Expr::rat(coef2), inner])?;
+    eval_call(i, Expr::Sym(sys.plus), vec![first, second])
+}
+
+/// `(b x + c)/(c0 + c2 x^2)^j` for j >= 2 — what `Apart` produces for a repeated
+/// quadratic factor. The `b x` part is a log, the constant part the reduction above.
+fn repeated_quadratic_antiderivative(
+    i: &mut Interp,
+    e: &Expr,
+    var: &Expr,
+) -> Result<Option<Expr>, Flow> {
+    let sys = i.t.sys;
+
+    // Either a bare Power[Q, -j] or a product carrying one such factor.
+    let (q_expr, j, num_expr) = {
+        let mut found: Option<(Expr, i64, Expr)> = None;
+        let factors: Vec<Expr> = match e.parts() {
+            Some((h, args)) if h.is_symbol(sys.times) => args.to_vec(),
+            _ => vec![e.clone()],
+        };
+        for (idx, f) in factors.iter().enumerate() {
+            let Some((fh, fargs)) = f.parts() else { continue };
+            if !fh.is_symbol(sys.power) || fargs.len() != 2 {
+                continue;
+            }
+            let Some(n) = crate::builtins::core::expr_to_int(&fargs[1]) else {
+                continue;
+            };
+            if n >= 0 {
+                continue;
+            }
+            if found.is_some() {
+                return Ok(None);
+            }
+            let mut rest: Vec<Expr> = Vec::new();
+            for (k, g) in factors.iter().enumerate() {
+                if k != idx {
+                    rest.push(g.clone());
+                }
+            }
+            let num = if rest.is_empty() {
+                Expr::int_i64(1)
+            } else {
+                eval_call(i, Expr::Sym(sys.times), rest)?
+            };
+            found = Some((fargs[0].clone(), -n, num));
+        }
+        match found {
+            Some(v) => v,
+            None => return Ok(None),
+        }
+    };
+    // The kernel keeps `(1 + x^2)^-2` as `Power[Power[1 + x^2, 2], -1]`, so a
+    // `-1` exponent with a power as its base is the repeated factor.
+    let (q_expr, j) = if j == 1 {
+        match q_expr.parts() {
+            Some((bh, bargs))
+                if bh.is_symbol(sys.power)
+                    && bargs.len() == 2
+                    && crate::builtins::core::expr_to_int(&bargs[1]).map_or(false, |m| m >= 2) =>
+            {
+                let m = crate::builtins::core::expr_to_int(&bargs[1]).unwrap();
+                (bargs[0].clone(), m)
+            }
+            _ => (q_expr, j),
+        }
+    } else {
+        (q_expr, j)
+    };
+    if j < 2 {
+        return Ok(None); // j == 1 is the plain quadratic rule
+    }
+    let Some(den) = crate::builtins::poly::poly_coeffs(i, &q_expr, var)? else {
+        return Ok(None);
+    };
+    if den.len() != 3 || !den[1].is_zero() {
+        return Ok(None);
+    }
+    let (c0, c2) = (den[0].clone(), den[2].clone());
+    if c0.is_zero() || c2.is_zero() || c0.is_neg() || c2.is_neg() {
+        return Ok(None);
+    }
+    let Some(num) = crate::builtins::poly::poly_coeffs(i, &num_expr, var)? else {
+        return Ok(None);
+    };
+    if num.len() > 2 {
+        return Ok(None);
+    }
+    let zero = Rat::from_i64(0);
+    let c = num.first().cloned().unwrap_or_else(|| zero.clone());
+    let b = num.get(1).cloned().unwrap_or_else(|| zero.clone());
+    let mut terms: Vec<Expr> = Vec::new();
+    if !b.is_zero() {
+        let coef = b.div(&Rat::from_i64(2).mul(&c2).mul(&Rat::from_i64(j - 1)));
+        let q_pow = eval_call(
+            i,
+            Expr::Sym(sys.power),
+            vec![q_expr.clone(), Expr::int_i64(-(j - 1))],
+        )?;
+        terms.push(eval_call(
+            i,
+            Expr::Sym(sys.times),
+            vec![Expr::rat(zero.sub(&coef)), q_pow],
+        )?);
+    }
+    if !c.is_zero() {
+        let arc = quad_power_integral(i, var, &c0, &c2, j, &q_expr)?;
+        terms.push(eval_call(i, Expr::Sym(sys.times), vec![Expr::rat(c), arc])?);
+    }
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    let out = if terms.len() == 1 {
+        terms.pop().unwrap()
+    } else {
+        Expr::node(Expr::Sym(sys.plus), terms)
+    };
+    Ok(Some(i.eval(&out)?))
+}
+
+/// `(b x + c)/(c0 + c2 x^2) -> b/(2 c2) Log[c0 + c2 x^2]` + c/sqrt(c0 c2) ArcTan[x sqrt(c2/c0)]`
 /// — how a rational function with an irreducible quadratic factor integrates,
 /// after `Apart` has split it (`Integrate[1/(x^3 + x), x]`).
 fn linear_over_quadratic_antiderivative(
