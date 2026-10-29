@@ -512,6 +512,10 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
         i.step("trigonometric power reduction", &anti);
         return Ok(anti);
     }
+    if let Some(anti) = trig_product_antiderivative(i, e, var)? {
+        i.step("trigonometric substitution", &anti);
+        return Ok(anti);
+    }
     // x^n f(x) by parts, x^n Log[x], and the 1/quadratic arc forms.
     if let Some(v) = by_parts(i, e, var, depth)? {
         i.step("integration by parts", &v);
@@ -882,6 +886,140 @@ fn linear_over_quadratic_antiderivative(
         Expr::node(Expr::Sym(i.t.sys.plus), terms)
     };
     Ok(Some(i.eval(&out)?))
+}
+
+/// Coefficients (ascending) of `(1 - t^2)^k * t^p`.
+fn one_minus_t2_power(k: i64, p: i64) -> Vec<Rat> {
+    let mut c = vec![Rat::from_i64(1)];
+    for _ in 0..k {
+        // multiply by (1 - t^2)
+        let mut out = vec![Rat::from_i64(0); c.len() + 2];
+        for (j, v) in c.iter().enumerate() {
+            out[j] = out[j].add(v);
+            out[j + 2] = out[j + 2].sub(v);
+        }
+        c = out;
+    }
+    if p > 0 {
+        let mut out = vec![Rat::from_i64(0); p as usize];
+        out.extend(c);
+        c = out;
+    }
+    c
+}
+
+/// `Sin[u]^m Cos[u]^n` with one odd exponent, by the substitution t = cos u
+/// (m odd) or t = sin u (n odd); u linear in the variable, so the inverse slope
+/// comes out as a factor. Both exponents even needs product-to-sum, which is not
+/// implemented and is left unevaluated.
+fn trig_product_antiderivative(
+    i: &mut Interp,
+    e: &Expr,
+    var: &Expr,
+) -> Result<Option<Expr>, Flow> {
+    let sys = i.t.sys;
+    let Some((h, args)) = e.parts() else {
+        return Ok(None);
+    };
+    if !h.is_symbol(sys.times) {
+        return Ok(None);
+    }
+    let mut sin_exp: Option<i64> = None;
+    let mut cos_exp: Option<i64> = None;
+    let mut arg: Option<Expr> = None;
+    for a in args {
+        let (name, inner, exp) = match a.parts() {
+            Some((ph, pargs)) if pargs.len() == 1 && ph.is_symbol_named(&i.t, "Sin") => {
+                ("Sin", pargs[0].clone(), 1)
+            }
+            Some((ph, pargs)) if pargs.len() == 1 && ph.is_symbol_named(&i.t, "Cos") => {
+                ("Cos", pargs[0].clone(), 1)
+            }
+            Some((ph, pargs)) if pargs.len() == 2 && ph.is_symbol(sys.power) => {
+                let Some(e2) = crate::builtins::core::expr_to_int(&pargs[1]) else {
+                    return Ok(None);
+                };
+                let Some((bh, bargs)) = pargs[0].parts() else {
+                    return Ok(None);
+                };
+                if bargs.len() != 1 {
+                    return Ok(None);
+                }
+                if bh.is_symbol_named(&i.t, "Sin") {
+                    ("Sin", bargs[0].clone(), e2)
+                } else if bh.is_symbol_named(&i.t, "Cos") {
+                    ("Cos", bargs[0].clone(), e2)
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => return Ok(None),
+        };
+        if exp < 0 {
+            return Ok(None);
+        }
+        match arg {
+            None => arg = Some(inner.clone()),
+            Some(ref u) if same_q(u, &inner) => {}
+            Some(_) => return Ok(None), // different frequencies: not this rule
+        }
+        let slot = if name == "Sin" { &mut sin_exp } else { &mut cos_exp };
+        match slot {
+            None => *slot = Some(exp),
+            Some(_) => return Ok(None), // a power split over several factors
+        }
+    }
+    let (Some(m), Some(n), Some(u)) = (sin_exp, cos_exp, arg) else {
+        return Ok(None);
+    };
+    if m % 2 == 0 && n % 2 == 0 {
+        return Ok(None);
+    }
+    let Some((slope, _)) = linear_form(i, &u, var)? else {
+        return Ok(None);
+    };
+    if slope == 0 {
+        return Ok(None);
+    }
+    // Odd cosine power: t = sin u. Odd sine power: t = cos u, with a minus sign
+    // from du = -sin u du.
+    let (k, p, base_name, sign) = if n % 2 == 1 {
+        ((n - 1) / 2, m, "Sin", 1i64)
+    } else {
+        ((m - 1) / 2, n, "Cos", -1i64)
+    };
+    let coeffs = one_minus_t2_power(k, p);
+    let base = app(i, base_name, &u);
+    let mut terms: Vec<Expr> = Vec::new();
+    for (j, c) in coeffs.iter().enumerate() {
+        if c.is_zero() {
+            continue;
+        }
+        let power = (j + 1) as i64;
+        let coef = c.div(&Rat::from_i64(power));
+        let pw = eval_call(
+            i,
+            Expr::Sym(sys.power),
+            vec![base.clone(), Expr::int_i64(power)],
+        )?;
+        let term = eval_call(
+            i,
+            Expr::Sym(sys.times),
+            vec![Expr::rat(coef), pw],
+        )?;
+        terms.push(term);
+    }
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    let poly = eval_call(i, Expr::Sym(sys.plus), terms)?;
+    let scale = Expr::rat(Rat::new(
+        BigInt::from_i64(sign),
+        BigInt::from_i64(slope),
+    ));
+    let res = eval_call(i, Expr::Sym(sys.times), vec![scale, poly])?;
+    let expanded = app(i, "Expand", &res);
+    Ok(Some(i.eval(&expanded)?))
 }
 
 /// `1/(c0 + c2 x^2) -> ArcTan`, and `1/Sqrt[c0 - a x^2] -> ArcSin`.

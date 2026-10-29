@@ -57,9 +57,18 @@ Integrate[Sin[x]^2, {x, 0, Pi}]
 => 1/2 Pi
 Integrate[Cos[x]^3, {x, 0, Pi/2}]
 => 2/3
-# A product of different trig powers is still outside the rule.
+# A product of trig powers with one odd exponent goes through the substitution
+# t = sin u or t = cos u; both exponents even needs product-to-sum, still open.
 Integrate[Sin[x]^2 Cos[x]^3, x]
-=> Integrate[Cos[x]^3 Sin[x]^2, x]
+=> -1/5 Sin[x]^5 + 1/3 Sin[x]^3
+Integrate[Sin[x]^3 Cos[x]^2, x]
+=> -1/3 Cos[x]^3 + 1/5 Cos[x]^5
+Integrate[Sin[x] Cos[x], x]
+=> 1/2 Sin[x]^2
+Integrate[Sin[2 x]^3 Cos[2 x], x]
+=> 1/8 Sin[2 x]^4
+Integrate[Sin[x]^2 Cos[x]^2, x]
+=> Integrate[Cos[x]^2 Sin[x]^2, x]
 
 # Repeated linear factors in the denominator: the cover-up rule generalises to a
 # power series about the root, so 1/(x^2 (1+x)) splits instead of staying put.
