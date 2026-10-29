@@ -1434,3 +1434,42 @@ pub fn b_binomial(i: &mut Interp, args: &[Expr]) -> EvalRes {
     }
     Ok(Expr::Int(c))
 }
+
+/// `IntegerDigits[n]` / `IntegerDigits[n, b]`: the digits of a non-negative
+/// integer, most significant first, in base 10 by default.
+pub fn b_integerdigits(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.is_empty() || args.len() > 2 {
+        i.message("IntegerDigits", "argr");
+        return Ok(unevaluated_call(i, "IntegerDigits", args));
+    }
+    // Arbitrary-size integers, like GCD/LCM: a machine-word conversion would give
+    // up on `IntegerDigits[10^20]`.
+    let n = match &args[0] {
+        Expr::Int(n) => n.clone(),
+        Expr::Rat(r) if r.is_int() => r.num.clone(),
+        _ => return Ok(unevaluated_call(i, "IntegerDigits", args)),
+    };
+    let base = match args.get(1) {
+        None => 10i64,
+        Some(b) => match expr_to_int(b) {
+            Some(b) if (2..=36).contains(&b) => b,
+            _ => return Ok(unevaluated_call(i, "IntegerDigits", args)),
+        },
+    };
+    if n.sign < 0 {
+        return Ok(unevaluated_call(i, "IntegerDigits", args));
+    }
+    let mut v = n;
+    let base_b = BigInt::from_i64(base);
+    let mut digits: Vec<Expr> = Vec::new();
+    loop {
+        let (q, r) = v.div_rem(&base_b);
+        digits.push(Expr::Int(r));
+        if q.is_zero() {
+            break;
+        }
+        v = q;
+    }
+    digits.reverse();
+    Ok(Expr::node(Expr::Sym(i.t.sys.list), digits))
+}

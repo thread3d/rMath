@@ -198,3 +198,16 @@ Mod[7, 2]
 => 1
 Mod[-7, 3]
 => 2
+
+# IntegerDigits was missing entirely (it stayed unevaluated), and now handles
+# arbitrary-size integers as the other exact-integer builtins do.
+IntegerDigits[123]
+=> {1, 2, 3}
+IntegerDigits[255, 16]
+=> {15, 15}
+IntegerDigits[0]
+=> {0}
+IntegerDigits[10^20] // Length
+=> 21
+IntegerDigits[-5]
+=> IntegerDigits[-5]
