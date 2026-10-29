@@ -616,7 +616,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `Series` → `SeriesData`, `Normal`, `Limit` (l'Hôpital for 0/0 forms, with a
   series fallback; unresolved limits stay unevaluated).
 - **Linear algebra**: `Det`, `Inverse`, `Transpose`, `Dot`, `IdentityMatrix`,
-  `DiagonalMatrix`, `MatrixPower`, `RowReduce`, `MatrixRank`, `LinearSolve`.
+  `DiagonalMatrix`, `MatrixPower`, `RowReduce`, `MatrixRank`, `LinearSolve`,
+  `Eigenvalues` and `Eigenvectors` for 2×2 matrices with exact entries (the
+  latter return one unnormalised eigenvector per eigenvalue).
 - **Solving**: `Solve` (linear systems, quadratic/cubic-with-rational-roots),
   `NSolve` (Durand-Kerner, all complex roots), `FindRoot`-style Newton (via
   `FixedPoint`).
@@ -658,8 +660,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   falls back to `Together`.
 - `Solve` covers linear systems (unique solutions), quadratics, and cubics
   with rational roots; multivariate nonlinear systems stay unevaluated.
-- `Eigenvalues`/`Eigenvectors` are not implemented (an earlier note here
-  claimed 2×2 support; there is none).
+- `Eigenvalues`/`Eigenvectors` cover 2×2 matrices with exact entries (the
+  characteristic quadratic is solved exactly, with `I` for a negative
+  discriminant); larger matrices stay unevaluated.
 - Symbolic `Sum`/`Product` cover constants, polynomials in the index up to
   degree 4, geometric series (finite and infinite), factorials and the Basel
   sums `Sum[1/n^2]`/`Sum[1/n^4]`; general symbolic summation and `NSum` are

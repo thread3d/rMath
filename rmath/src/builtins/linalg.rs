@@ -136,7 +136,31 @@ fn dot_of(i: &mut Interp, a: &Expr, b: &Expr) -> EvalRes {
             }
             return Ok(rows_expr(i, out));
         }
-        // vector . matrix or matrix . vector or vector . vector
+        // matrix . vector: (A v)_i = Σ_j A[i][j] v[j]. Without this branch the
+        // case fell through to vector . vector, where Times is Listable and
+        // silently multiplied row-wise: {{1,2},{3,4}}.{2,-1} gave {-1,0}.
+        if let Some(am) = as_rows(a, sys) {
+            let k = am[0].len();
+            if bv.len() != k {
+                i.message("Dot", "dims");
+                return Ok(unevaluated_call(i, "Dot", &[a.clone(), b.clone()]));
+            }
+            let mut out = Vec::with_capacity(am.len());
+            for row in &am {
+                let mut acc = Expr::int_i64(0);
+                for (x, y) in row.iter().zip(bv.iter()) {
+                    let t = eval_call(
+                        i,
+                        Expr::Sym(sys.times),
+                        vec![x.clone(), y.clone()],
+                    )?;
+                    acc = eval_call(i, Expr::Sym(sys.plus), vec![acc, t])?;
+                }
+                out.push(acc);
+            }
+            return Ok(Expr::node(Expr::Sym(sys.list), out));
+        }
+        // vector . matrix or vector . vector
         if let Some(bm) = as_rows(b, sys) {
             // a vector . matrix
             if av.len() != bm.len() {
@@ -510,6 +534,100 @@ pub fn b_transpose(i: &mut Interp, args: &[Expr]) -> EvalRes {
         }
     }
     Ok(rows_expr(i, out))
+}
+
+/// The two eigenvalues of a 2x2 matrix with exact entries, as expressions:
+/// `(a + d)/2 ± Sqrt[(a - d)^2 + 4 b c]/2`, with `I` when the discriminant is
+/// negative. Returns None for any other size or for non-exact entries.
+fn eigen_2x2(i: &mut Interp, m: &[Vec<Rat>]) -> Result<Option<(Expr, Expr)>, Flow> {
+    if m.len() != 2 || m[0].len() != 2 || m[1].len() != 2 {
+        return Ok(None);
+    }
+    let sys = i.t.sys;
+    let (a, b, c, d) = (m[0][0].clone(), m[0][1].clone(), m[1][0].clone(), m[1][1].clone());
+    let two = Rat::from_i64(2);
+    let half_trace = a.add(&d).div(&two);
+    // disc = (a - d)^2 + 4 b c
+    let diff = a.sub(&d);
+    let disc = diff.mul(&diff).add(&Rat::from_i64(4).mul(&b).mul(&c));
+    let root = |i: &mut Interp, r: &Rat| -> Result<Expr, Flow> {
+        let sq = eval_call(
+            i,
+            Expr::Sym(sys.power),
+            vec![Expr::rat(r.clone()), Expr::rat(Rat::new(BigInt::one(), BigInt::from_i64(2)))],
+        )?;
+        let half = Expr::rat(Rat::new(BigInt::one(), BigInt::from_i64(2)));
+        eval_call(i, Expr::Sym(sys.times), vec![half, sq])
+    };
+    // Read the sign before the value is consumed by the branch below.
+    let negative = disc.is_neg();
+    let half_disc = if negative { disc.neg() } else { disc.clone() };
+    let mut off = root(i, &half_disc)?;
+    if negative {
+        // A negative discriminant means a pair of complex eigenvalues.
+        let imag = i.t.intern("I");
+        off = eval_call(i, Expr::Sym(sys.times), vec![off, Expr::Sym(imag)])?;
+    }
+    let centre = Expr::rat(half_trace);
+    let neg_off = neg1_expr(i, off.clone());
+    let minus = eval_call(i, Expr::Sym(sys.plus), vec![centre.clone(), neg_off])?;
+    let plus = eval_call(i, Expr::Sym(sys.plus), vec![centre, off])?;
+    Ok(Some((minus, plus)))
+}
+
+pub fn b_eigenvalues(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() != 1 {
+        i.message("Eigenvalues", "argr");
+        return Ok(unevaluated_call(i, "Eigenvalues", args));
+    }
+    let m = i.eval(&args[0])?;
+    let sys = i.t.sys;
+    let Some(rows) = rat_matrix(&m, sys) else {
+        return Ok(unevaluated_call(i, "Eigenvalues", args));
+    };
+    match eigen_2x2(i, &rows)? {
+        Some((lo, hi)) => Ok(Expr::node(Expr::Sym(sys.list), vec![lo, hi])),
+        None => Ok(unevaluated_call(i, "Eigenvalues", args)),
+    }
+}
+
+pub fn b_eigenvectors(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.len() != 1 {
+        i.message("OneEigenvector", "argr");
+        return Ok(unevaluated_call(i, "Eigenvectors", args));
+    }
+    let m = i.eval(&args[0])?;
+    let sys = i.t.sys;
+    let Some(rows) = rat_matrix(&m, sys) else {
+        return Ok(unevaluated_call(i, "Eigenvectors", args));
+    };
+    if rows.len() != 2 || rows[0].len() != 2 || rows[1].len() != 2 {
+        return Ok(unevaluated_call(i, "Eigenvectors", args));
+    }
+    let Some((lo, hi)) = eigen_2x2(i, &rows)? else {
+        return Ok(unevaluated_call(i, "Eigenvectors", args));
+    };
+    // For a 2x2 matrix an eigenvector for lambda is {b, lambda - a}; when the
+    // first column is zero instead, {lambda - d, c} serves. The vectors are not
+    // normalised (Mathematica returns unit or integer-scaled ones).
+    let (b, c) = (rows[0][1].clone(), rows[1][0].clone());
+    let a = rows[0][0].clone();
+    let d = rows[1][1].clone();
+    let mut out = Vec::new();
+    for lam in [lo, hi] {
+        if !b.is_zero() {
+            let neg_a = neg1_expr(i, Expr::rat(a.clone()));
+            let second = eval_call(i, Expr::Sym(sys.plus), vec![lam.clone(), neg_a])?;
+            out.push(Expr::node(Expr::Sym(sys.list), vec![Expr::rat(b.clone()), second]));
+        } else if !c.is_zero() {
+            let neg_d = neg1_expr(i, Expr::rat(d.clone()));
+            let first = eval_call(i, Expr::Sym(sys.plus), vec![lam.clone(), neg_d])?;
+            out.push(Expr::node(Expr::Sym(sys.list), vec![first, Expr::rat(c.clone())]));
+        } else {
+            return Ok(unevaluated_call(i, "Eigenvectors", args));
+        }
+    }
+    Ok(Expr::node(Expr::Sym(sys.list), out))
 }
 
 pub fn b_identitymatrix(i: &mut Interp, args: &[Expr]) -> EvalRes {

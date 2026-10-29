@@ -35,8 +35,26 @@ Det[{{2, 1}, {1, 3}}]
 => 5
 Inverse[{{2, 1}, {1, 3}}]
 => {{3/5, -1/5}, {-1/5, 2/5}}
+# A.v = {17, 39}; {23, 34} is v.A (the old expectation pinned the wrong order).
 Dot[{{1, 2}, {3, 4}}, {5, 6}]
+=> {17, 39}
+# matrix . vector had fallen through to vector . vector, where Listable Times
+# multiplied row-wise: {{1, 2}, {3, 4}}.{2, -1} gave {-1, 0} instead of {0, 2}.
+Dot[{{1, 2}, {3, 4}}, {2, -1}]
+=> {0, 2}
+Dot[{5, 6}, {{1, 2}, {3, 4}}]
 => {23, 34}
+Eigenvalues[{{1, 2}, {3, 4}}]
+=> {5/2 - 1/2 Sqrt[33], 5/2 + 1/2 Sqrt[33]}
+Eigenvalues[{{2, 0}, {0, 3}}]
+=> {2, 3}
+Eigenvalues[{{0, -1}, {1, 0}}]
+=> {-I, I}
+Eigenvectors[{{1, 2}, {3, 4}}]
+=> {{2, 3/2 - 1/2 Sqrt[33]}, {2, 3/2 + 1/2 Sqrt[33]}}
+# beyond 2x2 the characteristic polynomial is not solved yet
+Eigenvalues[{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}]
+=> Eigenvalues[{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}]
 Transpose[{{1, 2}, {3, 4}}]
 => {{1, 3}, {2, 4}}
 LinearSolve[{{2, 1}, {1, 3}}, {5, 10}]

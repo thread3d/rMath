@@ -202,6 +202,8 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("Normal", 0, "`Normal[series]`", b_normal),
     builtin!("Dot", 0, "`a . b`", b_dot),
     builtin!("Det", 0, "`Det[m]`", b_det),
+    builtin!("Eigenvalues", 0, "`Eigenvalues[m]`", b_eigenvalues),
+    builtin!("Eigenvectors", 0, "`Eigenvectors[m]`", b_eigenvectors),
     builtin!("Inverse", 0, "`Inverse[m]`", b_inverse),
     builtin!("Transpose", 0, "`Transpose[m]`", b_transpose),
     builtin!("IdentityMatrix", 0, "`IdentityMatrix[n]`", b_identitymatrix),
