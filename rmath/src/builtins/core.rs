@@ -247,12 +247,18 @@ pub fn b_do(i: &mut Interp, args: &[Expr]) -> EvalRes {
     };
     let mut env: Vec<(usize, Expr)> = Vec::new();
     let mut body = args[0].clone();
-    let _ = run_iters(i, &iters, &mut env, &body, &mut |i, sub| match i.eval(sub) {
+    // Break / Continue end the body, but an abort — a `TimeConstrained` deadline or
+    // the server's per-request limit — must propagate: swallowing it made a runaway
+    // `Do` return `Null` as if it had finished.
+    match run_iters(i, &iters, &mut env, &body, &mut |i, sub| match i.eval(sub) {
         Ok(_) => Ok(()),
         Err(Flow::Break) => Err(Flow::Break),
         Err(Flow::Continue) => Ok(()),
         Err(e) => Err(e),
-    });
+    }) {
+        Ok(_) | Err(Flow::Break) => {}
+        Err(e) => return Err(e),
+    }
     let _ = &mut body;
     Ok(Expr::Sym(i.t.sys.null))
 }

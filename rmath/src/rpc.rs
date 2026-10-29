@@ -224,6 +224,30 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                     let mut input_text = String::new();
                     let mut graphics = None;
                     let mut flow_err: Option<String> = None;
+                    // Wall-clock limit for one request. Without one, `Do[Null,
+                    // {10^9}]` blocked the server forever: the notebook holds its
+                    // kernel lock across an evaluation, so one runaway cell froze
+                    // the whole front end (and the Lean and harness panels with it).
+                    // `RMATH_EVAL_TIMEOUT` (seconds) or a per-request `timeout`
+                    // overrides it; 0 disables it.
+                    let limit = req
+                        .get("timeout")
+                        .and_then(|v| match v {
+                            crate::json::J::Num(n) => Some(*n),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            std::env::var("RMATH_EVAL_TIMEOUT")
+                                .ok()
+                                .and_then(|v| v.trim().parse::<f64>().ok())
+                        })
+                        .unwrap_or(60.0);
+                    if limit > 0.0 {
+                        i.deadline =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs_f64(limit));
+                    } else {
+                        i.deadline = None;
+                    }
                     // "Show steps": one evaluation that also records the
                     // derivation (no double evaluation, so no double effects).
                     let mut steps_out: Option<Vec<(String, Expr)>> = None;
@@ -238,6 +262,10 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                     } else {
                         i.eval(&e)
                     };
+                    // The request is over either way: a stale deadline would abort
+                    // the next evaluation immediately.
+                    i.deadline = None;
+                    let hit_limit = limit > 0.0 && matches!(&eval_res, Err(Flow::Abort));
                     match eval_res {
                         Ok(v) => {
                             for (tag, text) in i.messages.drain(..) {
@@ -298,7 +326,14 @@ pub fn handle(i: &mut Interp, line: &str, out: &mut String) -> bool {
                             out_n = Some(i.out_history.len());
                         }
                         Err(_) => {
-                            flow_err = Some("Evaluation aborted.".to_string());
+                            flow_err = Some(if hit_limit {
+                                format!(
+                                    "evaluation exceeded the {} s limit and was aborted                                      (set RMATH_EVAL_TIMEOUT, or pass a \"timeout\", to change it)",
+                                    limit
+                                )
+                            } else {
+                                "Evaluation aborted.".to_string()
+                            });
                         }
                     }
                     let mut resp = obj(vec![("id", id.clone())]);
