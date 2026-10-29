@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.2.9 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.2.10 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
@@ -276,15 +276,15 @@ impl Interp {
         // 5. Dispatch: up-values (tagged on an argument), then down-values, then
         // built-ins (plain symbol heads only).
         if let Some(id) = head.sym_id() {
-            let _ = id;
-            let whole_here = Expr::node(head.clone(), vargs.clone());
-            if let Some(v) = self.try_upvalues(&whole_here)? {
+            if let Some(v) = self.try_upvalues(&head, &vargs)? {
                 let ch = !same_q(&v, orig);
                 return Ok((v, ch));
             }
-            if let Some(v) = self.try_downvalues(id, &vargs)? {
-                let ch = !same_q(&v, orig);
-                return Ok((v, ch));
+            if !self.t.data[id].down.is_empty() {
+                if let Some(v) = self.try_downvalues(id, &vargs)? {
+                    let ch = !same_q(&v, orig);
+                    return Ok((v, ch));
+                }
             }
             let attrs = self.t.attrs(id);
             if let Some(bi) = self.t.data[id].builtin {
@@ -489,7 +489,31 @@ impl Interp {
     /// (`f /: g[f[x_]] := ...` fires when `g[f[3]]` is evaluated). The tag has to
     /// appear as an argument of the expression for Mathematica to look at it, so
     /// only the head symbols of the arguments are candidates.
-    fn try_upvalues(&mut self, whole: &Expr) -> Result<Option<Expr>, Flow> {
+    fn try_upvalues(&mut self, head: &Expr, args: &[Expr]) -> Result<Option<Expr>, Flow> {
+        // Cheap rejection first: building `head[args]` for every node of every
+        // evaluation was a per-node allocation, and almost no program has an
+        // up-value at all.
+        let mut any = head.sym_id().map_or(false, |id| !self.t.data[id].up.is_empty());
+        if !any {
+            for a in args {
+                let id = match a {
+                    Expr::Sym(id) => Some(*id),
+                    Expr::Node(nd) => nd.head.sym_id(),
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    if !self.t.data[id].up.is_empty() {
+                        any = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !any {
+            return Ok(None);
+        }
+        let whole = Expr::node(head.clone(), args.to_vec());
+        let whole = &whole;
         let Some((head, args)) = whole.parts() else {
             return Ok(None);
         };
@@ -1375,5 +1399,41 @@ mod precision_message_tests {
             "arbitrary precision *is* implemented: {:?}",
             msg
         );
+    }
+}
+
+#[cfg(test)]
+mod hint_cache_tests {
+    /// The "did you mean Sin?" hint scans and lowercases every symbol name, so
+    /// it is memoised per queried name; it must still appear, and must not go
+    /// stale when a new symbol makes a better match exist.
+    #[test]
+    fn the_hint_survives_repeated_evaluation() {
+        let mut i = super::Interp::new();
+        for _ in 0..100 {
+            let e = crate::parser::parse_input(&mut i.t, "sin[x]").unwrap();
+            i.eval(&e).unwrap();
+        }
+        assert!(i.messages.iter().any(|(t, _)| t == "sin::case"),
+                "the hint should be emitted (once)");
+        assert_eq!(i.messages.iter().filter(|(t, _)| t == "sin::case").count(), 1,
+                   "the hint is emitted once per name, not per evaluation");
+    }
+
+    #[test]
+    fn a_new_symbol_refreshes_the_memo() {
+        let mut i = super::Interp::new();
+        // Cache a miss for `zzzz` first: nothing resembles it.
+        assert_eq!(i.t.case_insensitive_match("zzzz"), None);
+        i.t.intern("ZZZZ");
+        assert_eq!(i.t.case_insensitive_match("zzzz").as_deref(), Some("ZZZZ"),
+                   "interning invalidates the memo");
+    }
+
+    #[test]
+    fn exact_spelling_is_not_suggested_back() {
+        let mut i = super::Interp::new();
+        assert_eq!(i.t.case_insensitive_match("Sin"), None);
+        assert_eq!(i.t.case_insensitive_match("sin").as_deref(), Some("Sin"));
     }
 }

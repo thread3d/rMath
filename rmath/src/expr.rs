@@ -293,6 +293,18 @@ impl Expr {
 }
 
 pub fn same_q(a: &Expr, b: &Expr) -> bool {
+    // Fast paths first: the evaluator compares its result with its input after
+    // every rewrite, and an unchanged subexpression is usually the *same* node.
+    // Comparing a large polynomial structurally instead costs the whole tree
+    // (20% of `Expand[(x + y + z)^40]`).
+    if std::ptr::eq(a, b) {
+        return true;
+    }
+    if let (Expr::Node(x), Expr::Node(y)) = (a, b) {
+        if std::rc::Rc::ptr_eq(x, y) {
+            return true;
+        }
+    }
     match (a, b) {
         (Expr::Int(x), Expr::Int(y)) => x == y,
         (Expr::Rat(x), Expr::Rat(y)) => x == y,
@@ -488,12 +500,20 @@ pub struct SymbolTable {
     names: HashMap<String, SymId>,
     pub data: Vec<SymbolData>,
     pub sys: Sys,
+    /// Memo for `case_insensitive_match`: the hint is a cosmetic message, but the
+    /// scan lowercases every symbol name, and it runs on *every* evaluation of an
+    /// unknown head — 65% of the time in `Nest[f, x, 1600]`. Cleared when a new
+    /// symbol is interned.
+    ci_hints: std::cell::RefCell<HashMap<String, Option<String>>>,
 }
 
 impl SymbolTable {
     /// Find a symbolic name matching `name` case-insensitively (for
     /// "did you mean Sin?" hints). Skips internal renamed symbols (name$N).
     pub fn case_insensitive_match(&self, name: &str) -> Option<String> {
+        if let Some(hit) = self.ci_hints.borrow().get(name) {
+            return hit.clone();
+        }
         let lower = name.to_lowercase();
         let mut best: Option<String> = None;
         for d in &self.data {
@@ -503,13 +523,15 @@ impl SymbolTable {
             if d.name.to_lowercase() == lower && d.name != name {
                 let interesting = d.builtin.is_some() || d.own.is_some();
                 if interesting {
-                    return Some(d.name.clone());
+                    best = Some(d.name.clone());
+                    break;
                 }
                 if best.is_none() {
                     best = Some(d.name.clone());
                 }
             }
         }
+        self.ci_hints.borrow_mut().insert(name.to_string(), best.clone());
         best
     }
 
@@ -519,6 +541,7 @@ impl SymbolTable {
             names: HashMap::new(),
             data: Vec::new(),
             sys: Sys::default(),
+            ci_hints: std::cell::RefCell::new(HashMap::new()),
         };
         t.sys = Sys::intern_all(&mut t);
         t
@@ -530,6 +553,7 @@ impl SymbolTable {
         let id = self.data.len();
         self.data.push(SymbolData::new(name));
         self.names.insert(name.to_string(), id);
+        self.ci_hints.borrow_mut().clear(); // a new name can change every hint
         id
     }
     pub fn get(&self, name: &str) -> Option<SymId> {

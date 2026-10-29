@@ -336,6 +336,38 @@ impl BigInt {
         if self.is_zero() {
             return (BigInt::zero(), BigInt::zero());
         }
+        // Single-limb operands: a plain u64 division is far cheaper than the
+        // long-division loop, and polynomial coefficient reduction hammers this
+        // path (Expand spends ~5% of its time in div_rem_mag).
+        if self.mag.len() <= 2 && o.mag.len() <= 2 {
+            let mag_u64 = |m: &[u32]| -> u64 {
+                match m.len() {
+                    0 => 0,
+                    1 => m[0] as u64,
+                    _ => ((m[1] as u64) << 32) | m[0] as u64,
+                }
+            };
+            let (a, b) = (mag_u64(&self.mag), mag_u64(&o.mag));
+            let (qm, rm) = (a / b, a % b);
+            let limb = |v: u64| -> Vec<u32> {
+                if v == 0 {
+                    Vec::new()
+                } else if v <= u32::MAX as u64 {
+                    vec![v as u32]
+                } else {
+                    vec![v as u32, (v >> 32) as u32]
+                }
+            };
+            let q = BigInt {
+                sign: if qm == 0 { 0 } else { self.sign * o.sign },
+                mag: limb(qm),
+            };
+            let r = BigInt {
+                sign: if rm == 0 { 0 } else { self.sign },
+                mag: limb(rm),
+            };
+            return (q, r);
+        }
         let (qmag, rmag) = div_rem_mag(&self.mag, &o.mag);
         let qsign = self.sign * o.sign;
         let q = BigInt { sign: if qmag.is_empty() { 0 } else { qsign }, mag: qmag };
