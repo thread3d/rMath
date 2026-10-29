@@ -38,3 +38,19 @@ Simplify[1 + 1]
 => 2
 Simplify[2 x + 3 x]
 => 5 x
+
+# Cancel now reduces a multivariate fraction by its common monomial factor and
+# numeric content, and returns what it managed even when the univariate GCD step
+# cannot run (regression: `x^2 y/(x y^2)` came back unchanged, and a partially
+# cancelled fraction was thrown away in favour of the original).
+Cancel[(x^2 y)/(x y^2)]
+=> x/y
+Cancel[(x^4 y^2)/(x^2 y^5)]
+=> x^2/y^3
+Cancel[(x^2 y + x y^2)/(x y)]
+=> x + y
+Cancel[(2 x y)/(4 x)]
+=> 1/2 y
+# A symbolic coefficient is not a rational content, so this stays as Together left it.
+Cancel[(a x + a)/(x + 1)]
+=> (a + a x)/(1 + x)

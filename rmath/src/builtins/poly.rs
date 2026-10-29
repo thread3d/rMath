@@ -491,6 +491,142 @@ pub fn b_together(i: &mut Interp, args: &[Expr]) -> EvalRes {
     )
 }
 
+/// gcd of two rationals: gcd(a/b, c/d) = gcd(a·d, c·b)/(b·d), both positive.
+fn rat_gcd(a: &Rat, b: &Rat) -> Rat {
+    let a = a.clone().abs();
+    let b = b.clone().abs();
+    let num = a.num.mul(&b.den).gcd(&b.num.mul(&a.den));
+    let den = a.den.mul(&b.den);
+    Rat::new(num, den)
+}
+
+/// The summands of `e` after expansion (a single term is a one-element list).
+fn expanded_terms(i: &mut Interp, e: &Expr) -> Result<Vec<Expr>, Flow> {
+    let ex = expand_expr(i, e)?;
+    if let Some((h, args)) = ex.parts() {
+        if h.is_symbol(i.t.sys.plus) {
+            return Ok(args.to_vec());
+        }
+    }
+    Ok(vec![ex])
+}
+
+/// The rational coefficient of a monomial term, or None when it is not rational
+/// (a symbolic coefficient such as `a` in `a x`).
+fn term_rat_coeff(i: &Interp, t: &Expr) -> Option<Rat> {
+    let mut bases = Vec::new();
+    let mut coeffs = Vec::new();
+    split_term(i, t, &mut bases, &mut coeffs);
+    let mut out = Rat::from_i64(1);
+    for c in coeffs {
+        match c.as_rat_exact() {
+            Some(r) => out = out.mul(&r),
+            None => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Exponent of the symbol `v` in one monomial term (0 when it does not appear).
+fn term_power(i: &Interp, t: &Expr, v: &Expr) -> i64 {
+    let mut bases = Vec::new();
+    let mut coeffs = Vec::new();
+    split_term(i, t, &mut bases, &mut coeffs);
+    bases
+        .iter()
+        .filter(|(b, _)| same_q(b, v))
+        .map(|(_, n)| *n)
+        .sum()
+}
+
+/// Reduce `num/den` by a common monomial factor and by the numeric content —
+/// the part of `Cancel` that works for several variables (`x^2 y / (x y^2)` ->
+/// `x/y`), which the univariate GCD below cannot see.
+fn cancel_monomial_and_content(
+    i: &mut Interp,
+    num: &Expr,
+    den: &Expr,
+) -> Result<Option<(Expr, Expr)>, Flow> {
+    let nterms = expanded_terms(i, num)?;
+    let dterms = expanded_terms(i, den)?;
+    let mut cur_num = Expr::int_i64(1);
+    let mut cur_den = Expr::int_i64(1);
+    let mut changed = false;
+    // Symbols that occur in at least one side; only a symbol present in *both*
+    // numerator and denominator can be cancelled.
+    let mut syms: Vec<Expr> = Vec::new();
+    for t in nterms.iter().chain(dterms.iter()) {
+        let mut bases = Vec::new();
+        let mut coeffs = Vec::new();
+        split_term(i, t, &mut bases, &mut coeffs);
+        for (b, _) in bases {
+            if b.sym_id().is_some() && !same_q(&b, &Expr::int_i64(1))
+                && !syms.iter().any(|s| same_q(s, &b))
+            {
+                syms.push(b);
+            }
+        }
+    }
+    for v in &syms {
+        let vn = nterms.iter().map(|t| term_power(i, t, v)).min().unwrap_or(0);
+        let vd = dterms.iter().map(|t| term_power(i, t, v)).min().unwrap_or(0);
+        let common = vn.min(vd);
+        if common > 0 {
+            let inv = Expr::node(
+                Expr::Sym(i.t.sys.power),
+                vec![v.clone(), Expr::int_i64(-common)],
+            );
+            cur_num = eval_call(i, Expr::Sym(i.t.sys.times), vec![cur_num.clone(), inv.clone()])?;
+            cur_den = eval_call(i, Expr::Sym(i.t.sys.times), vec![cur_den, inv])?;
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    // Divide *term by term*: a sum cannot be divided by a monomial in one step
+    // without leaving a fraction behind, so `(x^2 y + x y^2)/(x y)` would keep
+    // its denominator instead of becoming `x + y`.
+    let divide_terms = |i: &mut Interp, terms: &[Expr], factor: &Expr| -> Result<Expr, Flow> {
+        let mut out = Vec::with_capacity(terms.len());
+        for t in terms {
+            out.push(eval_call(
+                i,
+                Expr::Sym(i.t.sys.times),
+                vec![factor.clone(), t.clone()],
+            )?);
+        }
+        eval_call(i, Expr::Sym(i.t.sys.plus), out)
+    };
+    let new_num = divide_terms(i, &nterms, &cur_num)?;
+    let new_den = divide_terms(i, &dterms, &cur_den)?;
+    // Numeric content: a rational factor shared by every term of both sides.
+    let (n2, d2) = (expanded_terms(i, &new_num)?, expanded_terms(i, &new_den)?);
+    let content = |terms: &[Expr]| -> Option<Rat> {
+        let mut g: Option<Rat> = None;
+        for t in terms {
+            let c = term_rat_coeff(i, t)?.abs();
+            g = Some(match g {
+                None => c,
+                Some(prev) => rat_gcd(&prev, &c),
+            });
+        }
+        g
+    };
+    let (Some(cn), Some(cd)) = (content(&n2), content(&d2)) else {
+        return Ok(Some((new_num, new_den)));
+    };
+    let g = rat_gcd(&cn, &cd);
+    if g.is_zero() || g.cmp(&Rat::from_i64(1)) != std::cmp::Ordering::Equal {
+        let inv = Rat::from_i64(1).div(&g);
+        let scale = Expr::rat(inv);
+        let scaled_num = eval_call(i, Expr::Sym(i.t.sys.times), vec![scale.clone(), new_num])?;
+        let scaled_den = eval_call(i, Expr::Sym(i.t.sys.times), vec![scale, new_den])?;
+        return Ok(Some((scaled_num, scaled_den)));
+    }
+    Ok(Some((new_num, new_den)))
+}
+
 pub fn b_cancel(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 1 {
         return b_together(i, args);
@@ -499,20 +635,39 @@ pub fn b_cancel(i: &mut Interp, args: &[Expr]) -> EvalRes {
     // GCD. `Cancel` used to be a straight alias for `Together`, so
     // Cancel[(x^2-9)/(x-3)] came back unchanged instead of 3+x.
     let combined = b_together(i, args)?;
-    let (num, den) = together_parts(i, &combined)?;
+    let (mut num, mut den) = together_parts(i, &combined)?;
+    // Multivariate first: a common monomial factor or numeric content is
+    // invisible to the univariate GCD below (`x^2 y/(x y^2)` -> `x/y`).
+    if let Some((n, d)) = cancel_monomial_and_content(i, &num, &den)? {
+        num = n;
+        den = d;
+        if same_q(&den, &Expr::int_i64(1)) {
+            return Ok(num);
+        }
+    }
+    // Whatever the univariate step manages, the monomial/content reduction
+    // above is already an improvement, so the fallbacks below return the current
+    // fraction rather than the original expression.
+    let fraction = |i: &mut Interp, n: Expr, d: Expr| -> EvalRes {
+        if same_q(&d, &Expr::int_i64(1)) {
+            return Ok(n);
+        }
+        let inv = Expr::node(Expr::Sym(i.t.sys.power), vec![d, Expr::int_i64(-1)]);
+        eval_call(i, Expr::Sym(i.t.sys.times), vec![n, inv])
+    };
     let var = {
         let mut vars = vars_of(i, &num)?;
         vars.extend(vars_of(i, &den)?);
         match vars.into_iter().next() {
             Some(v) => v,
-            None => return Ok(combined),
+            None => return fraction(i, num, den),
         }
     };
     let (Some(cn), Some(cd)) = (poly_coeffs(i, &num, &var)?, poly_coeffs(i, &den, &var)?) else {
-        return Ok(combined);
+        return fraction(i, num, den);
     };
     let Some((qn, qd)) = cancel_coeffs(&cn, &cd) else {
-        return Ok(combined);
+        return fraction(i, num, den);
     };
     let n = coeffs_to_expr(i, &qn, &var)?;
     let d = coeffs_to_expr(i, &qd, &var)?;

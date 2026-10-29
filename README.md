@@ -655,9 +655,11 @@ k.eval("x = 5; x^2")["result"]       # "25"
   give `prec` real digits, and it threads over lists. A symbolic argument
   (`N[Sin[x], 40]`) and an `f64` input (`N[1.5, 40]`, which cannot regain
   precision) still report `N::meprec` and fall back to machine precision.
-- `Cancel` cancels common factors of a univariate rational function;
-  multivariate rational GCD is not implemented, so a multivariate `Cancel`
-  falls back to `Together`.
+- `Cancel` cancels the common monomial factor and the numeric content of any
+  rational function, and for a univariate one the common polynomial factor as
+  well. A multivariate *polynomial* GCD (a shared factor such as `x + y`) is not
+  implemented, and a symbolic coefficient is not treated as content, so
+  `Cancel[(a x + a)/(x + 1)]` stays as `Together` left it.
 - `Solve` covers linear systems (unique solutions), quadratics, and cubics
   with rational roots; multivariate nonlinear systems stay unevaluated.
 - `Eigenvalues`/`Eigenvectors` cover 2×2 matrices with exact entries (the
