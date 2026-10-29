@@ -922,6 +922,32 @@ fn split_linear_factors(mut work: Vec<Rat>) -> (Vec<(Rat, usize)>, Vec<Rat>) {
     (roots, work)
 }
 
+/// The first `n` Taylor coefficients of `p` about `r`: `p(r+u) = Σ b_j u^j`,
+/// with `b_j = p^{(j)}(r)/j!` (repeated synthetic division by `x - r`).
+fn taylor_coeffs(mut coeffs: Vec<Rat>, r: &Rat, n: usize) -> Vec<Rat> {
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        if coeffs.is_empty() {
+            break;
+        }
+        out.push(horner(&coeffs, r));
+        coeffs = synth_div(&coeffs, r);
+    }
+    out
+}
+
+/// `den / (x - r)^k` by `k` synthetic divisions.
+fn divide_by_power(den: &[Rat], r: &Rat, k: usize) -> Vec<Rat> {
+    let mut cur = den.to_vec();
+    for _ in 0..k {
+        if cur.len() < 2 {
+            return Vec::new();
+        }
+        cur = synth_div(&cur, r);
+    }
+    cur
+}
+
 /// Partial fractions for a rational function whose denominator splits into
 /// distinct linear factors over the rationals. None when that does not apply
 /// (repeated factors, irreducible quadratics, non-rational input).
@@ -951,8 +977,7 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
     // the rationals, so it can carry a (B x + C) numerator of its own. Degree 2
     // means an irrational linear factor, which this does not model.
     let quadratic = leftover.len() == 3;
-    if (leftover.len() > 1 && !quadratic) || roots.is_empty() || roots.iter().any(|(_, m)| *m != 1)
-    {
+    if (leftover.len() > 1 && !quadratic) || roots.is_empty() {
         return Ok(None);
     }
     let dprime = poly_deriv(&den);
@@ -961,22 +986,55 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
     if !same_q(&q_expr, &Expr::int_i64(0)) {
         terms.push(q_expr);
     }
-    for (r, _) in &roots {
-        // Cover-up rule for a simple root: A = N(r) / D'(r).
-        let a = horner(&rem, r).div(&horner(&dprime, r));
-        if a.is_zero() {
-            continue;
+    // Coefficients of the partial fractions: (root, exponent k, A) meaning
+    // A/(x - r)^k. A repeated root r of multiplicity m contributes k = 1..m, got
+    // by expanding N(x)/P(x) as a power series about r, where P = D/(x - r)^m:
+    // A_k is the coefficient of u^{m-k} in that series (u = x - r). For a simple
+    // root this is the cover-up rule N(r)/D'(r).
+    let mut coeffs: Vec<(Rat, usize, Rat)> = Vec::new();
+    for (r, m) in &roots {
+        let m = *m;
+        let p = divide_by_power(&den, r, m);
+        if p.is_empty() {
+            return Ok(None);
         }
+        let np = taylor_coeffs(rem.clone(), r, m);
+        let pp = taylor_coeffs(p, r, m);
+        let zero = Rat::from_i64(0);
+        let p0 = pp.first().cloned().unwrap_or_else(|| zero.clone());
+        if p0.is_zero() {
+            return Ok(None);
+        }
+        let mut series: Vec<Rat> = Vec::with_capacity(m);
+        for j in 0..m {
+            let mut acc = np.get(j).cloned().unwrap_or_else(|| zero.clone());
+            for i in 1..=j {
+                if let (Some(pi), Some(cj)) = (pp.get(i), series.get(j - i)) {
+                    acc = acc.sub(&pi.mul(cj));
+                }
+            }
+            series.push(acc.div(&p0));
+        }
+        for k in 1..=m {
+            let a = series[m - k].clone();
+            if !a.is_zero() {
+                coeffs.push((r.clone(), k, a));
+            }
+        }
+    }
+    let _ = &dprime;
+    for (r, k, a) in &coeffs {
         let lin = Expr::node(
             Expr::Sym(i.t.sys.plus),
             vec![var.clone(), Expr::rat(Rat::from_i64(0).sub(r))],
         );
+        let pw = Expr::node(
+            Expr::Sym(i.t.sys.power),
+            vec![lin, Expr::int_i64(-(*k as i64))],
+        );
         let term = Expr::node(
             Expr::Sym(i.t.sys.times),
-            vec![
-                Expr::rat(a),
-                Expr::node(Expr::Sym(i.t.sys.power), vec![lin, Expr::int_i64(-1)]),
-            ],
+            vec![Expr::rat(a.clone()), pw],
         );
         terms.push(i.eval(&term)?);
     }
@@ -984,10 +1042,12 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
         // rem = Σ A_i · den/(x - r_i) + (B x + C) · L, where L is the product of
         // the linear factors; divide by L to read off B and C.
         let mut residual = rem.clone();
-        for (r, _) in &roots {
-            let a = horner(&rem, r).div(&horner(&dprime, r));
-            let cofactor = synth_div(&den, r);
-            residual = poly_sub(&residual, &poly_scale(&cofactor, &a));
+        for (r, k, a) in &coeffs {
+            let cofactor = divide_by_power(&den, r, *k);
+            if cofactor.is_empty() {
+                return Ok(None);
+            }
+            residual = poly_sub(&residual, &poly_scale(&cofactor, a));
         }
         let Some((lin_part, _)) = poly_div(&den, &leftover) else {
             return Ok(None);

@@ -655,6 +655,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   give `prec` real digits, and it threads over lists. A symbolic argument
   (`N[Sin[x], 40]`) and an `f64` input (`N[1.5, 40]`, which cannot regain
   precision) still report `N::meprec` and fall back to machine precision.
+- `Apart` splits a denominator whose factors are linear (with multiplicity,
+  including repeated roots) plus at most one irreducible quadratic; a repeated
+  quadratic factor (`1/(x^2 + 1)^2`) stays unevaluated.
 - `Cancel` cancels the common monomial factor and the numeric content of any
   rational function, and for a univariate one the common polynomial factor as
   well. A multivariate *polynomial* GCD (a shared factor such as `x + y`) is not
@@ -689,12 +692,12 @@ k.eval("x = 5; x^2")["result"]       # "25"
   with a single irreducible quadratic factor (`Integrate[1/(x^3 + x), x]` →
   `Log[x] - 1/2 Log[1 + x^2]`, via `Apart`), and the special cases
   `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`,
-  `Exp[-x^2]` (trigonometric substitution, repeated-factor partial fractions
-  and products of different trig powers are not implemented, so
-  `Integrate[1/x^2/(1 + x), x]` and `Integrate[Sin[x]^2 Cos[x]^3, x]` stay
-  unevaluated; a trig-power antiderivative is also not yet Lean-checked,
-  because closing it needs the Pythagorean identity in the derivative tactic
-  chain).
+  `Exp[-x^2]`, rational functions with repeated linear factors
+  (`Integrate[1/(x^2 (1 + x)), x]` → `Log[1 + x] - Log[x] - 1/x`, via the
+  generalised `Apart`), and products of different trig powers are not
+  implemented, so `Integrate[Sin[x]^2 Cos[x]^3, x]` stays unevaluated; a
+  trig-power antiderivative is also not yet Lean-checked, because closing it
+  needs the Pythagorean identity in the derivative tactic chain).
 - Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
   `SinhIntegral`, `CoshIntegral`, `ExpIntegralEi`, `LogIntegral`, `Sinc`
   (machine-precision numeric evaluation, exact values at 0/±Infinity, and

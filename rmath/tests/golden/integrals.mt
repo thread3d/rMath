@@ -60,3 +60,14 @@ Integrate[Cos[x]^3, {x, 0, Pi/2}]
 # A product of different trig powers is still outside the rule.
 Integrate[Sin[x]^2 Cos[x]^3, x]
 => Integrate[Cos[x]^3 Sin[x]^2, x]
+
+# Repeated linear factors in the denominator: the cover-up rule generalises to a
+# power series about the root, so 1/(x^2 (1+x)) splits instead of staying put.
+Apart[1/(x^2 (1 + x)), x]
+=> 1/x^2 + 1/(1 + x) - 1/x
+Apart[1/((x - 1)^2 (x + 1)), x]
+=> -1/4/(-1 + x) + 1/4/(1 + x) + 1/2 1/(-1 + x)^2
+Apart[(x + 1)/(x^2 (x - 1)), x]
+=> -2/x - 1/x^2 + 2/(-1 + x)
+Integrate[1/(x^2 (1 + x)), x]
+=> Log[1 + x] - Log[x] - 1/x
