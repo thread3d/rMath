@@ -225,3 +225,16 @@ FactorInteger[-12]
 => {{-1, 1}, {2, 2}, {3, 1}}
 FactorInteger[97]
 => {{97, 1}}
+
+# Rationalize was missing: the simplest rational a machine real stands for, by
+# continued fractions (0.1 is 1/10, not its exact binary value).
+Rationalize[0.5]
+=> 1/2
+Rationalize[0.1]
+=> 1/10
+Rationalize[0.3333333333333333]
+=> 1/3
+Rationalize[-0.75]
+=> -3/4
+Rationalize[1/3]
+=> 1/3

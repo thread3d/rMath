@@ -129,6 +129,7 @@ pub static BUILTINS: &[BuiltinDef] = &[
     builtin!("MatchQ", A_HOLDALL, "`MatchQ[e, patt]`", b_matchq),
     builtin!("FreeQ", A_HOLDALL, "`FreeQ[e, patt]`", b_freeq),
     builtin!("FactorInteger", 0, "`FactorInteger[n]`", b_factorinteger),
+    builtin!("Rationalize", 0, "`Rationalize[x]`", b_rationalize),
     builtin!("IntegerDigits", 0, "`IntegerDigits[n]`", b_integerdigits),
     builtin!("Max", 0, "`Max[x, y, ...]`", b_max),
     builtin!("Min", 0, "`Min[x, y, ...]`", b_min),

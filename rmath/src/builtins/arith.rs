@@ -1548,3 +1548,75 @@ pub fn b_factorinteger(i: &mut Interp, args: &[Expr]) -> EvalRes {
     }
     Ok(Expr::node(Expr::Sym(i.t.sys.list), items))
 }
+
+/// Best rational approximation with the smallest denominator within a tolerance,
+/// by continued fractions: `Rationalize[0.1]` is 1/10, not the exact binary value.
+fn cf_rational(x: f64, tol: f64) -> Option<(i64, i64)> {
+    if !x.is_finite() {
+        return None;
+    }
+    let sign = if x < 0.0 { -1i64 } else { 1 };
+    let mut v = x.abs();
+    let (mut p0, mut q0) = (0i64, 1i64); // previous convergent
+    let (mut p1, mut q1) = (1i64, 0i64); // current convergent
+    for _ in 0..64 {
+        let a = v.floor();
+        if a.abs() > 9.0e15 {
+            break;
+        }
+        let a = a as i64;
+        let (p2, q2) = (a.checked_mul(p1)?.checked_add(p0)?, a.checked_mul(q1)?.checked_add(q0)?);
+        if q2 == 0 {
+            break;
+        }
+        let approx = p2 as f64 / q2 as f64;
+        if (approx - x.abs()).abs() <= tol {
+            return Some((sign * p2, q2));
+        }
+        (p0, q0) = (p1, q1);
+        (p1, q1) = (p2, q2);
+        let frac = v - a as f64;
+        if frac <= 0.0 {
+            break;
+        }
+        v = 1.0 / frac;
+        if !v.is_finite() || v > 1.0e15 {
+            break;
+        }
+    }
+    None
+}
+
+/// `Rationalize[x]` / `Rationalize[x, tol]`: the simplest rational close to a real.
+pub fn b_rationalize(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    if args.is_empty() || args.len() > 2 {
+        i.message("Rationalize", "argr");
+        return Ok(unevaluated_call(i, "Rationalize", args));
+    }
+    let tol = match args.get(1) {
+        None => 0.0f64,
+        Some(t) => match num_val(t) {
+            Some(n) => {
+                let v = nv_f64(&n);
+                if v.is_finite() && v >= 0.0 { v } else {
+                    return Ok(unevaluated_call(i, "Rationalize", args));
+                }
+            }
+            None => return Ok(unevaluated_call(i, "Rationalize", args)),
+        },
+    };
+    match &args[0] {
+        Expr::Int(_) | Expr::Rat(_) => Ok(args[0].clone()),
+        Expr::Real(x) => {
+            // A default tolerance of zero still means "to the value's own precision",
+            // which is what continued fractions find: the simplest rational the double
+            // actually stands for. The slack is a few ulps of x.
+            let slack = if tol > 0.0 { tol } else { 4.0 * f64::EPSILON * x.abs().max(1.0) };
+            match cf_rational(*x, slack) {
+                Some((p, q)) => Ok(Expr::rat(Rat::new(BigInt::from_i64(p), BigInt::from_i64(q)))),
+                None => Ok(Expr::real(*x)),
+            }
+        }
+        _ => Ok(unevaluated_call(i, "Rationalize", args)),
+    }
+}
