@@ -70,6 +70,9 @@ DERIV_CASES = [
     ("D[Sin[x]/x, x]", "Cos[x]/x - 1/x^2 Sin[x]", ".div", "deriv", "(x ≠ 0)"),
     ("D[Log[x], x]", "1/x", ".log", "Real.log", "(x ≠ 0)"),
     ("D[Sqrt[x], x]", "1/2 1/Sqrt[x]", ".sqrt", "Real.sqrt", "(x ≠ 0)"),
+    # Mathlib has `HasDerivAt.arctan`; the inverse sine and cosine have no such
+    # method (they need |x| < 1 and a sqrt side condition), so they stay unwired.
+    ("D[ArcTan[x], x]", "1/(1 + x^2)", ".arctan", "Real.arctan"),
 ]
 
 # Iterated derivatives: D[f, {x, n}] becomes `iteratedDeriv n f x`, proved with

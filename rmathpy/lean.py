@@ -1043,8 +1043,11 @@ class DerivGen:
             name = node.func.id
             (t, f, v) = self.gen(node.args[0])
             forms = {"Sin": "Real.sin", "Cos": "Real.cos", "Exp": "Real.exp",
-                     "Log": "Real.log", "Sqrt": "Real.sqrt"}
-            methods = {"Sin": "sin", "Cos": "cos", "Exp": "exp"}
+                     "Log": "Real.log", "Sqrt": "Real.sqrt", "ArcTan": "Real.arctan"}
+            # Mathlib has `HasDerivAt.sin/.cos/.exp/.log/.sqrt/.arctan`; the
+            # inverse sine and cosine have no such method (they need |x| < 1 and a
+            # `sqrt` side condition), so they stay unwired.
+            methods = {"Sin": "sin", "Cos": "cos", "Exp": "exp", "ArcTan": "arctan"}
             if name in forms:
                 if name in ("Log", "Sqrt"):
                     # both need the argument to be non-zero

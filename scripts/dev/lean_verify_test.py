@@ -58,6 +58,10 @@ BATTERY = [
      "{{x -> Sqrt[1/2 (-1 + Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 + Sqrt[5])]}, "
      "{x -> Sqrt[1/2 (-1 - Sqrt[5])]}, {x -> -Sqrt[1/2 (-1 - Sqrt[5])]}}",
      "verified"),
+    # inverse-tangent wiring: the derivative, and the two integrals it unlocks
+    ("D[ArcTan[x], x]", "1/(1 + x^2)", "verified"),
+    ("Integrate[1/(1 + x^2), x]", "ArcTan[x]", "verified"),
+    ("Integrate[1/(4 + x^2), x]", "1/2 ArcTan[1/2 x]", "verified"),
     # integers and lists: Nat.gcd, Nat.Prime, List.length, literal lists
     ("GCD[24, 36]", "12", "verified"),
     ("GCD[2^64, 2^70]", "18446744073709551616", "verified"),
