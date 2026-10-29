@@ -187,3 +187,14 @@ Floor[-2.1]
 => -3
 Ceiling[-2.1]
 => -2
+
+# Mod with one exact and one real argument is computed in machine arithmetic
+# (regression: Mod[7.5, 2] stayed unevaluated because only both-real was handled).
+Mod[7.5, 2]
+=> 1.5
+Mod[-7.5, 2]
+=> 0.5
+Mod[7, 2]
+=> 1
+Mod[-7, 3]
+=> 2

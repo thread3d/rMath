@@ -1007,11 +1007,15 @@ pub fn b_mod(i: &mut Interp, args: &[Expr]) -> EvalRes {
         let (_, m) = a.div_mod_floor(&b);
         return Ok(Expr::Int(m));
     }
-    if let (Expr::Real(a), Expr::Real(b)) = (&args[0], &args[1]) {
-        if *b != 0.0 {
-            let mut r = a % b;
-            if r != 0.0 && ((r < 0.0) != (b < &0.0)) {
-                r += *b;
+    // A mixed exact/real pair is computed in machine arithmetic, as Mathematica
+    // does: `Mod[7.5, 2]` is 1.5. Only both-real was handled, so the mixed case
+    // stayed unevaluated.
+    if let (Some(a), Some(b)) = (num_val(&args[0]), num_val(&args[1])) {
+        let (x, d) = (nv_f64(&a), nv_f64(&b));
+        if d != 0.0 {
+            let mut r = x % d;
+            if r != 0.0 && ((r < 0.0) != (d < 0.0)) {
+                r += d;
             }
             return Ok(Expr::real(r));
         }
