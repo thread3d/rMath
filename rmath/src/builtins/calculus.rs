@@ -507,6 +507,11 @@ fn integrate_rec(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> EvalRes {
         i.step("special function antiderivative", &anti);
         return Ok(anti);
     }
+    // Sin[u]^n / Cos[u]^n by the reduction formula.
+    if let Some(anti) = trig_power_antiderivative(i, e, var)? {
+        i.step("trigonometric power reduction", &anti);
+        return Ok(anti);
+    }
     // x^n f(x) by parts, x^n Log[x], and the 1/quadratic arc forms.
     if let Some(v) = by_parts(i, e, var, depth)? {
         i.step("integration by parts", &v);
@@ -711,6 +716,101 @@ fn by_parts(i: &mut Interp, e: &Expr, var: &Expr, depth: u32) -> Result<Option<E
     }
     let c = eval_call(i, Expr::Sym(sys.times), consts)?;
     Ok(Some(eval_call(i, Expr::Sym(sys.times), vec![c, bracket])?))
+}
+
+/// ∫ Sin[u]^n du (or Cos[u]^n) with respect to `u`, by the standard reduction
+/// formula
+///
+/// ```text
+/// ∫ sin^n = -(1/n) sin^(n-1) cos + ((n-1)/n) ∫ sin^(n-2)
+/// ∫ cos^n =  (1/n) cos^(n-1) sin + ((n-1)/n) ∫ cos^(n-2)
+/// ```
+///
+/// which is what makes `Integrate[Sin[x]^2, x]` (and every other power) work
+/// without expanding products of different frequencies.
+fn trig_power_integral(i: &mut Interp, name: &str, u: &Expr, n: i64) -> Result<Expr, Flow> {
+    let sys = i.t.sys;
+    if n <= 1 {
+        return Ok(match (name, n) {
+            ("Sin", 1) => neg_app(i, "Cos", u),
+            ("Cos", 1) => app(i, "Sin", u),
+            _ => u.clone(), // ∫ 1 du = u
+        });
+    }
+    let prev = trig_power_integral(i, name, u, n - 2)?;
+    let f = app(i, name, u);
+    let fp = eval_call(
+        i,
+        Expr::Sym(sys.power),
+        vec![f, Expr::int_i64(n - 1)],
+    )?;
+    let other = if name == "Sin" {
+        app(i, "Cos", u)
+    } else {
+        app(i, "Sin", u)
+    };
+    let pair = eval_call(i, Expr::Sym(sys.times), vec![fp, other])?;
+    let sign = if name == "Sin" { -1 } else { 1 };
+    let coef1 = Expr::rat(Rat::new(BigInt::from_i64(sign), BigInt::from_i64(n)));
+    let coef2 = Expr::rat(Rat::new(
+        BigInt::from_i64(n - 1),
+        BigInt::from_i64(n),
+    ));
+    let t1 = eval_call(i, Expr::Sym(sys.times), vec![coef1, pair])?;
+    let t2 = eval_call(i, Expr::Sym(sys.times), vec![coef2, prev])?;
+    eval_call(i, Expr::Sym(sys.plus), vec![t1, t2])
+}
+
+/// `Sin[u]^n`/`Cos[u]^n` with `u` linear in the variable, via the reduction
+/// formula above (the inverse of the inner slope comes out as a factor).
+fn trig_power_antiderivative(
+    i: &mut Interp,
+    e: &Expr,
+    var: &Expr,
+) -> Result<Option<Expr>, Flow> {
+    let sys = i.t.sys;
+    let Some((h, args)) = e.parts() else {
+        return Ok(None);
+    };
+    if !h.is_symbol(sys.power) || args.len() != 2 {
+        return Ok(None);
+    }
+    let Some(n) = crate::builtins::core::expr_to_int(&args[1]) else {
+        return Ok(None);
+    };
+    if n < 1 || n > 200 {
+        return Ok(None);
+    }
+    let Some((ih, iargs)) = args[0].parts() else {
+        return Ok(None);
+    };
+    if iargs.len() != 1 {
+        return Ok(None);
+    }
+    let name = if ih.is_symbol_named(&i.t, "Sin") {
+        "Sin"
+    } else if ih.is_symbol_named(&i.t, "Cos") {
+        "Cos"
+    } else {
+        return Ok(None);
+    };
+    let u = iargs[0].clone();
+    if is_free_of(i, &u, var)? {
+        return Ok(None); // a constant power is handled as a constant factor
+    }
+    let Some((a, _b)) = linear_form(i, &u, var)? else {
+        return Ok(None);
+    };
+    if a == 0 {
+        return Ok(None);
+    }
+    let inner = trig_power_integral(i, name, &u, n)?;
+    let inv_a = Expr::rat(Rat::new(BigInt::one(), BigInt::from_i64(a)));
+    let res = eval_call(i, Expr::Sym(sys.times), vec![inv_a, inner])?;
+    // The recurrence nests the coefficients; Expand keeps the antiderivative in
+    // the shape a reader expects (3/8 x + 3/8 Cos[x] Sin[x] + ...).
+    let expanded = app(i, "Expand", &res);
+    Ok(Some(i.eval(&expanded)?))
 }
 
 /// `1/(c0 + c2 x^2) -> ArcTan`, and `1/Sqrt[c0 - a x^2] -> ArcSin`.

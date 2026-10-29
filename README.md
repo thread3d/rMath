@@ -676,12 +676,16 @@ k.eval("x = 5; x^2")["result"]       # "25"
 - `Integrate` covers polynomials, `1/(a x + b)`, sums, constant factors,
   rational functions that split into distinct linear factors (via `Apart`),
   `x^n Sin/Cos/Exp` and `x^n Log[x]` by parts, the arc-tangent/arc-sine forms
-  of `1/quadratic`, the elementary functions with linear arguments, and the
-  special cases `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`,
-  `1/Log[x]`, `Exp[-x^2]` (trigonometric substitution, repeated-factor partial
-  fractions, irreducible quadratics and powers of trigonometric functions are
-  not implemented, so e.g. `Integrate[1/(x^3 + x), x]` and
-  `Integrate[Sin[x]^2, x]` stay unevaluated).
+  of `1/quadratic`, any power `Sin[u]^n`/`Cos[u]^n` of a linear argument (by the
+  reduction formula, so `Integrate[Sin[x]^2, x]` and `Integrate[Cos[x]^4, x]`
+  work), the elementary functions with linear arguments, and the special cases
+  `Sin[c x]/(a x)`, `Cos[c x]/(a x)`, `Exp[c x]/(a x)`, `1/Log[x]`,
+  `Exp[-x^2]` (trigonometric substitution, repeated-factor partial fractions,
+  irreducible quadratics and products of different trig powers are not
+  implemented, so `Integrate[1/(x^3 + x), x]` and
+  `Integrate[Sin[x]^2 Cos[x]^3, x]` stay unevaluated; a trig-power
+  antiderivative is also not yet Lean-checked, because closing it needs the
+  Pythagorean identity in the derivative tactic chain).
 - Special functions available: `Erf`, `Erfc`, `SinIntegral`, `CosIntegral`,
   `SinhIntegral`, `CoshIntegral`, `ExpIntegralEi`, `LogIntegral`, `Sinc`
   (machine-precision numeric evaluation, exact values at 0/±Infinity, and
