@@ -590,7 +590,7 @@ k.eval("x = 5; x^2")["result"]       # "25"
   associations `<|k -> v|>`, strings, comments `(* *)`, base literals `2^^101`.
 - **Evaluation**: standard evaluation with `HoldAll`-family attributes,
   `Sequence` splicing, `Unevaluated`, `Evaluate` in held args, ordered
-  down-values (specific rules first), up-value-free v1, `Module`/`Block`/`With`
+  down-values (specific rules first), up-values tagged with `/:` or `^=`, `Module`/`Block`/`With`
   scoping, `Catch`/`Throw`, `Break`/`Continue`/`Return`. Error control:
   `Quiet`, `Check`, `Off`/`On`, `Abort`, `TimeConstrained`.
 - **Derivations**: `Steps[expr]` returns the derivation of a result as a list of
@@ -672,7 +672,9 @@ k.eval("x = 5; x^2")["result"]       # "25"
   `Pi/3`, `Pi/4` and `Pi/6` (with `ComplexInfinity` where the denominator
   vanishes); any other rational multiple, such as `Sin[Pi/5]`, stays
   unevaluated rather than dropping to a machine approximation.
-- Up-values (`f /: g[f[x]] = ...`) parse but are not applied.
+- Up-values are applied: `f /: g[f[x_]] := ...` (and `lhs ^= rhs` /
+  `lhs ^:= rhs`, which take the tag from the head of `lhs`) fires when an
+  expression containing the tag is evaluated, including under a built-in head.
 - `Integrate` covers polynomials, `1/(a x + b)`, sums, constant factors,
   rational functions that split into distinct linear factors (via `Apart`),
   `x^n Sin/Cos/Exp` and `x^n Log[x]` by parts, the arc-tangent/arc-sine forms

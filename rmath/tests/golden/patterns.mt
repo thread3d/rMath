@@ -29,3 +29,15 @@ Module[{x = 2}, x + 1]
 => 3
 s = #^2 &; s[7]
 => 49
+
+# An Orderless+Flat head must still match a pattern whose arguments are calls:
+# `Plus[u[a_], u[b_]]` against `u[3] + u[4]` failed because a single argument was
+# wrapped in `Plus[...]` instead of being matched by itself.
+Hold[u[3] + u[4]] /. Hold[Plus[u[a_], u[b_]]] -> {a, b}
+=> {3, 4}
+Hold[u[3] + 4] /. Hold[Plus[u[a_], b_]] -> {a, b}
+=> {3, 4}
+u /: Plus[u[a_], u[b_]] := u[a + b]; u[3] + u[4]
+=> u[7]
+Hold[a b] /. Hold[Times[a_, b_]] -> {a, b}
+=> {a, b}

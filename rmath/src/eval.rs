@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.2.4 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.2.5 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
@@ -273,8 +273,15 @@ impl Interp {
         // 4. Attribute normalization (Flat / Orderless).
         let nchanged = self.normalize(head.sym_id(), &mut vargs);
         let changed_pre = hchanged || achanged || nchanged;
-        // 5. Dispatch: down-values, then built-ins (plain symbol heads only).
+        // 5. Dispatch: up-values (tagged on an argument), then down-values, then
+        // built-ins (plain symbol heads only).
         if let Some(id) = head.sym_id() {
+            let _ = id;
+            let whole_here = Expr::node(head.clone(), vargs.clone());
+            if let Some(v) = self.try_upvalues(&whole_here)? {
+                let ch = !same_q(&v, orig);
+                return Ok((v, ch));
+            }
             if let Some(v) = self.try_downvalues(id, &vargs)? {
                 let ch = !same_q(&v, orig);
                 return Ok((v, ch));
@@ -476,6 +483,60 @@ impl Interp {
             *args = s;
         }
         changed
+    }
+
+    /// Up-values: a rule tagged on a symbol that matches the *whole* expression
+    /// (`f /: g[f[x_]] := ...` fires when `g[f[3]]` is evaluated). The tag has to
+    /// appear as an argument of the expression for Mathematica to look at it, so
+    /// only the head symbols of the arguments are candidates.
+    fn try_upvalues(&mut self, whole: &Expr) -> Result<Option<Expr>, Flow> {
+        let Some((head, args)) = whole.parts() else {
+            return Ok(None);
+        };
+        // Mathematica looks at the head as well as the arguments: `f[x_] ^= ...`
+        // tags `f` and must fire on `f[3]`, where `f` is the head, while
+        // `f /: g[f[x_]] := ...` tags `f` and fires on `g[f[3]]`, where it is an
+        // argument.
+        let mut tags: Vec<usize> = Vec::new();
+        if let Some(id) = head.sym_id() {
+            if !self.t.data[id].up.is_empty() {
+                tags.push(id);
+            }
+        }
+        for a in args {
+            let id = match a {
+                Expr::Sym(id) => Some(*id),
+                Expr::Node(nd) => nd.head.sym_id(),
+                _ => None,
+            };
+            if let Some(id) = id {
+                if !self.t.data[id].up.is_empty() && !tags.contains(&id) {
+                    tags.push(id);
+                }
+            }
+        }
+        for id in tags {
+            let rules: Vec<crate::expr::DownRule> = self.t.data[id].up.clone();
+            for rule in rules {
+                let Some(bind_rule) = crate::pattern::match_top_bindings(self, &rule.pat, whole)
+                else {
+                    continue;
+                };
+                if let Some(c) = &rule.cond {
+                    let cond_e = subst_bindings(&self.t.sys, c, &bind_rule);
+                    match self.eval(&cond_e) {
+                        Ok(v) if v.is_symbol(self.t.sys.r#true) => {}
+                        Ok(_) => continue,
+                        Err(Flow::Throw(v, tag)) => return Err(Flow::Throw(v, tag)),
+                        Err(_) => continue,
+                    }
+                }
+                let body = subst_bindings(&self.t.sys, &rule.body, &bind_rule);
+                let v = self.eval(&body)?;
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
     }
 
     fn try_downvalues(&mut self, head_id: usize, args: &[Expr]) -> Result<Option<Expr>, Flow> {

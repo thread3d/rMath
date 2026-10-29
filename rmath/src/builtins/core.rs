@@ -769,6 +769,73 @@ fn assign(i: &mut Interp, lhs: &Expr, rhs: &Expr, delayed: bool) -> EvalRes {
     }
 }
 
+/// `tag /: lhs = rhs` and `tag /: lhs := rhs` — an up-value: the rule is stored
+/// on `tag`, but its pattern describes an expression *containing* `tag`
+/// (`f /: g[f[x_]] := x + 1`), so it fires when such an expression is evaluated.
+fn tag_set(i: &mut Interp, args: &[Expr], delayed: bool) -> EvalRes {
+    if args.len() != 3 {
+        i.message("TagSet", "argr");
+        return Ok(unevaluated_call(i, "TagSet", args));
+    }
+    let Some(tag) = args[0].sym_id() else {
+        i.message("TagSet", "argt");
+        return Ok(Expr::Sym(i.t.sys.null));
+    };
+    if is_protected(i, tag) {
+        let n = i.t.name_of(tag).to_string();
+        i.message(&n, "setp");
+        return Ok(Expr::Sym(i.t.sys.null));
+    }
+    let (mut pat, mut cond) = (args[1].clone(), None);
+    if let Some((h, hargs)) = pat.parts() {
+        if h.is_symbol(i.t.sys.condition) && hargs.len() == 2 {
+            cond = Some(hargs[1].clone());
+            pat = hargs[0].clone();
+        }
+    }
+    let body = if delayed { args[2].clone() } else { args[2].clone() };
+    i.t.data[tag].up.push(DownRule { pat, body: body.clone(), delayed, cond });
+    if delayed {
+        return Ok(Expr::Sym(i.t.sys.null));
+    }
+    Ok(body)
+}
+
+/// `lhs ^= rhs` / `lhs ^:= rhs`: the tag is taken from the head of `lhs`, so
+/// `f[x_] ^= x^2` tags `f` and fires when `f[...]` is evaluated.
+fn upset(i: &mut Interp, args: &[Expr], delayed: bool) -> EvalRes {
+    if args.len() != 2 {
+        i.message("UpSet", "argr");
+        return Ok(unevaluated_call(i, "UpSet", args));
+    }
+    let Some((h, _)) = args[0].parts() else {
+        i.message("UpSet", "argt");
+        return Ok(unevaluated_call(i, "UpSet", args));
+    };
+    let Some(tag) = h.sym_id() else {
+        i.message("UpSet", "argt");
+        return Ok(unevaluated_call(i, "UpSet", args));
+    };
+    let tagged = vec![Expr::Sym(tag), args[0].clone(), args[1].clone()];
+    tag_set(i, &tagged, delayed)
+}
+
+pub fn b_upset(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    upset(i, args, false)
+}
+
+pub fn b_upsetdelayed(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    upset(i, args, true)
+}
+
+pub fn b_tagset(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    tag_set(i, args, false)
+}
+
+pub fn b_tagsetdelayed(i: &mut Interp, args: &[Expr]) -> EvalRes {
+    tag_set(i, args, true)
+}
+
 pub fn b_unset(i: &mut Interp, args: &[Expr]) -> EvalRes {
     if args.len() != 1 {
         i.message("Unset", "argr");

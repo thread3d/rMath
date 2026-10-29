@@ -84,6 +84,31 @@ pub fn match_top(ctx: &mut dyn MatchCtx, pat: &Expr, e: &Expr) -> bool {
     m.pat(pat, e, &mut b, false)
 }
 
+/// Match a whole expression against a pattern, returning the bindings so the
+/// caller can substitute a rule body (used for up-values).
+///
+/// When both sides are calls of the same head, the arguments are matched the way
+/// a down-value of that head would be — attribute-aware, so an Orderless head
+/// (or a Flat one) permutes and folds. `f /: Plus[f[a_], f[b_]] := ...` only fires
+/// on `f[3] + f[4]` because of this.
+pub fn match_top_bindings(ctx: &mut dyn MatchCtx, pat: &Expr, e: &Expr) -> Option<Bindings> {
+    if let (Some((ph, pargs)), Some((eh, eargs))) = (pat.parts(), e.parts()) {
+        if same_q(ph, eh) {
+            if let Some(id) = eh.sym_id() {
+                return match_call_args(ctx, id, pargs, eargs);
+            }
+        }
+    }
+    let sys = ctx.sys_syms();
+    let mut b = Bindings::default();
+    let mut m = Matcher { ctx, sys };
+    if m.pat(pat, e, &mut b, false) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
 /// Match argument list `args` against pattern args for a call of `head_id`
 /// (attribute-aware: Orderless permutation, Flat grouping).
 pub fn match_call_args(
@@ -737,7 +762,7 @@ impl<'a> Matcher<'a> {
                 // FLAT: a non-blank element may swallow a contiguous group.
                 if flat && head_id.is_some() {
                     let hid = head_id.unwrap();
-                    for k in (1..=args.len()).rev() {
+                    for k in (2..=args.len()).rev() {
                         let group = Expr::node(Expr::Sym(hid), args[..k].to_vec());
                         let mut b2 = b.clone();
                         if self.pat(p, &group, &mut b2, false)
@@ -746,6 +771,17 @@ impl<'a> Matcher<'a> {
                             *b = b2;
                             return true;
                         }
+                    }
+                    // A single argument is matched by itself: `Plus[x]` *is* `x`
+                    // (OneIdentity), and wrapping it would stop `Plus[u[a_], u[b_]]`
+                    // from matching `u[3] + u[4]`.
+                    let mut b2 = b.clone();
+                    if self.pat(p, &args[0], &mut b2, false)
+                        && self.seq_ordered(rest, &args[1..], attrs, head_id, &mut b2)
+                    {
+                        let _ = hid;
+                        *b = b2;
+                        return true;
                     }
                     return false;
                 }

@@ -404,6 +404,9 @@ pub struct SymbolData {
     pub attrs: u32,
     pub own: Option<OwnValue>,
     pub down: Vec<DownRule>,
+    /// Up-values: rules tagged on this symbol that rewrite a larger expression
+    /// containing it (`f /: g[f[x_]] := ...`).
+    pub up: Vec<DownRule>,
     /// Default[f], Default[f, i], Default[f, i, n]
     pub defaults: Vec<Option<Expr>>,
     /// Options[f] rule list
@@ -421,6 +424,7 @@ impl SymbolData {
             attrs: 0,
             own: None,
             down: Vec::new(),
+            up: Vec::new(),
             defaults: vec![None, None, None],
             options: Vec::new(),
             builtin: None,
@@ -451,7 +455,8 @@ sys_syms! {
     string: "String", symbol: "Symbol",
     list: "List", association: "Association", plus: "Plus", times: "Times",
     power: "Power", rule: "Rule", ruledelayed: "RuleDelayed", set: "Set",
-    setdelayed: "SetDelayed", unset: "Unset", upset: "UpSet", tagset: "TagSet",
+    setdelayed: "SetDelayed", unset: "Unset", upset: "UpSet",
+    upsetdelayed: "UpSetDelayed", tagset: "TagSet",
     blank: "Blank", blanksequence: "BlankSequence", blanknullsequence: "BlankNullSequence",
     pattern: "Pattern", optional: "Optional", patterntest: "PatternTest",
     condition: "Condition", alternatives: "Alternatives", except: "Except",

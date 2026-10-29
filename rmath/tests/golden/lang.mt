@@ -101,3 +101,18 @@ a = 5; 1 > a > 3
 => False
 Equal[x, y]
 => Equal[x, y]
+
+# Up-values: a rule tagged on a symbol rewrites expressions that *contain* it.
+# `f /: g[f[x_]] := ...` fires when g is evaluated; `f[x_] ^= ...` tags f itself.
+f /: upG[f[x_]] := x + 1; upG[f[3]]
+=> 4
+f /: upSin[f[x_]] := x; upSin[f[2]]
+=> 2
+f /: upH[f[x_], y_] := {x, y}; upH[f[7], 9]
+=> {7, 9}
+upK[x_] ^= x^2; upK[3]
+=> 9
+upL[x_] ^:= x^3; upL[2]
+=> 8
+upM[f[3]]
+=> upM[f[3]]

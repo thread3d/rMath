@@ -202,7 +202,7 @@ impl<'t> Parser<'t> {
             TokKind::UpSetDelayed => {
                 self.advance();
                 let rhs = self.parse_l3()?;
-                Ok(self.node(Expr::Sym(sys.setdelayed), vec![lhs, rhs]))
+                Ok(self.node(Expr::Sym(sys.upsetdelayed), vec![lhs, rhs]))
             }
             TokKind::Unset => {
                 self.advance();
