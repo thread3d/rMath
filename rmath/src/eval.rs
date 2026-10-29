@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.2.25 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.2.26 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {

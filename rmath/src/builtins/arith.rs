@@ -893,6 +893,17 @@ pub fn b_sign(i: &mut Interp, args: &[Expr]) -> EvalRes {
     Ok(unevaluated_call(i, "Sign", args))
 }
 
+/// A rounding of a machine real is an exact integer, as in Mathematica
+/// (`Floor[2.7]` is 2, not 2.0). Beyond 64 bits the integer cannot be represented
+/// exactly, so the real is returned unchanged.
+fn exact_int_or_real(v: f64) -> Expr {
+    if v.abs() < 9.2e18 {
+        Expr::int_i64(v as i64)
+    } else {
+        Expr::real(v)
+    }
+}
+
 pub fn b_floor(i: &mut Interp, args: &[Expr]) -> EvalRes {
     let e = &args[0];
     match e {
@@ -901,7 +912,7 @@ pub fn b_floor(i: &mut Interp, args: &[Expr]) -> EvalRes {
             let (q, _) = r.num.div_mod_floor(&r.den);
             Ok(Expr::Int(q))
         }
-        Expr::Real(x) => Ok(Expr::real(x.floor())),
+        Expr::Real(x) => Ok(exact_int_or_real(x.floor())),
         _ => Ok(unevaluated_call(i, "Floor", args)),
     }
 }
@@ -916,7 +927,7 @@ pub fn b_ceiling(i: &mut Interp, args: &[Expr]) -> EvalRes {
             let (q, _) = neg.num.div_mod_floor(&neg.den);
             Ok(Expr::Int(q.neg()))
         }
-        Expr::Real(x) => Ok(Expr::real(x.ceil())),
+        Expr::Real(x) => Ok(exact_int_or_real(x.ceil())),
         _ => Ok(unevaluated_call(i, "Ceiling", args)),
     }
 }
@@ -938,7 +949,7 @@ pub fn b_round(i: &mut Interp, args: &[Expr]) -> EvalRes {
             };
             Ok(Expr::Int(if up { q.add(&BigInt::one()) } else { q }))
         }
-        Expr::Real(x) => Ok(Expr::real(x.round_ties_even())),
+        Expr::Real(x) => Ok(exact_int_or_real(x.round_ties_even())),
         _ => Ok(unevaluated_call(i, "Round", args)),
     }
 }

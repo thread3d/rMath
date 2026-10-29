@@ -31,8 +31,9 @@ GCD[24, 36]
 => 12
 10!
 => 3628800
+# (This expectation used to be 2.0: the old inexact answer was pinned as correct.)
 Floor[2.7]
-=> 2.0
+=> 2
 # Mathematica rounds ties to the nearest even integer (Round[1/2] = 0).
 Round[1/2]
 => 0
@@ -173,3 +174,16 @@ IntegerPart[7/2]
 => 3
 FractionalPart[2.7]
 => 0.7
+
+# Rounding a machine real gives an exact integer, as Mathematica does
+# (regression: every one of these answered with a real, e.g. Floor[2.7] = 2.0).
+Floor[2.7]
+=> 2
+Ceiling[2.1]
+=> 3
+Round[2.5]
+=> 2
+Floor[-2.1]
+=> -3
+Ceiling[-2.1]
+=> -2
