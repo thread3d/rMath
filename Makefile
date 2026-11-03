@@ -17,6 +17,7 @@
 #   make lean-status   can this checkout verify a claim in Lean?
 #   make lean-setup    bring Lean + Mathlib into this checkout (idempotent)
 #   make lean-verify   the Lean battery (slow; needs lean-setup first)
+#   make bench      time the two evaluator workloads (docs/PERFORMANCE.md)
 #   make clean      remove build artifacts
 
 SHELL  := /bin/bash
@@ -36,16 +37,22 @@ LEAN_ENV := PATH=$(ELAN_BIN_LOCAL):$$PATH ELAN_HOME=$(dir $(ELAN_BIN_LOCAL))
 
 .PHONY: help build release test py-test check repl eval demo notebook notebook-bg stop restart clean \
         mcp mcp-http \
-        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-setup lean-status lean-verify demo-gen tag
+        app app-run app-install app-stop app-uninstall shot svg2png report uitest texcheck lean-test lean-setup lean-status lean-verify demo-gen tag bench
 
 help:
-	@sed -n '2,21p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
+	@sed -n '2,22p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
 
 build:
 	cd $(ROOT)/rmath && $(CARGO) build
 
 release:
 	cd $(ROOT)/rmath && $(CARGO) build --release
+
+# The two workloads docs/PERFORMANCE.md names, three runs each, CPU and wall
+# time. On a loaded machine those move by 10-20% between runs of one binary;
+# `perf stat -e instructions:u` is the load-proof comparison.
+bench: release
+	@cd $(ROOT) && scripts/dev/bench.sh 3
 
 test:
 	cd $(ROOT)/rmath && $(CARGO) test

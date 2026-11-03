@@ -140,7 +140,7 @@ impl Interp {
         // $Version is now typable (leading $ lexes) and reports the version.
         let ver = self.t.intern("$Version");
         self.t.data[ver].own = Some(OwnValue::Set(Expr::from_str(
-            "rMath 0.2.31 (stand-alone Mathematica-style system, Rust)",
+            "rMath 0.2.32 (stand-alone Mathematica-style system, Rust)",
         )));
         // Register built-ins from the registry.
         for (idx, def) in crate::builtins::BUILTINS.iter().enumerate() {
@@ -1479,6 +1479,25 @@ mod builtin_panic_backstop_tests {
         let e = crate::parser::parse_input(&mut i.t, src).unwrap();
         let _ = i.eval(&e);
         i.messages.iter().map(|(t, _)| t.clone()).collect()
+    }
+
+    /// A node may rewrite itself back into its own input immediately after one of
+    /// its children changed: `1/x - x/(1 + x^2)` does exactly that (the `Plus`
+    /// rebuilds the form it started with, after its child was rewritten), and
+    /// `Integrate[1/(x^3 + x), x]` produces it. The fixpoint loop must terminate
+    /// there, so a change-tracking rewrite that trusts a changed child without
+    /// keeping the comparison is caught here in a second rather than after
+    /// 200 000 passes (docs/PERFORMANCE.md, "Outcome").
+    #[test]
+    fn a_rewrite_the_node_undoes_still_terminates() {
+        for src in ["1/x - x/(1 + x^2)", "Integrate[1/(x^3 + x), x]"] {
+            let msgs = messages_for(src);
+            assert!(
+                !msgs.iter().any(|m| m.contains("$IterationLimit")),
+                "{src} did not converge: {:?}",
+                msgs
+            );
+        }
     }
 
     #[test]
