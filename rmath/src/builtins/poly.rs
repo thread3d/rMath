@@ -952,18 +952,13 @@ fn split_linear_factors(mut work: Vec<Rat>) -> (Vec<(Rat, usize)>, Vec<Rat>) {
     (roots, work)
 }
 
-/// An exact rational square root, or None when either part is not a square.
-fn rat_sqrt(r: &Rat) -> Option<Rat> {
-    if r.is_neg() {
-        return None;
-    }
-    let n = r.num.clone().isqrt();
-    let d = r.den.clone().isqrt();
-    if n.mul(&n) == r.num && d.mul(&d) == r.den {
-        Some(Rat { num: n, den: d })
-    } else {
-        None
-    }
+/// The exact `k`-th root of a rational, when it has one. Numerator and
+/// denominator must both be perfect `k`-th powers — `8/27` has a cube root
+/// (`2/3`), `2/3` does not.
+fn rat_root(r: &Rat, k: u32) -> Option<Rat> {
+    let n = r.num.clone().exact_root(k)?;
+    let d = r.den.clone().exact_root(k)?;
+    Some(Rat { num: n, den: d })
 }
 
 fn poly_mul(a: &[Rat], b: &[Rat]) -> Vec<Rat> {
@@ -979,29 +974,99 @@ fn poly_mul(a: &[Rat], b: &[Rat]) -> Vec<Rat> {
     out
 }
 
-/// The monic-normalised quadratic `p` is a perfect square, i.e. `p = q^2` for a
-/// quadratic `q` — the shape `(x^2 + 1)^2` a denominator takes. Only degree 4 is
-/// supported: `q = α x^2 + β x + γ` from α² = p₄, 2αβ = p₃, β² + 2αγ = p₂, then
-/// the last two coefficients are checked rather than solved.
-fn square_of_quadratic(p: &[Rat]) -> Option<Vec<Rat>> {
-    if p.len() != 5 {
+/// `a` raised to the `k`-th power, as a coefficient list.
+fn poly_pow(a: &[Rat], k: u32) -> Vec<Rat> {
+    let mut out = vec![Rat::from_i64(1)];
+    for _ in 0..k {
+        out = poly_mul(&out, a);
+    }
+    out
+}
+
+/// `q` when `p = q^k` exactly, else `None`.
+///
+/// The leading coefficient of `q` is the exact `k`-th root of the leading
+/// coefficient of `p`, and every coefficient below it is then forced: writing
+/// `q = c_d x^d + …`, the coefficient of `x^{n-t}` in `q^k` is linear in the single
+/// still-unknown `c_{d-t}`, with coefficient `k c_d^{k-1}` (every term with two or
+/// more of the lower unknowns sits at least `t` degrees further down). So the
+/// coefficients are solved from the top down and the result is verified, which
+/// rejects a polynomial that merely starts like a power.
+fn poly_exact_kth_root(p: &[Rat], k: u32) -> Option<Vec<Rat>> {
+    let mut p = p.to_vec();
+    trim(&mut p);
+    if k < 2 || p.len() < 2 {
         return None;
     }
-    let alpha = rat_sqrt(&p[4])?;
-    if alpha.is_zero() {
+    let n = p.len() - 1;
+    if n % k as usize != 0 {
         return None;
     }
-    let beta = p[3].div(&Rat::from_i64(2).mul(&alpha));
-    let two_alpha = Rat::from_i64(2).mul(&alpha);
-    let gamma = p[2].sub(&beta.mul(&beta)).div(&two_alpha);
-    let check1 = Rat::from_i64(2).mul(&beta).mul(&gamma);
-    if check1.cmp(&p[1]) != std::cmp::Ordering::Equal {
+    let d = n / k as usize;
+    if d == 0 {
         return None;
     }
-    if gamma.mul(&gamma).cmp(&p[0]) != std::cmp::Ordering::Equal {
+    let zero = Rat::from_i64(0);
+    let mut q = vec![zero.clone(); d + 1];
+    q[d] = rat_root(&p[n], k)?;
+    if q[d].is_zero() {
         return None;
     }
-    Some(vec![gamma, beta, alpha])
+    // k c_d^{k-1}: what one power of the unknown coefficient contributes.
+    let lead = {
+        let mut acc = Rat::from_i64(k as i64);
+        for _ in 1..k {
+            acc = acc.mul(&q[d]);
+        }
+        acc
+    };
+    for t in 1..=d {
+        let pw = poly_pow(&q, k);
+        let known = pw.get(n - t).cloned().unwrap_or_else(|| zero.clone());
+        q[d - t] = p[n - t].sub(&known).div(&lead);
+    }
+    if poly_pow(&q, k) == p {
+        Some(q)
+    } else {
+        None
+    }
+}
+
+/// The denominator's leftover cofactor as `q^power`, with `q` irreducible over the
+/// rationals and of degree 2 or 3 — the factors this module can divide by.
+///
+/// Degrees 2 and 3 are irreducible exactly when they have no rational root. Above
+/// that, only an exact power of such a factor is recognised: `(x^2 + 1)^3`,
+/// `(x^3 - 2)^2`. A degree-4 cofactor with no rational root is *not* decided here,
+/// because it may still split into two quadratics (`x^4 + 5 x^2 + 4`), and a wrong
+/// split would be a wrong answer rather than an unfinished one.
+fn irreducible_power_of(p: &[Rat]) -> Option<(Vec<Rat>, usize)> {
+    let mut p = p.to_vec();
+    trim(&mut p);
+    let deg = p.len().checked_sub(1)?;
+    if (2..=3).contains(&deg) {
+        if split_linear_factors(p.clone()).0.is_empty() {
+            return Some((p, 1));
+        }
+        return None;
+    }
+    // Largest power first: `(x^2 + 1)^4` is better split as `q = x^2 + 1` with
+    // power 4 than as `q = (x^2 + 1)^2` with power 2.
+    for k in (2..=deg as u32).rev() {
+        if deg % k as usize != 0 {
+            continue;
+        }
+        let d = deg / k as usize;
+        if !(2..=3).contains(&d) {
+            continue;
+        }
+        if let Some(q) = poly_exact_kth_root(&p, k) {
+            if split_linear_factors(q.clone()).0.is_empty() {
+                return Some((q, k as usize));
+            }
+        }
+    }
+    None
 }
 
 /// The first `n` Taylor coefficients of `p` about `r`: `p(r+u) = Σ b_j u^j`,
@@ -1055,26 +1120,18 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
         return Ok(None);
     };
     let (roots, leftover) = split_linear_factors(den.clone());
-    // A degree-3 leftover is a quadratic with no rational root — irreducible over
-    // the rationals, so it can carry a (B x + C) numerator of its own. Degree 2
-    // means an irrational linear factor, which this does not model.
-    // The leftover cofactor is a constant (complete split), one irreducible
-    // quadratic, or the square of one — `(x^2 + 1)^2` and friends.
-    let (quad, quad_power) = if leftover.len() == 1 {
-        (None, 0usize)
-    } else if leftover.len() == 3 {
-        (Some(leftover.clone()), 1usize)
-    } else if let Some(q) = square_of_quadratic(&leftover) {
-        // The square must itself be irreducible, or the split is not in this form.
-        if q.len() == 3 && split_linear_factors(q.clone()).0.is_empty() {
-            (Some(q), 2usize)
-        } else {
-            return Ok(None);
-        }
-    } else {
-        return Ok(None);
+    // The leftover cofactor is a constant (a complete split), or a power of one
+    // irreducible factor of degree 2 or 3: a quadratic or cubic with no rational
+    // root, `(x^2 + 1)^3`, `(x^3 - 2)^2`, an irreducible cubic `x^3 - 2`. Each such
+    // factor carries a numerator of its own, of degree one less than the factor,
+    // for every power it appears to. Anything else is left alone rather than
+    // guessed at — see `irreducible_power_of`.
+    let (irr, irr_power) = match irreducible_power_of(&leftover) {
+        Some((q, k)) => (Some(q), k),
+        None if leftover.len() == 1 => (None, 0usize),
+        None => return Ok(None),
     };
-    if quad.is_none() && roots.is_empty() {
+    if irr.is_none() && roots.is_empty() {
         return Ok(None);
     }
     let dprime = poly_deriv(&den);
@@ -1135,7 +1192,7 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
         );
         terms.push(i.eval(&term)?);
     }
-    if let Some(q) = &quad {
+    if let Some(q) = &irr {
         // rem = Σ A_i · den/(x - r_i)^k + Σ_j (B_j x + C_j) · L(x) · Q^(k-j), where
         // L is the product of the linear factors. Divide by L, then peel off one
         // (B_j x + C_j)/Q^j at a time by dividing by Q^(k-j): the quotient is at
@@ -1160,10 +1217,10 @@ pub fn apart_expr(i: &mut Interp, e: &Expr, var: &Expr) -> Result<Option<Expr>, 
             return Ok(None);
         };
         let mut cur = t_poly;
-        for j in 1..=quad_power {
+        for j in 1..=irr_power {
             // Q^(power - j)
             let mut qpow = vec![Rat::from_i64(1)];
-            for _ in 0..(quad_power - j) {
+            for _ in 0..(irr_power - j) {
                 qpow = poly_mul(&qpow, q);
             }
             let Some((num_part, rest)) = poly_div(&cur, &qpow) else {
@@ -1658,4 +1715,59 @@ pub fn cancel_coeffs(a: &[Rat], b: &[Rat]) -> Option<(Vec<Rat>, Vec<Rat>)> {
         return Some((div_coeffs(&qa, &dlead), div_coeffs(&qb, &dlead)));
     }
     Some((qa, qb))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Coefficients, lowest first, from integer literals.
+    fn p(v: &[i64]) -> Vec<Rat> {
+        v.iter().map(|n| Rat::from_i64(*n)).collect()
+    }
+
+    #[test]
+    fn exact_power_extraction() {
+        // (2 x^2 + 3)^2 = 4 x^4 + 12 x^2 + 9. The leading coefficient is 4, so the
+        // root of a coefficient — not just of a monic polynomial — is what decides.
+        assert_eq!(poly_exact_kth_root(&p(&[9, 0, 12, 0, 4]), 2), Some(p(&[3, 0, 2])));
+        // (x^2 + 1)^3 = x^6 + 3 x^4 + 3 x^2 + 1.
+        assert_eq!(
+            poly_exact_kth_root(&p(&[1, 0, 3, 0, 3, 0, 1]), 3),
+            Some(p(&[1, 0, 1]))
+        );
+        // (x^3 - 2)^2 = x^6 - 4 x^3 + 4: the root of a degree-6 polynomial is a
+        // cubic, and the coefficients below the leading one are forced from it.
+        assert_eq!(
+            poly_exact_kth_root(&p(&[4, 0, 0, -4, 0, 0, 1]), 2),
+            Some(p(&[-2, 0, 0, 1]))
+        );
+        // Not perfect powers: x^4 + 5 x^2 + 4 = (x^2 + 1)(x^2 + 4), and a
+        // polynomial that merely starts like a square, x^4 + 2 x^3 + x^2 + 1.
+        assert!(poly_exact_kth_root(&p(&[4, 0, 5, 0, 1]), 2).is_none());
+        assert!(poly_exact_kth_root(&p(&[1, 0, 1, 2, 1]), 2).is_none());
+    }
+
+    #[test]
+    fn irreducible_power_recognition() {
+        // A quadratic with no rational root, to the third power.
+        assert_eq!(
+            irreducible_power_of(&p(&[1, 0, 3, 0, 3, 0, 1])),
+            Some((p(&[1, 0, 1]), 3))
+        );
+        // (x^2 + 1)^4 is better described as a fourth power than as a square.
+        assert_eq!(
+            irreducible_power_of(&p(&[1, 0, 4, 0, 6, 0, 4, 0, 1])),
+            Some((p(&[1, 0, 1]), 4))
+        );
+        // An irreducible *cubic* is a factor in its own right: x^3 - 2.
+        assert_eq!(irreducible_power_of(&p(&[-2, 0, 0, 1])), Some((p(&[-2, 0, 0, 1]), 1)));
+        // A reducible quadratic is not: x^2 - 1.
+        assert!(irreducible_power_of(&p(&[-1, 0, 1])).is_none());
+        // A quartic with no rational root is left undecided, not guessed at.
+        assert!(irreducible_power_of(&p(&[4, 0, 5, 0, 1])).is_none());
+        // The trivial leftovers.
+        assert!(irreducible_power_of(&p(&[5])).is_none());
+        assert!(irreducible_power_of(&p(&[0, 1])).is_none());
+    }
 }

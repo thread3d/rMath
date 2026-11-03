@@ -103,9 +103,20 @@ Integrate[1/(4 + x^2)^2, x]
 => 1/8 x/(4 + x^2) + 1/16 ArcTan[1/2 x]
 Integrate[x^3/(1 + x^2)^2, x]
 => 1/2 Log[1 + x^2] + 1/2/(1 + x^2)
-# The reduction recurses, so higher powers work even though Apart stops at the
-# second power of a quadratic.
+# The reduction recurses, so higher powers work.
 Integrate[1/(1 + x^2)^3, x]
 => 1/4 x 1/(1 + x^2)^2 + 3/4 (1/2 x/(1 + x^2) + 1/2 ArcTan[x])
+# Apart recognises a power of an irreducible factor at any exponent (0.2.33), so
+# this is already in partial-fraction form and comes back unchanged rather than
+# unevaluated.
 Apart[1/(1 + x^2)^3, x]
-=> Apart[1/(1 + x^2)^3, x]
+=> 1/(1 + x^2)^3
+# Higher-degree irreducible factors carry their own numerator, per power.
+Apart[1/((x - 1)(x^3 - 2)), x]
+=> -1/(-1 + x) + (1 + x + x^2)/(-2 + x^3)
+Apart[1/((x - 1)(x^2 + 1)^3), x]
+=> 1/8/(-1 + x) + (-1/2 - 1/2 x)/(1 + x^2)^3 + (-1/4 - 1/4 x)/(1 + x^2)^2 + (-1/8 - 1/8 x)/(1 + x^2)
+# A quartic with no rational root may still split into two quadratics, which this
+# does not model, so it stays unevaluated rather than guessed at.
+Apart[1/(x^4 + 5 x^2 + 4), x]
+=> Apart[1/(4 + 5 x^2 + x^4), x]

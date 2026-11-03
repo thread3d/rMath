@@ -508,6 +508,32 @@ impl BigInt {
             lo.neg()
         }
     }
+    /// The exact `k`-th root, or `None` when `self` is not a perfect `k`-th power.
+    ///
+    /// `iroot` answers "floor of the root"; most callers here need to know whether
+    /// the root is exact, because a fractional or irrational root is not a
+    /// coefficient they can use (see `poly::poly_exact_kth_root`). Negative
+    /// numbers have an exact root only for odd `k`.
+    pub fn exact_root(self, k: u32) -> Option<BigInt> {
+        if k == 0 {
+            return None;
+        }
+        if k == 1 || self.is_zero() {
+            return Some(self);
+        }
+        let neg = self.sign < 0;
+        if neg && k % 2 == 0 {
+            return None;
+        }
+        let n = self.abs();
+        let r = n.clone().iroot(k);
+        if r.pow(k) == n {
+            Some(if neg { r.neg() } else { r })
+        } else {
+            None
+        }
+    }
+
     pub fn div_small_i(&self, d: i64) -> BigInt {
         let (q, _) = self.div_rem(&BigInt::from_i64(d));
         q
@@ -768,6 +794,22 @@ mod tests {
         assert!(s.add(&BigInt::one()).pow(2).cmp(&n) == Ordering::Greater);
         // Cubic roots: (2^20)^3 = 2^60.
         assert_eq!(BigInt::from_i64(2).pow(60).iroot(3).to_string(), "1048576");
+        // Exact roots: only a perfect power has one.
+        assert_eq!(BigInt::from_i64(27).exact_root(3).unwrap().to_string(), "3");
+        assert_eq!(BigInt::from_i64(-27).exact_root(3).unwrap().to_string(), "-3");
+        assert_eq!(BigInt::from_i64(16).exact_root(4).unwrap().to_string(), "2");
+        assert_eq!(BigInt::from_i64(1).exact_root(7).unwrap().to_string(), "1");
+        assert_eq!(BigInt::zero().exact_root(5).unwrap().to_string(), "0");
+        assert_eq!(BigInt::from_i64(12).exact_root(1).unwrap().to_string(), "12");
+        assert!(BigInt::from_i64(26).exact_root(3).is_none());
+        assert!(BigInt::from_i64(26).exact_root(2).is_none());
+        assert!(BigInt::from_i64(-16).exact_root(4).is_none());
+        assert!(BigInt::from_i64(8).exact_root(0).is_none());
+        // A large exact root, and the same value with the last digit changed.
+        let big = b("12345678901234567890");
+        let cube = big.pow(3);
+        assert_eq!(cube.clone().exact_root(3).unwrap().to_string(), "12345678901234567890");
+        assert!(cube.add(&BigInt::one()).exact_root(3).is_none());
         assert_eq!(b("48").gcd(&b("18")).to_string(), "6");
         assert_eq!(b("0").gcd(&b("0")).to_string(), "0");
     }

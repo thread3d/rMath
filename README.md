@@ -662,10 +662,11 @@ k.eval("x = 5; x^2")["result"]       # "25"
   (`N[Sin[x], 40]`) and an `f64` input (`N[1.5, 40]`, which cannot regain
   precision) still report `N::meprec` and fall back to machine precision.
 - `Apart` splits a denominator whose factors are linear (with multiplicity,
-  including repeated roots) plus an irreducible quadratic, to the second power; a
-  cube or higher power of a quadratic makes `Apart` leave the expression alone
-  (`Integrate` does handle those — see below — it just works from the whole
-  fraction rather than from a partial-fraction split).
+  including repeated roots) plus one irreducible factor of degree 2 or 3, at any
+  power — `(x^2 + 1)^3`, `(x^3 - 2)^2` — found from the exact `k`-th root of the
+  leading coefficient and verified by multiplying back. A degree-4 or higher
+  cofactor that is not a power of such a factor is left alone rather than guessed
+  at, because it may still split into two quadratics (`x^4 + 5 x^2 + 4`).
 - `Cancel` cancels the common monomial factor and the numeric content of any
   rational function, the common univariate polynomial factor, and a shared
   multivariate factor such as `x + y` (`Cancel[(x^2 - y^2)/(x - y)]` → `x + y`,
