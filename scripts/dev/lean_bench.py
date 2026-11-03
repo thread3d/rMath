@@ -82,12 +82,18 @@ def translate_any(lhs, rhs):
     if rhs is not None and lean.is_solve(lhs):
         lean.solve_statement(lhs, rhs)
         return True
+    if rhs is not None and lean.is_nsolve(lhs):
+        lean.nsolve_statement(lhs, rhs)
+        return True
     if rhs is not None:
         try:
             if lean.calculus_statement(lhs, rhs) is not None:
                 return True
         except ValueError:
             pass
+        if lean.is_series(lhs):
+            lean.series_statement(lhs, rhs)
+            return True
     lean.statement(lhs, rhs)
     return True
 

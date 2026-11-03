@@ -274,8 +274,8 @@ diagnostics batch can never become a verdict. The panel's **Fast check** exposes
 the server's diagnostics directly, and **Find lemmas** searches Loogle. Set
 `RMATH_LEAN_SERVER=0` to force the one-shot path. `make lean-bench` scores
 translation and verification over the golden files and the demo (translation
-coverage is **127 of 734** corpus claims: indefinite integrals, finite sums and
-the `Collect`-like heads are translated now);
+coverage is **268 of 983** corpus claims: indefinite integrals, finite sums, the
+`Collect`-like heads, `Series`/`Normal[Series[...]]` and `NSolve` are translated now);
 `RMATH_LEAN_HAMMER=1` retries *not proved* goals with external hammers (`duper`,
 `lean_smt`) when the project supplies them.
 
@@ -287,6 +287,15 @@ follows from `(√5)² = 5` and `√5 ≥ 0` — so
 two non-real ones are excluded, since Lean's `Real.sqrt` of a negative is 0).
 A radical whose sign is genuinely unprovable makes the tactic fail rather than
 invent a verdict.
+
+**What a series claim is.** `Series[f, {x, a, n}]` is checked as the Taylor
+coefficients it printed: for each `c_k`, Lean proves `f⁽ᵏ⁾(a) = k!·c_k`. The
+remainder `O[x]^(n+1)` is *not* part of the claim — that is a separate analytic
+statement about `f`, and asserting it from the bridge would be the bridge's
+opinion rather than the kernel's answer. `NSolve` is checked only when the roots
+it printed are exact (`1.0`, `5/2`); `NSolve` answers in machine numbers, so an
+approximate root has no exact statement to check and is refused with the reason —
+the point of the bridge is that a verdict is never invented.
 
 Two subtleties worth knowing, both found by testing rather than reasoning:
 

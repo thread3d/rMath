@@ -67,6 +67,30 @@ REFUSALS = [
 ]
 
 
+# Series and NSolve are not equalities between two spellings, so they build their
+# own claim shapes: the Taylor coefficients the series printed, and the roots
+# substituted back into the equation.
+SERIES_CASES = [
+    ("Series[Cos[x], {x, 0, 4}]", "SeriesData[x, 0, {1, 0, -1/2, 0, 1/24}, 0, 4, 1]",
+     "iteratedDeriv 4 (fun x : ℝ => Real.cos x) (0 : ℝ) = (24 : ℝ) * ((1/24) : ℝ)"),
+    ("Normal[Series[Sin[x], {x, 0, 5}]]", "x - 1/6 x^3 + 1/120 x^5",
+     "iteratedDeriv 3 (fun x : ℝ => Real.sin x) (0 : ℝ) = (6 : ℝ) * ((-1/6) : ℝ)"),
+]
+
+NSOLVE_CASES = [
+    ("NSolve[x^3 - 6x^2 + 11x - 6 == 0, x]", "{{x -> 1.0}, {x -> 2.0}, {x -> 3.0}}",
+     "(3 : ℚ)"),
+]
+
+SHAPE_REFUSALS = [
+    # a machine-number root is an approximation, not a statement Lean can check
+    ("NSolve[x^2 - 2 == 0, x]", "{{x -> -1.41421}, {x -> 1.41421}}"),
+    ("NSolve[x^2 + 1 == 0, x]", "{{x -> -1.0 I}, {x -> 1.0 I}}"),
+    # a series of anything but Sin/Cos/Exp of the expansion variable: the
+    # derivative wiring that carries the claim does not know it
+    ("Series[x^2 + 3 x, {x, 0, 5}]", "SeriesData[x, 0, {3, 1, 0, 0, 0}, 1, 5, 1]"),
+]
+
 # Derivative proof-term shapes (generated without running Lean).
 DERIV_CASES = [
     ("D[x, x]", "1", "hasDerivAt_id x", "deriv id x"),
@@ -110,6 +134,21 @@ def main():
     for lhs, rhs in REFUSALS:
         try:
             lean.statement(lhs, rhs)
+            failures.append("%s: expected a refusal, got a translation" % lhs)
+        except ValueError:
+            pass
+
+    for lhs, rhs, want in SERIES_CASES + NSOLVE_CASES:
+        try:
+            _, prop, _, _ = lean.build_statement(lhs, rhs, result_form=rhs)
+        except ValueError as e:
+            failures.append("%s: refused (%s)" % (lhs, e))
+            continue
+        if want not in prop:
+            failures.append("%s\n     got  %s\n     want %s" % (lhs, prop, want))
+    for lhs, rhs in SHAPE_REFUSALS:
+        try:
+            lean.build_statement(lhs, rhs, result_form=rhs)
             failures.append("%s: expected a refusal, got a translation" % lhs)
         except ValueError:
             pass
@@ -222,8 +261,10 @@ def main():
         for f in failures:
             print("  " + f)
         return 1
-    print("LEAN TRANSLATION: PASS (%d claims, %d derivative shapes, %d deliberate refusals)"
-          % (len(CASES), len(DERIV_CASES), len(REFUSALS) + 1))
+    print("LEAN TRANSLATION: PASS (%d claims, %d derivative shapes, %d series/solve "
+          "shapes, %d deliberate refusals)"
+          % (len(CASES), len(DERIV_CASES), len(SERIES_CASES) + len(NSOLVE_CASES),
+             len(REFUSALS) + len(SHAPE_REFUSALS) + 1))
     return 0
 
 

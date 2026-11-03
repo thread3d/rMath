@@ -1449,15 +1449,30 @@ def solve_statement(solve_text, result_form, numeric=None, relation="="):
             return _complex_solve_statement(left, right, var, all_texts, relation)
         raise ValueError("Solve returned no roots to check")
     skipped = len(all_texts) - len(roots)
+    note = ""
+    if skipped:
+        note = "-- checked %d of %d roots; the other %d are not real\n" % (
+            len(roots), len(all_texts), skipped)
+    return _root_claim(left, right, var, roots, relation, note)
+
+
+def _root_claim(left, right, var, roots, relation="=", note=""):
+    """The claim that each of `roots` (ASTs) is a root of `left = right`.
+
+    Each root is substituted back into both sides; Lean decides whether the
+    resulting equation holds. This is the independent half of `Solve`/`NSolve`:
+    the kernel found the roots, Lean is asked whether they really are roots.
+    """
     # ℝ when the equation or any root is real-valued (Sqrt, Pi, Real.*).
     real = False
     for r in roots:
         p = Translator()
         p.expr(r)
         real = real or p.real
-    p = Translator()
-    p.expr(eq)
-    real = real or p.real
+    for side in (left, right):
+        p = Translator()
+        p.expr(side)
+        real = real or p.real
     ty = "ℝ" if real else "ℚ"
     parts = []
     vs = set()
@@ -1473,13 +1488,361 @@ def solve_statement(solve_text, result_form, numeric=None, relation="="):
     prop = " ∧ ".join(parts) if len(parts) > 1 else parts[0]
     names = sorted(vs)
     binders = ("(" + " ".join(names) + " : %s) " % ty) if names else ""
-    note = ""
-    if skipped:
-        note = "-- checked %d of %d roots; the other %d are not real\n" % (
-            len(roots), len(all_texts), skipped)
     code = note + QUIET + "example %s: %s := by\n  solve | %s\n" % (
         binders, prop, SOLVE_TACTICS)
     return (code, prop, ty, names)
+
+
+# ---------- exact arithmetic over the claim's own numbers ----------
+
+def _frac_eval(node, var=None, value=None):
+    """Evaluate an rMath expression exactly over ℚ, or None.
+
+    Only exact arithmetic is modelled: numerals, `+ - * / ^` with a non-negative
+    integer exponent, and `Rational[p, q]`. A machine real, `Pi`, a function or an
+    unknown symbol yields None — those are exactly the cases where a number cannot
+    be read as an exact value. Used to decide *whether* a printed number is exact,
+    never to manufacture a claim the kernel did not make.
+    """
+    if isinstance(node, ast.Expression):
+        return _frac_eval(node.body, var, value)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, int):
+            return None                     # a float is a machine number
+        return Fraction(node.value)
+    if isinstance(node, ast.Name):
+        if var is not None and node.id == var:
+            return None if value is None else Fraction(value)
+        return None
+    if isinstance(node, ast.UnaryOp):
+        inner = _frac_eval(node.operand, var, value)
+        if inner is None:
+            return None
+        if isinstance(node.op, ast.USub):
+            return -inner
+        if isinstance(node.op, ast.UAdd):
+            return inner
+        return None
+    if isinstance(node, ast.BinOp):
+        a = _frac_eval(node.left, var, value)
+        b = _frac_eval(node.right, var, value)
+        if a is None or b is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return a + b
+        if isinstance(node.op, ast.Sub):
+            return a - b
+        if isinstance(node.op, ast.Mult):
+            return a * b
+        if isinstance(node.op, ast.Div):
+            return None if b == 0 else a / b
+        if isinstance(node.op, ast.Pow):
+            if b.denominator != 1 or b < 0:
+                return None
+            return a ** int(b)
+        return None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+            and node.func.id == "Rational" and len(node.args) == 2:
+        num = _frac_eval(node.args[0], var, value)
+        den = _frac_eval(node.args[1], var, value)
+        if num is None or den is None or den == 0:
+            return None
+        return num / den
+    return None
+
+
+def _frac_ast(fr):
+    """An AST for an exact rational, in the shape the translator reads."""
+    fr = Fraction(fr)
+    if fr.denominator == 1:
+        n = int(fr)
+        return ast.Constant(n) if n >= 0 else ast.UnaryOp(ast.USub(), ast.Constant(-n))
+    div = ast.BinOp(ast.Constant(abs(fr.numerator)), ast.Div(), ast.Constant(fr.denominator))
+    return div if fr.numerator >= 0 else ast.UnaryOp(ast.USub(), div)
+
+
+def _frac_lean(fr):
+    """An exact rational as a Lean `ℝ` literal."""
+    fr = Fraction(fr)
+    if fr.denominator == 1:
+        return "(%d : ℝ)" % fr.numerator
+    return "((%d/%d) : ℝ)" % (fr.numerator, fr.denominator)
+
+
+def _frac_text(fr):
+    fr = Fraction(fr)
+    return "%d" % fr.numerator if fr.denominator == 1 else "%d/%d" % (fr.numerator, fr.denominator)
+
+
+def _poly_add(a, b):
+    n = max(len(a), len(b))
+    zero = Fraction(0)
+    return [(a[i] if i < len(a) else zero) + (b[i] if i < len(b) else zero)
+            for i in range(n)]
+
+
+def _poly_coeffs(node, var):
+    """Coefficients of `node` as a polynomial in `var`, lowest first, or None."""
+    if isinstance(node, ast.Expression):
+        return _poly_coeffs(node.body, var)
+    c = _frac_eval(node)
+    if c is not None:
+        return [c]
+    if isinstance(node, ast.Name):
+        return [Fraction(0), Fraction(1)] if node.id == var else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        inner = _poly_coeffs(node.operand, var)
+        if inner is None:
+            return None
+        return [-x for x in inner] if isinstance(node.op, ast.USub) else inner
+    if isinstance(node, ast.BinOp):
+        a = _poly_coeffs(node.left, var)
+        b = _poly_coeffs(node.right, var)
+        if a is None or b is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return _poly_add(a, b)
+        if isinstance(node.op, ast.Sub):
+            return _poly_add(a, [-x for x in b])
+        if isinstance(node.op, ast.Mult):
+            out = [Fraction(0)] * (len(a) + len(b) - 1)
+            for i, x in enumerate(a):
+                for j, y in enumerate(b):
+                    out[i + j] += x * y
+            return out
+        if isinstance(node.op, ast.Div):
+            if len(b) != 1 or b[0] == 0:
+                return None
+            return [x / b[0] for x in a]
+        if isinstance(node.op, ast.Pow):
+            if len(b) != 1 or b[0].denominator != 1 or b[0] < 0:
+                return None
+            out = [Fraction(1)]
+            for _ in range(int(b[0])):
+                prod = [Fraction(0)] * (len(out) + len(a) - 1)
+                for i, x in enumerate(out):
+                    for j, y in enumerate(a):
+                        prod[i + j] += x * y
+                out = prod
+            return out
+    return None
+
+
+def _parse_exact_number(text):
+    """The exact rational a printed number spells, or None.
+
+    `1.0` is 1 and `2.5` is 5/2 — a decimal that terminates *is* a rational. A
+    value that does not round-trip as written, or that needs exponent notation,
+    is None: it is an approximation, not a number Lean can be asked about.
+    """
+    s = (text or "").strip()
+    neg = s.startswith("-")
+    if neg:
+        s = s[1:].strip()
+    if s.endswith("."):
+        s = s[:-1]
+    if not re.fullmatch(r"\d+(\.\d+)?", s):
+        return None
+    fr = Fraction(s)
+    return -fr if neg else fr
+
+
+# ---------- NSolve ----------
+
+def is_nsolve(text):
+    """True when `text` is an `NSolve[...]` call."""
+    try:
+        body = ast.parse(_rmath_to_python(text), mode="eval").body
+    except SyntaxError:
+        return False
+    return isinstance(body, ast.Call) and getattr(body.func, "id", "") == "NSolve"
+
+
+def nsolve_statement(nsolve_text, result_form, relation="="):
+    """An `NSolve[eq, x]` claim, or None when the input is not an NSolve call.
+
+    `NSolve` answers in machine numbers, so the question Lean can decide is
+    narrower than for `Solve`: is each root it printed an *exact* root? Each
+    printed root is read as the rational it spells (`1.0` is 1, `2.5` is 5/2) and
+    substituted exactly; a root that is only an approximation — `1.41421` for √2 —
+    is refused rather than claimed, because Lean can only check exact statements
+    and the approximation is not one.
+    """
+    try:
+        body = ast.parse(_rmath_to_python(nsolve_text), mode="eval").body
+    except SyntaxError as e:
+        raise ValueError("cannot parse %r as rMath: %s" % (nsolve_text, e.msg))
+    if not (isinstance(body, ast.Call) and getattr(body.func, "id", "") == "NSolve"):
+        return None
+    if len(body.args) != 2 or not isinstance(body.args[1], ast.Name):
+        raise ValueError("cannot check this NSolve: only one equation in one "
+                         "variable is supported")
+    eq, var = body.args[0], body.args[1].id
+    if not (isinstance(eq, ast.Compare) and len(eq.ops) == 1
+            and isinstance(eq.ops[0], ast.Eq)):
+        raise ValueError("cannot check this NSolve: the input must be an "
+                         "equation `a == b`")
+    left, right = eq.left, eq.comparators[0]
+    texts = _root_texts(result_form)
+    if not texts:
+        raise ValueError("NSolve returned no roots to check")
+    roots, complex_roots = [], 0
+    for txt in texts:
+        if "I" in txt:
+            complex_roots += 1
+            continue
+        value = _parse_exact_number(txt)
+        if value is None:
+            raise ValueError("NSolve printed %r, which does not read as an exact "
+                             "number" % txt)
+        at = _frac_eval(left, var, value)
+        bt = _frac_eval(right, var, value)
+        if at is None or bt is None:
+            raise ValueError("cannot check this NSolve exactly: only polynomial "
+                             "equations with rational coefficients are supported")
+        if at != bt:
+            raise ValueError("NSolve printed %r, which is an approximation, not an "
+                             "exact root: substituting it leaves %s"
+                             % (txt, _frac_text(at - bt)))
+        roots.append(_frac_ast(value))
+    if not roots:
+        raise ValueError("every root NSolve printed is complex (%d of %d); only "
+                         "real roots are checked" % (complex_roots, len(texts)))
+    note = ""
+    if complex_roots:
+        note = "-- checked %d of %d roots; the other %d are not real\n" % (
+            len(roots), len(texts), complex_roots)
+    return _root_claim(left, right, var, roots, relation, note)
+
+
+# ---------- Series ----------
+
+_SERIES_FUNCS = {"Sin": "Real.sin", "Cos": "Real.cos", "Exp": "Real.exp"}
+# The lemmas that carry `iteratedDeriv` down to the value of a derivative, for the
+# three functions a series is translated for.
+_SERIES_SIMP = ("iteratedDeriv_zero, iteratedDeriv_succ, deriv_sin, deriv_cos, "
+                "Real.deriv_exp, Real.sin_zero, Real.cos_zero, Real.exp_zero")
+
+
+def _series_spec(text):
+    """`Series[f, {x, a, n}]`, under `Normal[...]` or not -> (f, var, a, n)."""
+    try:
+        body = ast.parse(_rmath_to_python(text), mode="eval").body
+    except SyntaxError:
+        return None
+    if not (isinstance(body, ast.Call) and isinstance(body.func, ast.Name)):
+        return None
+    if body.func.id == "Normal" and len(body.args) == 1:
+        body = body.args[0]
+        if not (isinstance(body, ast.Call) and isinstance(body.func, ast.Name)):
+            return None
+    if body.func.id != "Series" or len(body.args) != 2:
+        return None
+    target, spec = body.args
+    if not (isinstance(spec, ast.Tuple) and len(spec.elts) == 3):
+        return None
+    var, a, n = spec.elts
+    if not isinstance(var, ast.Name):
+        return None
+    return (target, var.id, a, n)
+
+
+def is_series(text):
+    """True when `text` is a `Series[...]` or `Normal[Series[...]]` cell."""
+    return _series_spec(text) is not None
+
+
+def _series_powers(rhs_text, var, a):
+    """(power, coefficient) pairs of a series result, or None.
+
+    `SeriesData[x, a, {c, ...}, min, max, 1]` carries the coefficients directly;
+    a `Normal[Series[...]]` result is the same data spelled as a polynomial.
+    """
+    try:
+        body = ast.parse(_rmath_to_python(rhs_text), mode="eval").body
+    except SyntaxError:
+        return None
+    at = _frac_eval(a)
+    if at is None:
+        return None
+    if isinstance(body, ast.Call) and isinstance(body.func, ast.Name) \
+            and body.func.id == "SeriesData" and len(body.args) == 6:
+        v, point, coeffs, lo, _hi, den = body.args
+        if not (isinstance(v, ast.Name) and v.id == var):
+            return None
+        if _frac_eval(point) != at or _frac_eval(den) != Fraction(1):
+            return None
+        if not (isinstance(lo, ast.Constant) and isinstance(lo.value, int)) \
+                or not isinstance(coeffs, ast.Tuple):
+            return None
+        out = []
+        for i, c in enumerate(coeffs.elts):
+            value = _frac_eval(c)
+            if value is None:
+                return None
+            out.append((lo.value + i, value))
+        return out
+    coeffs = _poly_coeffs(body, var)
+    if coeffs is None:
+        return None
+    while coeffs and coeffs[-1] == 0:
+        coeffs.pop()
+    return [(i, c) for i, c in enumerate(coeffs)]
+
+
+def _factorial(n):
+    out = 1
+    for i in range(2, n + 1):
+        out *= i
+    return out
+
+
+def series_statement(lhs_text, rhs_text):
+    """A `Series[f, {x, a, n}]` (or `Normal[Series[...]]`) claim, or None.
+
+    A power series *is* its Taylor coefficients, so that is the claim checked:
+    `f⁽ᵏ⁾(a) = k! · c_k` for every coefficient the kernel printed. The remainder
+    (`O[x]^(n+1)`) is not part of the claim — for the elementary functions here it
+    is a separate analytic fact, and asserting it from the bridge would be the
+    bridge's opinion rather than the kernel's answer.
+    """
+    spec = _series_spec(lhs_text)
+    if spec is None:
+        return None
+    target, var, a, _n = spec
+    if rhs_text is None:
+        raise ValueError("nothing to verify: a series has no right-hand side")
+    # f must be one of the functions the derivative wiring knows, applied to the
+    # expansion variable itself: `Cos[x]`, not `Cos[2 x]` or `x Cos[x]`.
+    if not (isinstance(target, ast.Call) and isinstance(target.func, ast.Name)
+            and len(target.args) == 1 and isinstance(target.args[0], ast.Name)
+            and target.args[0].id == var):
+        raise ValueError("a series is translated only for Sin, Cos and Exp of the "
+                         "expansion variable")
+    lean_fn = _SERIES_FUNCS.get(target.func.id)
+    if lean_fn is None:
+        raise ValueError("a series is translated only for Sin, Cos and Exp of the "
+                         "expansion variable")
+    point = _frac_eval(a)
+    if point is None:
+        raise ValueError("the expansion point must be a rational number")
+    powers = _series_powers(rhs_text, var, a)
+    if not powers:
+        raise ValueError("the series result carries no rational coefficients to check")
+    point_lean = _frac_lean(point)
+    terms = []
+    for power, coeff in powers:
+        terms.append("iteratedDeriv %d (fun %s : ℝ => %s %s) %s = (%d : ℝ) * %s"
+                     % (power, var, lean_fn, var, point_lean,
+                        _factorial(power), _frac_lean(coeff)))
+    prop = " ∧ ".join("(%s)" % t for t in terms)
+    if len(terms) == 1:
+        proof = "(simp [%s] <;> norm_num)" % _SERIES_SIMP
+    else:
+        holes = ", ".join(["?_"] * len(terms))
+        proof = "(refine ⟨%s⟩ <;> (simp [%s] <;> norm_num))" % (holes, _SERIES_SIMP)
+    code = QUIET + "example : %s := by\n  %s\n" % (prop, proof)
+    return (code, prop, "ℝ", [])
 
 
 _PREAMBLE = None
@@ -1726,8 +2089,12 @@ def build_statement(lhs_text, rhs_text=None, result_form=None, numeric=None,
     """The `(code, proposition, type, variables)` for a claim, or `ValueError`.
     Shared by the one-shot verifier and the fast LSP explorer."""
     built = calculus_statement(lhs_text, rhs_text) if rhs_text is not None else None
+    if built is None and rhs_text is not None:
+        built = series_statement(lhs_text, rhs_text)
     if built is None and result_form:
         built = solve_statement(lhs_text, result_form, numeric=numeric, relation=relation)
+        if built is None:
+            built = nsolve_statement(lhs_text, result_form, relation=relation)
     return built if built else statement(lhs_text, rhs_text, relation)
 
 

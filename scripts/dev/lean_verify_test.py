@@ -74,6 +74,20 @@ BATTERY = [
     ("PrimeQ[97]", "True", "verified"),
     ("Range[5]", "{1, 2, 3, 4, 5}", "verified"),
     ("Length[{a, b, c}]", "3", "verified"),
+    # Series: the claim is that the printed coefficients are the Taylor
+    # coefficients, f⁽ᵏ⁾(a) = k! c_k, closed with iteratedDeriv and the
+    # deriv_sin/deriv_cos/deriv_exp lemmas.
+    ("Series[Cos[x], {x, 0, 4}]", "SeriesData[x, 0, {1, 0, -1/2, 0, 1/24}, 0, 4, 1]",
+     "verified"),
+    ("Series[Sin[x], {x, 0, 5}]", "SeriesData[x, 0, {0, 1, 0, -1/6, 0, 1/120}, 0, 5, 1]",
+     "verified"),
+    ("Normal[Series[Sin[x], {x, 0, 5}]]", "x - 1/6 x^3 + 1/120 x^5", "verified"),
+    # NSolve answers in machine numbers, so only the roots that are exact can be
+    # checked; the approximations must be refused rather than claimed.
+    ("NSolve[x^3 - 6x^2 + 11x - 6 == 0, x]",
+     "{{x -> 1.0}, {x -> 2.0}, {x -> 3.0}}", "verified"),
+    ("NSolve[x^2 - 2 == 0, x]", "{{x -> -1.41421}, {x -> 1.41421}}", "cannot verify"),
+    ("NSolve[x^2 + 1 == 0, x]", "{{x -> -1.0 I}, {x -> 1.0 I}}", "cannot verify"),
     # must NOT be accepted
     ("1/2 + 1/3", "2/3", "unproved"),
     ("2 + 2", "5", "unproved"),
@@ -104,7 +118,7 @@ def main():
         return 1 if "--skip" not in sys.argv else 0
     ok = bad = 0
     for lhs, rhs, want in BATTERY:
-        result_form = rhs if lean.is_solve(lhs) else None
+        result_form = rhs if (lean.is_solve(lhs) or lean.is_nsolve(lhs)) else None
         r = lean.verify(lhs, rhs, timeout=600, result_form=result_form,
                         numeric=NUMERIC.get(lhs))
         got = r.get("outcome")

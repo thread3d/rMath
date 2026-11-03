@@ -145,6 +145,71 @@ class SolveStatements(unittest.TestCase):
         self.assertIn("∧", prop)
 
 
+class NSolveStatements(unittest.TestCase):
+    def test_exact_roots_are_checked_by_substitution(self):
+        code, prop, ty, _ = lean.nsolve_statement(
+            "NSolve[x^3 - 6x^2 + 11x - 6 == 0, x]",
+            "{{x -> 1.0}, {x -> 2.0}, {x -> 3.0}}")
+        # The printed decimals are read as the rationals they spell.
+        self.assertIn("(1 : ℚ)", prop)
+        self.assertIn("(2 : ℚ)", prop)
+        self.assertIn("(3 : ℚ)", prop)
+        self.assertEqual(ty, "ℚ")
+        self.assertIn("solve |", code)
+
+    def test_a_printed_approximation_is_refused_not_claimed(self):
+        with self.assertRaises(ValueError) as ctx:
+            lean.nsolve_statement("NSolve[x^2 - 2 == 0, x]",
+                                  "{{x -> -1.41421}, {x -> 1.41421}}")
+        self.assertIn("approximation", str(ctx.exception))
+
+    def test_all_complex_roots_are_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            lean.nsolve_statement("NSolve[x^2 + 1 == 0, x]",
+                                  "{{x -> -1.0 I}, {x -> 1.0 I}}")
+        self.assertIn("complex", str(ctx.exception))
+
+    def test_a_non_exact_equation_is_refused(self):
+        with self.assertRaises(ValueError):
+            lean.nsolve_statement("NSolve[Sin[x] == 0.5, x]", "{{x -> 1.5708}}")
+
+    def test_none_for_a_solve_call(self):
+        self.assertIsNone(lean.nsolve_statement(
+            "Solve[x^2 - 3 x + 2 == 0, x]", "{{x -> 1}, {x -> 2}}"))
+
+
+class SeriesStatements(unittest.TestCase):
+    def test_the_claim_is_the_taylor_coefficients(self):
+        code, prop, ty, _ = lean.series_statement(
+            "Series[Cos[x], {x, 0, 4}]", "SeriesData[x, 0, {1, 0, -1/2, 0, 1/24}, 0, 4, 1]")
+        # Every coefficient printed becomes f⁽ᵏ⁾(0) = k! c_k.
+        self.assertIn("iteratedDeriv 0 (fun x : ℝ => Real.cos x) (0 : ℝ) = (1 : ℝ) * (1 : ℝ)", prop)
+        self.assertIn("iteratedDeriv 2 (fun x : ℝ => Real.cos x) (0 : ℝ) = (2 : ℝ) * ((-1/2) : ℝ)", prop)
+        self.assertIn("iteratedDeriv 4 (fun x : ℝ => Real.cos x) (0 : ℝ) = (24 : ℝ) * ((1/24) : ℝ)", prop)
+        self.assertIn("deriv_cos", code)
+        self.assertEqual(ty, "ℝ")
+
+    def test_a_normal_form_series_reads_its_coefficients_from_the_polynomial(self):
+        _, prop, _, _ = lean.series_statement(
+            "Normal[Series[Sin[x], {x, 0, 5}]]", "x - 1/6 x^3 + 1/120 x^5")
+        # The gaps are coefficients too: sin has no x^2 or x^4 term.
+        self.assertIn("iteratedDeriv 2 (fun x : ℝ => Real.sin x) (0 : ℝ) = (2 : ℝ) * (0 : ℝ)", prop)
+        self.assertIn("iteratedDeriv 5 (fun x : ℝ => Real.sin x) (0 : ℝ) = (120 : ℝ) * ((1/120) : ℝ)", prop)
+
+    def test_a_function_outside_the_derivative_wiring_is_refused(self):
+        with self.assertRaises(ValueError):
+            lean.series_statement("Series[x^2 + 3 x, {x, 0, 5}]",
+                                  "SeriesData[x, 0, {3, 1, 0, 0, 0}, 1, 5, 1]")
+
+    def test_none_for_a_non_series_claim(self):
+        self.assertIsNone(lean.series_statement("1/2 + 1/3", "5/6"))
+
+    def test_build_statement_routes_a_series_cell(self):
+        _, prop, _, _ = lean.build_statement(
+            "Series[Cos[x], {x, 0, 2}]", "SeriesData[x, 0, {1, 0, -1/2}, 0, 2, 1]")
+        self.assertIn("iteratedDeriv", prop)
+
+
 class DiagnosticsAndAudit(unittest.TestCase):
     def test_parse_diagnostics_folds_continuation_lines(self):
         # `lean` prints a diagnostic header and then the goal at column 0.
